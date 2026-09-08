@@ -1,0 +1,32 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/platform"
+    },
+    {
+      "path": "packages/telemetry"
+    },
+    {
+      "path": "packages/kubernetes"
+    },
+    {
+      "path": "packages/incidents"
+    },
+    {
+      "path": "packages/database"
+    },
+    {
+      "path": "packages/queue"
+    },
+    {
+      "path": "apps/api"
+    },
+    {
+      "path": "apps/ingestion"
+    },
+    {
+      "path": "apps/processor"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "faultline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kubernetes production diagnostics platform foundation",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "start:api": "npm run start --workspace=@faultline/api",
+    "start:ingestion": "npm run start --workspace=@faultline/ingestion",
+    "start:processor": "npm run start --workspace=@faultline/processor",
+    "dev:api": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/api/dist/main.js\"",
+    "dev:ingestion": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/ingestion/dist/main.js\"",
+    "dev:processor": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/processor/dist/main.js\"",
+    "test": "npm run build && node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "~5.9.3",
+    "concurrently": "^9.2.1"
+  }
+}
