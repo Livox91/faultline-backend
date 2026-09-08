@@ -1,4 +1,11 @@
-import { Controller, Get, Header, Inject, Injectable } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Header,
+  Inject,
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import {
   APPLICATION_CONFIG,
   type ApplicationConfig,
@@ -12,8 +19,14 @@ export interface HealthStatus {
   uptime: number;
 }
 
+export interface HealthDependency {
+  readonly name: string;
+  ping(): Promise<void>;
+}
+
 @Injectable()
 export class HealthService {
+  private readonly dependencies = new Map<string, HealthDependency>();
   constructor(
     @Inject(APPLICATION_CONFIG) private readonly config: ApplicationConfig,
   ) {}
@@ -24,6 +37,36 @@ export class HealthService {
       status: 'ok',
       uptime: process.uptime(),
     };
+  }
+
+  register(dependency: HealthDependency): void {
+    this.dependencies.set(dependency.name, dependency);
+  }
+  unregister(name: string): void {
+    this.dependencies.delete(name);
+  }
+  async getReadiness(): Promise<
+    HealthStatus & { dependencies?: Record<string, 'ok' | 'unavailable'> }
+  > {
+    if (!this.dependencies.size) return this.getStatus();
+    const dependencies: Record<string, 'ok' | 'unavailable'> = {};
+    await Promise.all(
+      [...this.dependencies.values()].map(async (dependency) => {
+        try {
+          await dependency.ping();
+          dependencies[dependency.name] = 'ok';
+        } catch {
+          dependencies[dependency.name] = 'unavailable';
+        }
+      }),
+    );
+    const status = { ...this.getStatus(), dependencies };
+    if (Object.values(dependencies).includes('unavailable'))
+      throw new ServiceUnavailableException({
+        ...status,
+        status: 'unavailable',
+      });
+    return status;
   }
 }
 
@@ -40,7 +83,7 @@ export class HealthController {
   // Bootstrap readiness only; add dependency probes when adapters exist.
   @Get('ready')
   @Header('Cache-Control', 'no-store')
-  ready(): HealthStatus {
-    return this.health.getStatus();
+  ready() {
+    return this.health.getReadiness();
   }
 }

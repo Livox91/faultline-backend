@@ -47,5 +47,10 @@ export interface AnomalyRule {
 }
 
 export interface RuleEngine {
-  evaluate(event: TelemetryEvent, state?: ResourceState): readonly Anomaly[];
+  evaluate(
+    event: TelemetryEvent,
+    state?: ResourceState,
+  ): readonly Anomaly[] | Promise<readonly Anomaly[]>;
+  commit?(): void | Promise<void>;
+  rollback?(): void | Promise<void>;
 }

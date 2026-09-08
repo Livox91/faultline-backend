@@ -16,7 +16,7 @@ import type {
   ResourceStateStore,
 } from './resource-state';
 
-type FieldValue = number | boolean | null | Record<string, unknown>;
+export type FieldValue = number | boolean | null | Record<string, unknown>;
 interface Sample {
   value: FieldValue;
   timestamp: string;
@@ -28,7 +28,7 @@ interface Entry {
   fields: Map<string, Sample>;
 }
 
-function identityFor(event: MetricEvent): ResourceIdentity | undefined {
+export function identityFor(event: MetricEvent): ResourceIdentity | undefined {
   const attribute = (key: string) =>
     typeof event.attributes[key] === 'string'
       ? (event.attributes[key] as string)
@@ -71,7 +71,7 @@ function identityFor(event: MetricEvent): ResourceIdentity | undefined {
   };
 }
 
-function key(identity: ResourceIdentity): string {
+export function resourceStateKey(identity: ResourceIdentity): string {
   const name =
     identity.scope === 'node'
       ? identity.node
@@ -87,7 +87,7 @@ function key(identity: ResourceIdentity): string {
   ]);
 }
 
-function fieldFor(
+export function fieldFor(
   event: MetricEvent,
 ): { field: string; value: FieldValue } | undefined {
   if (event.metricType !== 'gauge' || !Number.isFinite(event.value)) return;
@@ -226,7 +226,7 @@ export class InMemoryResourceState implements ResourceStateStore {
     const time =
       BigInt(millis) * 1_000_000n + BigInt(fraction.padEnd(9, '0').slice(3, 9));
     this.sweep();
-    const id = key(identity);
+    const id = resourceStateKey(identity);
     let entry = this.entries.get(id);
     if (!entry) {
       if (this.entries.size >= this.capacity)
@@ -262,7 +262,7 @@ export class InMemoryResourceState implements ResourceStateStore {
 
   get(identity: ResourceIdentity): ResourceState | undefined {
     this.sweep();
-    const entry = this.entries.get(key(identity));
+    const entry = this.entries.get(resourceStateKey(identity));
     return entry ? this.snapshot(entry) : undefined;
   }
 
@@ -323,7 +323,7 @@ export class InMemoryResourceState implements ResourceStateStore {
     if (node)
       candidates.push({ clusterId: event.clusterId, scope: 'node', node });
     for (const candidate of candidates) {
-      const entry = this.entries.get(key(candidate));
+      const entry = this.entries.get(resourceStateKey(candidate));
       if (entry) return this.snapshot(entry);
     }
     return undefined;

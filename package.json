@@ -24,7 +24,13 @@
     "telemetry:sample": "node scripts/sample-telemetry.cjs",
     "verify:kubernetes": "node scripts/verify-kubernetes.cjs",
     "validate:collector": "node scripts/validate-collector.cjs",
-    "verify:metrics": "node scripts/verify-metrics.cjs"
+    "verify:metrics": "node scripts/verify-metrics.cjs",
+    "infra:up": "docker compose --env-file .env.infrastructure -f compose.infrastructure.yml up -d --wait",
+    "infra:down": "docker compose --env-file .env.infrastructure -f compose.infrastructure.yml down",
+    "db:migrate": "npm run build --workspace=@faultline/database && npm run migration:apply --workspace=@faultline/database",
+    "db:rollback": "npm run build --workspace=@faultline/database && npm run migration:rollback --workspace=@faultline/database",
+    "db:migration:create": "npm run build --workspace=@faultline/database && npm run migration:create --workspace=@faultline/database --",
+    "test:integration": "npm run build && node --test tests/infrastructure.test.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

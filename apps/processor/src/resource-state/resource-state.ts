@@ -45,8 +45,14 @@ export interface ResourceState extends ResourceIdentity {
 }
 
 export interface ResourceStateStore {
-  update(event: MetricEvent): ResourceState | undefined;
-  get(identity: ResourceIdentity): ResourceState | undefined;
-  findForTelemetry(event: TelemetryEvent): ResourceState | undefined;
-  sweep(): void;
+  update(
+    event: MetricEvent,
+  ): ResourceState | undefined | Promise<ResourceState | undefined>;
+  get(
+    identity: ResourceIdentity,
+  ): ResourceState | undefined | Promise<ResourceState | undefined>;
+  findForTelemetry(
+    event: TelemetryEvent,
+  ): ResourceState | undefined | Promise<ResourceState | undefined>;
+  sweep(): void | Promise<void>;
 }

@@ -1,0 +1,46 @@
+name: faultline
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env.infrastructure}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.infrastructure}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env.infrastructure}
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - faultline-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:8-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '127.0.0.1:${REDIS_PORT:-6379}:6379'
+    volumes:
+      - faultline-redis:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  nats:
+    image: nats:2.11-alpine
+    command: ['--jetstream', '--store_dir=/data', '--http_port=8222']
+    ports:
+      - '127.0.0.1:${NATS_PORT:-4222}:4222'
+      - '127.0.0.1:${NATS_MONITOR_PORT:-8222}:8222'
+    volumes:
+      - faultline-nats:/data
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:8222/healthz']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  faultline-postgres:
+  faultline-redis:
+  faultline-nats:

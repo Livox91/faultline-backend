@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { Anomaly, AnomalyAffectedResource } from '@faultline/incidents';
 import type { AnomalyThresholds } from '@faultline/platform';
 import type { TelemetryEvent } from '@faultline/telemetry';
@@ -119,7 +119,9 @@ export class InMemoryRuleEngine implements RuleEngine {
         }
         if (!prior) {
           const opened: Anomaly = {
-            anomalyId: randomUUID(),
+            anomalyId: createHash('sha256')
+              .update(`${evaluation.dedupeKey}:${event.timestamp}`)
+              .digest('hex'),
             dedupeKey: evaluation.dedupeKey,
             ruleId: rule.ruleId,
             classification: rule.classification,
@@ -172,6 +174,47 @@ export class InMemoryRuleEngine implements RuleEngine {
       }
     }
     return emitted;
+  }
+
+  /** Serializable operational state used by the Redis adapter; rules/configuration stay in code. */
+  exportState(): unknown {
+    return {
+      version: 1,
+      seenIds: [...this.seenIds],
+      evidence: this.evidence,
+      conditions: [...this.conditions],
+      active: [...this.active],
+      restarts: [...this.restarts],
+      watermarks: [...this.watermarks],
+    };
+  }
+
+  importState(value: unknown): void {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      (value as { version?: unknown }).version !== 1
+    )
+      return;
+    const state = value as {
+      seenIds?: [string, number][];
+      evidence?: TelemetryEvent[];
+      conditions?: [string, ConditionState][];
+      active?: [string, ActiveState][];
+      restarts?: [string, RestartSample[]][];
+      watermarks?: [string, number][];
+    };
+    this.seenIds.clear();
+    this.conditions.clear();
+    this.active.clear();
+    this.restarts.clear();
+    this.watermarks.clear();
+    this.evidence.splice(0, this.evidence.length, ...(state.evidence ?? []));
+    for (const item of state.seenIds ?? []) this.seenIds.set(...item);
+    for (const item of state.conditions ?? []) this.conditions.set(...item);
+    for (const item of state.active ?? []) this.active.set(...item);
+    for (const item of state.restarts ?? []) this.restarts.set(...item);
+    for (const item of state.watermarks ?? []) this.watermarks.set(...item);
   }
 
   private observe(

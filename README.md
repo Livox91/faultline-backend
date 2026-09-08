@@ -1,5 +1,36 @@
 # Faultline
 
+## Durable local infrastructure
+
+Faultline now uses PostgreSQL for control-plane/incident data, Redis for expiring
+processor state, and NATS JetStream for durable event delivery. NATS was selected
+instead of Kafka because this pipeline needs durable fan-out, acknowledgements, and
+redelivery, but not Kafka-specific partitioning or long-term telemetry retention.
+Domain code continues to depend on `IncidentRepository`, `ResourceStateStore`, and
+`Queue`; test mode keeps the in-memory implementations.
+
+See [the infrastructure guide](docs/INFRASTRUCTURE.md) for setup, migrations,
+delivery semantics, health checks, shutdown behavior, and failure recovery. The
+short local workflow is:
+
+```powershell
+Copy-Item .env.infrastructure.example .env.infrastructure
+Copy-Item apps/api/.env.example apps/api/.env
+Copy-Item apps/ingestion/.env.example apps/ingestion/.env
+Copy-Item apps/processor/.env.example apps/processor/.env
+# Set one matching local PostgreSQL password in the infrastructure, API, and processor files.
+npm ci
+npm run infra:up
+$env:DATABASE_URL = "postgresql://faultline:<password>@127.0.0.1:5432/faultline"
+npm run db:migrate
+npm run dev:pipeline
+```
+
+In another terminal run `npm run telemetry:sample`, then inspect incidents at
+`http://127.0.0.1:3000/incidents`. Stop the applications with Ctrl+C and run
+`npm run infra:down`. Named volumes deliberately retain PostgreSQL, Redis, and
+JetStream data across infrastructure restarts.
+
 ## Metrics and workload state
 
 The [metrics guide](deploy/kubernetes/METRICS.md) describes CPU/memory usage, resource requests/limits,
@@ -33,9 +64,8 @@ npm run dev:pipeline
 ```
 
 The launcher builds and starts processor, ingestion, and API as separate Nest
-applications in one Node process. Processor and ingestion share the development queue;
-processor and API share the temporary incident repository. Ingestion does not import
-processor logic. Process-local adapters cannot cross standalone process boundaries.
+applications in one Node process. They communicate through JetStream and share durable
+PostgreSQL/Redis infrastructure; ingestion still does not import processor logic.
 The combined launcher uses ports 3000, 3001, and 3002, overridden by `API_PORT`,
 `INGESTION_PORT`, and `PROCESSOR_PORT`; it overrides `PORT`. Stop with Ctrl+C to drain
 accepted work. All three apps expose `/health` and `/health/ready`.
@@ -90,11 +120,9 @@ authentication or queue publishing failure. Internal malformed events are reject
 logged. Processor failures are logged and reported to the adapter. A 202 acknowledges
 queue acceptance only, not processing success.
 
-The DEVELOPMENT ONLY adapter holds at most 1000 pending deliveries, requires an active
-subscriber, isolates message copies and drains handlers on close. Publication does not
-wait for processing. Delivery is at-most-once with no retry, deduplication, persistence
-or crash recovery. Standalone ingestion returns 503 without a local subscriber.
-Production startup rejects this adapter; distributed deployment needs a durable broker.
+The bounded in-memory queue is retained only for `NODE_ENV=test`. Development and
+production use JetStream at-least-once delivery, bounded retries, message-ID
+deduplication, and dead-letter subjects.
 
 `npm test` covers HTTP-to-processor delivery for all telemetry variants, authentication,
 validation, queue behavior, anomaly rules, incident correlation/lifecycle, API filtering,
@@ -136,7 +164,7 @@ Copy-Item apps/ingestion/.env.example apps/ingestion/.env
 Copy-Item apps/processor/.env.example apps/processor/.env
 ```
 
-For standalone health checks, run each application in a separate terminal. These processes do not share the in-memory queue:
+Run each application in a separate terminal; all processes use the shared infrastructure:
 
 ```sh
 npm run start:api
@@ -175,7 +203,7 @@ Nest context/stack. App identity is retained even in logs from shared code or Ne
 internals. The configured level includes higher-severity messages. Inject
 `ApplicationLogger` in Nest providers, or instantiate it in adapter code.
 Application payloads are not automatically logged or redacted; avoid passing secrets.
-Shutdown hooks are enabled for future adapter cleanup.
+Shutdown hooks drain consumers and close broker, database, and Redis connections.
 
 Processor anomaly thresholds are environment variables. Defaults are 85/95 percent
 for memory, 80/95 percent for CPU, 3 restart increases, 60 seconds not-ready, and
@@ -184,7 +212,7 @@ See `apps/processor/.env.example` for the exact variable names.
 
 ## Deterministic anomaly rules
 
-The processor evaluates each normalized event with the latest bounded, in-memory
+The processor evaluates each normalized event with the latest bounded, expiring Redis
 resource state. Rules are independent `AnomalyRule` implementations registered as a
 list, so adding a rule does not require editing a classification switch. The initial
 classifications are `OOM_KILLED`, `CRASH_LOOP`, `HIGH_MEMORY_UTILIZATION`,
@@ -200,7 +228,7 @@ plus resource key identifies one active anomaly. Its lifecycle is `OPEN`, then
 Anomaly output includes its stable ID, rule/classification, severity, confidence,
 affected resource, summary, timestamps, and bounded supporting evidence.
 
-Anomaly lifecycle state is local to the processor process and is lost on restart.
+Anomaly lifecycle, deduplication, and rule-window state are checkpointed in Redis.
 
 ## Incident correlation
 
@@ -227,10 +255,9 @@ When all underlying anomalies resolve, the incident remains `ACTIVE` during
 another active anomaly cancels it. The correlation window defaults to ten minutes and
 stabilization defaults to two minutes. Both are configured in `apps/processor/.env`.
 
-The repository is bounded and in memory. In the combined launcher, processor and API
-share it because they run in one process. Standalone API and processor processes have
-separate repositories, and restarts lose incident state. A durable repository is required
-before distributed production deployment.
+The processor and API use the same PostgreSQL incident repository. Incident aggregate
+updates and their affected-resource, anomaly, evidence, and timeline projections are
+committed in one transaction and survive application restarts.
 
 ## Endpoints
 
@@ -240,8 +267,9 @@ All apps expose `GET /health` and `GET /health/ready`:
 { "application": "api", "status": "ok", "uptime": 12.34 }
 ```
 
-Uptime is process uptime in seconds. Readiness currently means successful bootstrap;
-there are no dependency probes. Both responses disable caching.
+Uptime is process uptime in seconds. Liveness does not contact dependencies. Readiness
+probes the critical PostgreSQL, Redis, and/or NATS dependencies for that application and
+returns 503 with per-dependency status when any is unavailable. Responses disable caching.
 
 API only: `GET /system/info`:
 
@@ -309,12 +337,11 @@ new union for the ingestion pipeline.
 Kubernetes identities distinguish cluster-scoped resources, namespaced resources,
 and containers nested within pods. Incident contracts define anomaly snapshots,
 affected resources, evidence, timeline, severity, confidence, and lifecycle. The shared
-repository contract is asynchronous so a durable adapter can replace the temporary
-in-memory implementation without changing correlation business logic.
+repository contract is asynchronous so PostgreSQL remains outside correlation business logic.
 
-The database package exposes interfaces only. The queue includes a development in-memory adapter. Queue handlers signal success by resolving
-and failure by rejecting; future adapters must define acknowledgement, retries and
-delivery guarantees.
+The database package contains the PostgreSQL connection, migration runner, and incident
+repository adapter. The queue package contains JetStream and unit-test in-memory adapters.
+Queue handlers acknowledge by resolving and request retry by rejecting.
 
 ## Verification and boundaries
 
@@ -326,5 +353,4 @@ Build before production startup. Deploy the selected app output together with
 shared package outputs, workspace manifests and production node_modules.
 The development pipeline runs all three apps in one process. Kubernetes collection uses
 OpenTelemetry Collector. ML, statistical baselines, root-cause analysis, alerts,
-automatic remediation, durable databases and durable brokers remain outside this
-iteration.
+automatic remediation and long-term raw telemetry storage remain outside this iteration.

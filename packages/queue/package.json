@@ -16,5 +16,8 @@
   ],
   "scripts": {
     "build": "tsc -b"
+  },
+  "dependencies": {
+    "nats": "^2.29.3"
   }
 }

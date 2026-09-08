@@ -12,7 +12,7 @@ import {
 import { ApplicationLogger } from '@faultline/platform';
 import {
   QUEUE,
-  QueueConsumer,
+  Queue,
   QueueMessage,
   QueueSubscription,
 } from '@faultline/queue';
@@ -26,22 +26,31 @@ import {
   type IncidentChange,
   type IncidentCorrelator,
 } from './correlation/contracts';
+import {
+  PROCESSING_LEDGER,
+  type ProcessingLedger,
+} from './infrastructure/redis';
 
 @Injectable()
 export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
   private subscription?: QueueSubscription;
   private stateSweep?: NodeJS.Timeout;
   constructor(
-    @Inject(QUEUE) private readonly queue: QueueConsumer,
+    @Inject(QUEUE) private readonly queue: Queue,
     private readonly logger: ApplicationLogger,
     @Inject(RESOURCE_STATE) private readonly state: ResourceStateStore,
     @Optional() @Inject(RULE_ENGINE) private readonly rules?: RuleEngine,
     @Optional()
     @Inject(INCIDENT_CORRELATOR)
     private readonly correlator?: IncidentCorrelator,
+    @Optional()
+    @Inject(PROCESSING_LEDGER)
+    private readonly ledger?: ProcessingLedger,
   ) {}
   async onModuleInit() {
-    this.stateSweep = setInterval(() => this.state.sweep(), 30_000);
+    this.stateSweep = setInterval(() => {
+      void this.state.sweep();
+    }, 30_000);
     this.stateSweep.unref();
     this.subscription = await this.queue.subscribe(
       RAW_TELEMETRY_TOPIC,
@@ -66,6 +75,14 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
       );
     }
     const event = parsed.data;
+    const redelivery = Number(message.headers?.deliveryAttempt ?? 1) > 1;
+    if (this.ledger && !(await this.ledger.begin(event.id, redelivery))) {
+      this.logger.log({
+        event: 'processor_duplicate_ignored',
+        event_id: event.id,
+      });
+      return;
+    }
     try {
       const processed = {
         ...event,
@@ -120,11 +137,12 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
       });
       const state =
         processed.kind === 'metric'
-          ? this.state.update(processed)
-          : this.state.findForTelemetry(processed);
+          ? await this.state.update(processed)
+          : await this.state.findForTelemetry(processed);
       if (state)
         this.logger.log({ event: 'resource_state_updated', resource: state });
-      for (const anomaly of this.rules?.evaluate(processed, state) ?? []) {
+      for (const anomaly of (await this.rules?.evaluate(processed, state)) ??
+        []) {
         this.logger.log({
           event:
             anomaly.status === 'RESOLVED'
@@ -146,15 +164,31 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
           evidence: anomaly.evidence,
           timestamp: anomaly.timestamp,
         });
+        await this.publishOperationalEvent(
+          anomaly.status === 'RESOLVED'
+            ? 'anomalies.resolved'
+            : 'anomalies.detected',
+          `${anomaly.anomalyId}:${anomaly.status}:${anomaly.timestamp}`,
+          anomaly,
+        );
         const change = await this.correlator?.correlate(anomaly);
-        if (change) this.logIncident(change);
+        if (change) {
+          this.logIncident(change);
+          await this.publishIncident(change);
+        }
       }
       for (const change of (await this.correlator?.advance(
         processed.timestamp,
-      )) ?? [])
+      )) ?? []) {
         this.logIncident(change);
+        await this.publishIncident(change);
+      }
+      await this.rules?.commit?.();
+      await this.ledger?.complete(event.id);
       return processed;
     } catch {
+      await this.rules?.rollback?.();
+      await this.ledger?.release(event.id);
       this.logger.error({
         event: 'processor_failed',
         event_id: event.id,
@@ -187,6 +221,32 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
       first_seen: incident.firstSeen,
       last_seen: incident.lastSeen,
       resolved_at: incident.resolvedAt,
+    });
+  }
+
+  private async publishIncident(change: IncidentChange): Promise<void> {
+    await this.publishOperationalEvent(
+      'incidents.updated',
+      `${change.incident.id}:${change.type}:${change.incident.lastSeen}:${change.incident.resolvedAt ?? ''}`,
+      change,
+    );
+  }
+
+  private async publishOperationalEvent(
+    topic: string,
+    id: string,
+    payload: unknown,
+  ): Promise<void> {
+    // Unit-test adapter intentionally requires subscribers; production JetStream persists without one.
+    if (this.queue.deliveryGuarantee !== 'at-least-once') return;
+    await this.queue.publish(topic, {
+      id,
+      payload,
+      headers: {
+        eventType: topic,
+        schemaVersion: '1',
+        source: 'faultline-processor',
+      },
     });
   }
 }

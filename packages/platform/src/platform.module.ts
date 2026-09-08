@@ -87,6 +87,24 @@ export class PlatformModule {
                   { infer: true },
                 ),
               }),
+              infrastructure: Object.freeze({
+                databaseUrl: config.get('DATABASE_URL', { infer: true }),
+                redisUrl: config.get('REDIS_URL', { infer: true }),
+                brokerUrl: config.get('BROKER_URL', { infer: true }),
+                brokerClientId: `${config.get('BROKER_CLIENT_ID', { infer: true })}-${application}`,
+                brokerConsumerGroup: config.get('BROKER_CONSUMER_GROUP', {
+                  infer: true,
+                }),
+                brokerMaxDeliver: config.get('BROKER_MAX_DELIVER', {
+                  infer: true,
+                }),
+                brokerRetryDelayMs: config.get('BROKER_RETRY_DELAY_MS', {
+                  infer: true,
+                }),
+                resourceStateTtlMs: config.get('RESOURCE_STATE_TTL_MS', {
+                  infer: true,
+                }),
+              }),
             }),
         },
         {

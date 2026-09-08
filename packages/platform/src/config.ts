@@ -43,6 +43,18 @@ const environmentSchema = z
     PORT: z.coerce.number().int().min(1).max(65535),
     LOG_LEVEL: z.enum(logLevels).default('log'),
     FAULTLINE_DEV_AGENT_TOKEN: z.string().min(1).optional(),
+    DATABASE_URL: z.string().url().optional(),
+    REDIS_URL: z.string().url().optional(),
+    BROKER_URL: z.string().url().optional(),
+    BROKER_CLIENT_ID: z.string().trim().min(1).default('faultline'),
+    BROKER_CONSUMER_GROUP: z
+      .string()
+      .trim()
+      .min(1)
+      .default('faultline-processors'),
+    BROKER_MAX_DELIVER: z.coerce.number().int().min(1).max(100).default(5),
+    BROKER_RETRY_DELAY_MS: z.coerce.number().int().min(100).default(1000),
+    RESOURCE_STATE_TTL_MS: z.coerce.number().int().min(1000).default(120000),
     ANOMALY_MEMORY_WARNING_PERCENT: z.coerce
       .number()
       .min(1)
@@ -108,6 +120,18 @@ export interface ApplicationConfig {
   readonly enabledComponents: readonly string[];
   readonly anomalyThresholds: AnomalyThresholds;
   readonly incidentCorrelation: IncidentCorrelationConfig;
+  readonly infrastructure: InfrastructureConfig;
+}
+
+export interface InfrastructureConfig {
+  databaseUrl?: string;
+  redisUrl?: string;
+  brokerUrl?: string;
+  brokerClientId: string;
+  brokerConsumerGroup: string;
+  brokerMaxDeliver: number;
+  brokerRetryDelayMs: number;
+  resourceStateTtlMs: number;
 }
 
 export interface AnomalyThresholds {
@@ -143,6 +167,23 @@ export function validateEnvironment(
           ...new Set(result.error.issues.map((issue) => issue.path.join('.'))),
         ].join(', '),
     );
+  }
+  if (result.data.NODE_ENV !== 'test') {
+    const missing = [
+      ...((application === 'api' || application === 'processor') &&
+      !result.data.DATABASE_URL
+        ? ['DATABASE_URL']
+        : []),
+      ...(application === 'processor' && !result.data.REDIS_URL
+        ? ['REDIS_URL']
+        : []),
+      ...((application === 'ingestion' || application === 'processor') &&
+      !result.data.BROKER_URL
+        ? ['BROKER_URL']
+        : []),
+    ];
+    if (missing.length)
+      throw new Error('Invalid environment fields: ' + missing.join(', '));
   }
   return result.data;
 }
