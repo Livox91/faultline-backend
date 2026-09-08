@@ -22,10 +22,10 @@ const samples = [
       raw: { code: 'ETIMEDOUT' },
     },
   ],
-  ['metrics', { name: 'container_cpu_usage', value: 0.42, unit: 'cores' }],
+  ['metrics', { name: 'k8s.container.cpu.usage', value: 0.42, unit: 'cores' }],
   [
     'metrics',
-    { name: 'container_memory_usage', value: 268435456, unit: 'bytes' },
+    { name: 'k8s.container.memory.usage', value: 268435456, unit: 'By' },
   ],
   ...['BackOff', 'OOMKilled'].map((reason) => [
     'kubernetes-events',

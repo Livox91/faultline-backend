@@ -75,6 +75,58 @@ for (const [index, app] of ['api', 'ingestion', 'processor'].entries()) {
       () => validate({ ...validEnvironment, NODE_ENV: 'invalid' }),
       /NODE_ENV/,
     );
+    assert.equal(validate(validEnvironment).ANOMALY_MEMORY_WARNING_PERCENT, 85);
+    assert.equal(validate(validEnvironment).ANOMALY_RESTART_THRESHOLD, 3);
+    assert.equal(
+      validate(validEnvironment).INCIDENT_CORRELATION_WINDOW_MS,
+      600000,
+    );
+    assert.equal(
+      validate(validEnvironment).INCIDENT_STABILIZATION_PERIOD_MS,
+      120000,
+    );
+    assert.throws(
+      () =>
+        validate({
+          ...validEnvironment,
+          ANOMALY_MEMORY_WARNING_PERCENT: '95',
+          ANOMALY_MEMORY_CRITICAL_PERCENT: '95',
+        }),
+      /ANOMALY_MEMORY_CRITICAL_PERCENT/,
+    );
+    assert.throws(
+      () =>
+        validate({
+          ...validEnvironment,
+          ANOMALY_CPU_WARNING_PERCENT: '90',
+          ANOMALY_CPU_CRITICAL_PERCENT: '80',
+        }),
+      /ANOMALY_CPU_CRITICAL_PERCENT/,
+    );
+    assert.throws(
+      () =>
+        validate({
+          ...validEnvironment,
+          ANOMALY_RESTART_THRESHOLD: '1',
+        }),
+      /ANOMALY_RESTART_THRESHOLD/,
+    );
+    assert.throws(
+      () =>
+        validate({
+          ...validEnvironment,
+          INCIDENT_CORRELATION_WINDOW_MS: '999',
+        }),
+      /INCIDENT_CORRELATION_WINDOW_MS/,
+    );
+    assert.throws(
+      () =>
+        validate({
+          ...validEnvironment,
+          INCIDENT_STABILIZATION_PERIOD_MS: '-1',
+        }),
+      /INCIDENT_STABILIZATION_PERIOD_MS/,
+    );
   });
 
   test(`${app}: resolves all shared packages from its workspace`, () => {
@@ -191,6 +243,7 @@ for (const [index, app] of ['api', 'ingestion', 'processor'].entries()) {
               'logging',
               'health',
               'system-info',
+              'incidents',
             ],
           });
         } else {

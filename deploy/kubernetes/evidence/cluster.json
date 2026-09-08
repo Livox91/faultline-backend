@@ -1,0 +1,45 @@
+{
+  "verifiedAt": "2026-09-08T11:59:27.546489+00:00",
+  "nodes": [
+    {
+      "name": "faultline-control-plane",
+      "version": "v1.32.2",
+      "ready": true
+    },
+    {
+      "name": "faultline-worker",
+      "version": "v1.32.2",
+      "ready": true
+    }
+  ],
+  "pods": [
+    {
+      "name": "faultline-collector-events-66dc9b9fdc-dfccs",
+      "node": "faultline-worker",
+      "phase": "Running",
+      "ready": true,
+      "restarts": 0
+    },
+    {
+      "name": "faultline-collector-logs-47vx2",
+      "node": "faultline-worker",
+      "phase": "Running",
+      "ready": true,
+      "restarts": 0
+    },
+    {
+      "name": "faultline-collector-logs-4gjwv",
+      "node": "faultline-control-plane",
+      "phase": "Running",
+      "ready": true,
+      "restarts": 0
+    },
+    {
+      "name": "faultline-dev-69b486b6dd-d74zf",
+      "node": "faultline-worker",
+      "phase": "Running",
+      "ready": true,
+      "restarts": 0
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telemetry-demo-code
+  namespace: faultline-demo
+data:
+  demo.cjs: |
+    const http = require('node:http');
+    const fs = require('node:fs');
+    const bounded = (value, fallback, max) => Number.isFinite(Number(value)) ? Math.max(0, Math.min(max, Number(value))) : fallback;
+    const maxMemoryMiB = bounded(process.env.MAX_MEMORY_MIB, 24, 48);
+    const cpuMs = bounded(process.env.CPU_BUSY_MS, 3, 5);
+    const memory = [];
+    const payload = Buffer.alloc(16 * 1024, 'a');
+    http.createServer((req, res) => {
+      if (req.url === '/ready') {
+        res.statusCode = fs.existsSync('/control/not-ready') ? 503 : 200;
+        return res.end('readiness');
+      }
+      res.end(payload);
+    }).listen(8080, '0.0.0.0');
+    setInterval(() => {
+      const until = performance.now() + cpuMs;
+      while (performance.now() < until) Math.sqrt(Math.random());
+      if (fs.existsSync('/control/restart')) {
+        fs.unlinkSync('/control/restart');
+        console.error('ERROR faultline-demo requested one bounded restart');
+        process.exit(1);
+      }
+      const req = http.get('http://telemetry-demo.faultline-demo.svc:8080/payload', { agent: false, timeout: 1000 }, res => res.resume());
+      req.on('timeout', () => req.destroy());
+      req.on('error', () => {});
+    }, 1000);
+    setInterval(() => {
+      if (memory.length < maxMemoryMiB) memory.push(Buffer.alloc(1024 * 1024, 1));
+      console.log('INFO faultline-demo normal allocatedMiB=' + memory.length);
+      console.error('ERROR faultline-demo simulated log message');
+    }, 5000);
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-demo
+  namespace: faultline-demo
+spec:
+  selector:
+    app: telemetry-demo
+  ports:
+    - port: 8080
+      targetPort: 8080

@@ -1,0 +1,154 @@
+{
+  "startedAt": "2026-09-08T11:57:07.124529Z",
+  "before": {
+    "logs": {
+      "health": {
+        "status": "Server available",
+        "upSince": "2026-09-08T11:54:02.104418181Z",
+        "uptime": "3m5.515114084s"
+      },
+      "metrics": {
+        "otelcol_exporter_queue_capacity": 128.0,
+        "otelcol_exporter_queue_size": 0.0,
+        "otelcol_exporter_sent_log_records_total": 137.0,
+        "otelcol_receiver_accepted_log_records_total": 137.0,
+        "otelcol_receiver_failed_log_records_total": 0.0,
+        "otelcol_receiver_refused_log_records_total": 0.0
+      }
+    },
+    "events": {
+      "health": {
+        "status": "Server available",
+        "upSince": "2026-09-08T11:54:02.151929378Z",
+        "uptime": "3m5.526061285s"
+      },
+      "metrics": {
+        "otelcol_exporter_queue_capacity": 128.0,
+        "otelcol_exporter_queue_size": 0.0,
+        "otelcol_exporter_sent_log_records_total": 6.0,
+        "otelcol_receiver_accepted_log_records_total": 6.0,
+        "otelcol_receiver_failed_log_records_total": 0.0,
+        "otelcol_receiver_refused_log_records_total": 0.0
+      }
+    }
+  },
+  "demoBefore": {
+    "name": "telemetry-demo-875d7995d-t8jql",
+    "uid": "4c649f1a-119c-4f73-a7bd-a9a7bfc852d6",
+    "phase": "Running",
+    "restarts": 0,
+    "lastLogs": "INFO faultline-demo normal sequence=31\nERROR faultline-demo simulated failure sequence=31"
+  },
+  "outageStartedAt": "2026-09-08T11:57:09.828834Z",
+  "during": {
+    "logs": {
+      "health": {
+        "status": "Server available",
+        "upSince": "2026-09-08T11:54:02.104418181Z",
+        "uptime": "3m37.756760028s"
+      },
+      "metrics": {
+        "otelcol_exporter_queue_capacity": 128.0,
+        "otelcol_exporter_queue_size": 6.0,
+        "otelcol_exporter_sent_log_records_total": 137.0,
+        "otelcol_receiver_accepted_log_records_total": 167.0,
+        "otelcol_receiver_failed_log_records_total": 0.0,
+        "otelcol_receiver_refused_log_records_total": 0.0
+      }
+    },
+    "events": {
+      "health": {
+        "status": "Server available",
+        "upSince": "2026-09-08T11:54:02.151929378Z",
+        "uptime": "3m37.735743842s"
+      },
+      "metrics": {
+        "otelcol_exporter_queue_capacity": 128.0,
+        "otelcol_exporter_queue_size": 1.0,
+        "otelcol_exporter_sent_log_records_total": 6.0,
+        "otelcol_receiver_accepted_log_records_total": 9.0,
+        "otelcol_receiver_failed_log_records_total": 0.0,
+        "otelcol_receiver_refused_log_records_total": 0.0
+      }
+    }
+  },
+  "demoDuring": {
+    "name": "telemetry-demo-875d7995d-t8jql",
+    "uid": "4c649f1a-119c-4f73-a7bd-a9a7bfc852d6",
+    "phase": "Running",
+    "restarts": 0,
+    "lastLogs": "INFO faultline-demo normal sequence=38\nERROR faultline-demo simulated failure sequence=38"
+  },
+  "retryLogCount": 14,
+  "restoringAt": "2026-09-08T11:57:40.556773Z",
+  "after": {
+    "logs": {
+      "health": {
+        "status": "Server available",
+        "upSince": "2026-09-08T11:54:02.104418181Z",
+        "uptime": "4m7.404351782s"
+      },
+      "metrics": {
+        "otelcol_exporter_queue_capacity": 128.0,
+        "otelcol_exporter_queue_size": 0.0,
+        "otelcol_exporter_sent_log_records_total": 185.0,
+        "otelcol_receiver_accepted_log_records_total": 191.0,
+        "otelcol_receiver_failed_log_records_total": 0.0,
+        "otelcol_receiver_refused_log_records_total": 0.0
+      }
+    },
+    "events": {
+      "health": {
+        "status": "Server available",
+        "upSince": "2026-09-08T11:54:02.151929378Z",
+        "uptime": "4m7.399549222s"
+      },
+      "metrics": {
+        "otelcol_exporter_queue_capacity": 128.0,
+        "otelcol_exporter_queue_size": 0.0,
+        "otelcol_exporter_sent_log_records_total": 17.0,
+        "otelcol_receiver_accepted_log_records_total": 17.0,
+        "otelcol_receiver_failed_log_records_total": 0.0,
+        "otelcol_receiver_refused_log_records_total": 0.0
+      }
+    }
+  },
+  "recoveredBufferedLog": {
+    "event": "telemetry_processed",
+    "event_id": "ae4dd235-8396-4050-a71f-a965bdc9117e",
+    "type": "LOG",
+    "cluster_id": "development-cluster",
+    "service": "telemetry-demo",
+    "namespace": "faultline-demo",
+    "pod": "telemetry-demo-875d7995d-t8jql",
+    "container": "demo",
+    "node": "faultline-worker",
+    "workload": "telemetry-demo-875d7995d",
+    "pod_uid": "4c649f1a-119c-4f73-a7bd-a9a7bfc852d6",
+    "container_id": "9811365f34f4c91409c27d0bf158f666dc3abebe37e2f8c2c7cdefbc3899f230",
+    "severity": "unknown",
+    "stream": "stderr",
+    "telemetry_message": "ERROR faultline-demo simulated failure sequence=33",
+    "timestamp": "2026-09-08T11:57:13.799568658Z",
+    "ingestedAt": "2026-09-08T11:58:07.471Z",
+    "processedAt": "2026-09-08T11:58:07.473Z",
+    "processor": "faultline-processor",
+    "status": "processed"
+  },
+  "demoAfter": {
+    "name": "telemetry-demo-875d7995d-t8jql",
+    "uid": "4c649f1a-119c-4f73-a7bd-a9a7bfc852d6",
+    "phase": "Running",
+    "restarts": 0,
+    "lastLogs": "INFO faultline-demo normal sequence=44\nERROR faultline-demo simulated failure sequence=44"
+  },
+  "checks": {
+    "demoContinuedWithoutRestart": true,
+    "queueGrew": true,
+    "retriesObserved": true,
+    "queueDrained": true,
+    "bufferedLogReachedProcessor": true,
+    "collectorsStayedHealthy": true
+  },
+  "completedAt": "2026-09-08T11:58:10.002337Z"
+}

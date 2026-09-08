@@ -1,0 +1,15 @@
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json tsconfig*.json ./
+COPY packages ./packages
+COPY apps ./apps
+COPY scripts ./scripts
+RUN npm ci && npm run build && npm prune --omit=dev
+
+FROM node:22-alpine
+WORKDIR /app
+COPY --from=build --chown=node:node /app /app
+USER node
+ENV NODE_ENV=development APP_VERSION=kubernetes-dev
+EXPOSE 3001 3002
+CMD ["node", "scripts/dev-pipeline.cjs"]

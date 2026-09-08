@@ -1,3 +1,4 @@
+import { OtlpController } from './otlp/otlp.controller';
 import {
   TelemetryController,
   CLUSTER_AUTHENTICATOR,
@@ -9,7 +10,7 @@ import { PlatformModule } from '@faultline/platform';
 import { resolve } from 'node:path';
 
 @Module({
-  controllers: [TelemetryController],
+  controllers: [TelemetryController, OtlpController],
   providers: [
     { provide: QUEUE, useFactory: getDevelopmentQueue },
     {

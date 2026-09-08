@@ -21,7 +21,10 @@
     "dev:processor": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/processor/dist/main.js\"",
     "test": "npm run build && node --test tests/*.test.cjs",
     "dev:pipeline": "npm run build && node scripts/dev-pipeline.cjs",
-    "telemetry:sample": "node scripts/sample-telemetry.cjs"
+    "telemetry:sample": "node scripts/sample-telemetry.cjs",
+    "verify:kubernetes": "node scripts/verify-kubernetes.cjs",
+    "validate:collector": "node scripts/validate-collector.cjs",
+    "verify:metrics": "node scripts/verify-metrics.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

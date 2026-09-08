@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: faultline-collector-logs
+  namespace: faultline-system
+spec:
+  selector:
+    matchLabels:
+      app: faultline-collector-logs
+  template:
+    metadata:
+      labels:
+        app: faultline-collector-logs
+    spec:
+      serviceAccountName: faultline-logs
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - operator: Exists
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.147.0
+          args: ['--config=/etc/otelcol/config.yaml']
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          env:
+            - name: KUBE_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            # Only override this in a dedicated local cluster with self-signed kubelet certificates.
+            - name: KUBELET_INSECURE_SKIP_VERIFY
+              value: 'false'
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: FAULTLINE_CLUSTER_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: faultline-connection
+                  key: cluster-id
+            - name: FAULTLINE_METRICS_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: faultline-connection
+                  key: metrics-endpoint
+            - name: FAULTLINE_LOGS_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: faultline-connection
+                  key: logs-endpoint
+            - name: FAULTLINE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: faultline-agent
+                  key: token
+          ports:
+            - name: health
+              containerPort: 13133
+            - name: metrics
+              containerPort: 8888
+          startupProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: faultline-collector-logs-config
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory

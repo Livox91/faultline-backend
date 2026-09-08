@@ -1,0 +1,143 @@
+receivers:
+  k8s_cluster:
+    auth_type: serviceAccount
+    collection_interval: 15s
+    node_conditions_to_report:
+      [Ready, MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable]
+  k8sobjects/state:
+    auth_type: serviceAccount
+    objects:
+      - name: pods
+        group: ''
+        mode: pull
+        interval: 15s
+      - name: deployments
+        group: apps
+        mode: pull
+        interval: 15s
+  k8sobjects:
+    auth_type: serviceAccount
+    objects:
+      - name: events
+        group: ''
+        mode: watch
+        exclude_watch_type: [DELETED, BOOKMARK, ERROR]
+processors:
+  k8sattributes:
+    auth_type: serviceAccount
+    extract:
+      deployment_name_from_replicaset: false
+      metadata:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.pod.uid
+        - k8s.node.name
+        - k8s.container.name
+        - container.id
+        - k8s.deployment.name
+        - k8s.replicaset.name
+        - k8s.statefulset.name
+        - k8s.daemonset.name
+        - k8s.job.name
+      labels:
+        - tag_name: k8s.pod.label.app.kubernetes.io/name
+          key: app.kubernetes.io/name
+          from: pod
+        - tag_name: k8s.pod.label.app.kubernetes.io/component
+          key: app.kubernetes.io/component
+          from: pod
+    pod_association:
+      - sources:
+          - from: resource_attribute
+            name: k8s.pod.uid
+  transform/state:
+    error_mode: propagate
+    log_statements:
+      - context: log
+        statements:
+          - keep_keys(body, ["kind", "apiVersion", "metadata", "status"])
+          - keep_keys(body["metadata"], ["name", "namespace", "uid"])
+  resource/state:
+    attributes:
+      - key: faultline.source
+        value: kubernetes-state
+        action: upsert
+  filter/metrics:
+    error_mode: propagate
+    metrics:
+      metric:
+        - 'not IsMatch(name, "^k8s[.](container[.](cpu_limit|cpu_request|memory_limit|memory_request|ready|restarts)|pod[.]phase|deployment[.](desired|available)|node[.]condition_.*)$")'
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 192
+    spike_limit_mib: 48
+  batch:
+    timeout: 2s
+    send_batch_size: 32
+    send_batch_max_size: 32
+  resource/cluster:
+    attributes:
+      - key: faultline.cluster.id
+        value: ${env:FAULTLINE_CLUSTER_ID}
+        action: upsert
+      - key: faultline.source
+        value: kubernetes-events
+        action: upsert
+exporters:
+  otlp_http/faultline:
+    metrics_endpoint: ${env:FAULTLINE_METRICS_ENDPOINT}
+    logs_endpoint: ${env:FAULTLINE_LOGS_ENDPOINT}
+    encoding: json
+    compression: gzip
+    headers:
+      X-Faultline-Cluster-ID: ${env:FAULTLINE_CLUSTER_ID}
+      X-Faultline-Agent-Token: ${env:FAULTLINE_AGENT_TOKEN}
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      num_consumers: 1
+      queue_size: 128
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+      encoding: json
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    logs:
+      receivers: [k8sobjects]
+      processors: [memory_limiter, resource/cluster, batch]
+      exporters: [otlp_http/faultline]
+
+    logs/state:
+      receivers: [k8sobjects/state]
+      processors:
+        [
+          memory_limiter,
+          transform/state,
+          resource/cluster,
+          resource/state,
+          batch,
+        ]
+      exporters: [otlp_http/faultline]
+    metrics:
+      receivers: [k8s_cluster]
+      processors:
+        [memory_limiter, filter/metrics, k8sattributes, resource/cluster, batch]
+      exporters: [otlp_http/faultline]

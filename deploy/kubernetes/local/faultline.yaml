@@ -1,0 +1,71 @@
+# Local development only: shared in-memory queue requires both apps in one process.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: faultline-dev
+  namespace: faultline-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: faultline-dev
+  template:
+    metadata:
+      labels:
+        app: faultline-dev
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: faultline
+          image: faultline:dev
+          imagePullPolicy: Never
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: NODE_ENV
+              value: development
+            - name: APP_VERSION
+              value: kubernetes-dev
+            - name: FAULTLINE_LOG_DEMO_MESSAGES
+              value: 'true'
+            - name: FAULTLINE_DEV_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: faultline-agent
+                  key: token
+          ports:
+            - name: ingestion
+              containerPort: 3001
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: ingestion
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: '1'
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: faultline-ingestion
+  namespace: faultline-system
+spec:
+  selector:
+    app: faultline-dev
+  ports:
+    - port: 3001
+      targetPort: ingestion

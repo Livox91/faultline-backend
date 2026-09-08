@@ -10,6 +10,7 @@ import { ApplicationLogger } from './logger';
 export async function startApplication(
   application: ApplicationName,
   loadModule: () => Promise<Type<unknown>>,
+  configure?: (app: INestApplication) => void,
 ): Promise<void> {
   const startupLogger = new ApplicationLogger(application);
   let app: INestApplication | undefined;
@@ -21,6 +22,7 @@ export async function startApplication(
       bufferLogs: true,
       abortOnError: false,
     });
+    configure?.(app);
     const config = app.get<ApplicationConfig>(APPLICATION_CONFIG);
     const logger = app.get(ApplicationLogger);
     app.useLogger(logger);

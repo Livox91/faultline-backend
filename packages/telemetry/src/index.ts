@@ -45,6 +45,7 @@ export const metricEventSchema = telemetryMetadataSchema.extend({
   value: z.number().finite(),
   unit: identifier.optional(),
   metricType: z.enum(['gauge', 'counter']),
+  category: z.enum(['usage', 'configuration', 'state']).optional(),
 });
 
 export const kubernetesEventSchema = telemetryMetadataSchema
@@ -137,3 +138,6 @@ export const ingestedTelemetryEventSchema = telemetryEventSchema.refine(
   { message: 'ingestedAt is required', path: ['ingestedAt'] },
 );
 export const RAW_TELEMETRY_TOPIC = 'telemetry.raw';
+
+export * from './metrics';
+export * from './workload-state';

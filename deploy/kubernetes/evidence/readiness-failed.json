@@ -1,0 +1,41 @@
+{
+  "event": "resource_state_updated",
+  "resource": {
+    "clusterId": "development-cluster",
+    "scope": "container",
+    "namespace": "faultline-demo",
+    "pod": "telemetry-demo-cff745c9b-c9pqw",
+    "podUid": "6a08813a-efc4-44db-8b7f-4b52fdd0e2ce",
+    "container": "demo",
+    "workload": "telemetry-demo-cff745c9b",
+    "node": "faultline-worker",
+    "cpuUsage": 0.005966225,
+    "containerState": "running",
+    "terminationReason": null,
+    "lastTerminationReason": null,
+    "cpuLimit": 0.25,
+    "cpuRequest": 0.01,
+    "memoryLimit": 201326592,
+    "memoryRequest": 67108864,
+    "ready": false,
+    "previousRestartCount": 0,
+    "restartCount": 0,
+    "restartDelta": 0,
+    "restartCounterReset": false,
+    "memoryUsage": 38313984,
+    "cpuUtilizationPercent": 2.39,
+    "memoryUtilizationPercent": 19.03,
+    "updatedAt": "2026-09-08T12:26:50.087026601Z",
+    "fieldTimestamps": {
+      "cpuUsage": "2026-09-08T12:26:50.087026601Z",
+      "containerStatus": "2026-09-08T12:26:46.543277212Z",
+      "cpuLimit": "2026-09-08T12:26:46.635980756Z",
+      "cpuRequest": "2026-09-08T12:26:46.635980756Z",
+      "memoryLimit": "2026-09-08T12:26:46.635980756Z",
+      "memoryRequest": "2026-09-08T12:26:46.635980756Z",
+      "ready": "2026-09-08T12:26:46.635980756Z",
+      "restart": "2026-09-08T12:26:46.635980756Z",
+      "memoryUsage": "2026-09-08T12:26:50.087026601Z"
+    }
+  }
+}

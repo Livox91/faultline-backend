@@ -1,0 +1,111 @@
+{
+  "status": "verified",
+  "observedAt": "2026-09-08T12:37:08.755Z",
+  "context": "kind-faultline",
+  "cluster": "development-cluster",
+  "kubernetes": {
+    "pod": "telemetry-demo-cff745c9b-c9pqw",
+    "uid": "6a08813a-efc4-44db-8b7f-4b52fdd0e2ce",
+    "container": "demo",
+    "resources": {
+      "limits": {
+        "cpu": "250m",
+        "memory": "192Mi"
+      },
+      "requests": {
+        "cpu": "10m",
+        "memory": "64Mi"
+      }
+    },
+    "status": {
+      "containerID": "containerd://8dbbacb9518ff32fc9fa43d01fd8c3569b47ab86e768bc9e276afcb8ece2311b",
+      "image": "docker.io/library/faultline:dev",
+      "imageID": "sha256:6bcca83313a22f8ac7dbf2dac77ec0a6335c412e4adbdc32558b3297bd4d7962",
+      "lastState": {
+        "terminated": {
+          "containerID": "containerd://1ee9e619e4e1ecc261512c129e66f49730305b48ff2faaa2f07f0b8c0ac6e6d9",
+          "exitCode": 1,
+          "finishedAt": "2026-09-08T12:35:14Z",
+          "reason": "Error",
+          "startedAt": "2026-09-08T12:27:01Z"
+        }
+      },
+      "name": "demo",
+      "ready": true,
+      "restartCount": 2,
+      "started": true,
+      "state": {
+        "running": {
+          "startedAt": "2026-09-08T12:35:30Z"
+        }
+      },
+      "volumeMounts": [
+        {
+          "mountPath": "/demo",
+          "name": "code",
+          "readOnly": true,
+          "recursiveReadOnly": "Disabled"
+        },
+        {
+          "mountPath": "/control",
+          "name": "control"
+        }
+      ]
+    }
+  },
+  "coverage": {
+    "podCpu": true,
+    "podMemory": true,
+    "nodeCpu": true,
+    "nodeMemory": true,
+    "networkReceive": true,
+    "networkTransmit": true,
+    "filesystem": true,
+    "nodeCondition": true,
+    "deploymentDesired": true,
+    "deploymentAvailable": true,
+    "deploymentUnavailable": true,
+    "podReady": true,
+    "podPhase": true,
+    "cpuRequest": true,
+    "memoryRequest": true
+  },
+  "resourceState": {
+    "clusterId": "development-cluster",
+    "scope": "container",
+    "namespace": "faultline-demo",
+    "pod": "telemetry-demo-cff745c9b-c9pqw",
+    "podUid": "6a08813a-efc4-44db-8b7f-4b52fdd0e2ce",
+    "container": "demo",
+    "workload": "telemetry-demo",
+    "node": "faultline-worker",
+    "containerState": "running",
+    "terminationReason": null,
+    "lastTerminationReason": "Error",
+    "cpuLimit": 0.25,
+    "cpuRequest": 0.01,
+    "memoryLimit": 201326592,
+    "memoryRequest": 67108864,
+    "ready": true,
+    "previousRestartCount": 2,
+    "restartCount": 2,
+    "restartDelta": 0,
+    "restartCounterReset": false,
+    "cpuUsage": 0.008336909,
+    "memoryUsage": 28647424,
+    "cpuUtilizationPercent": 3.33,
+    "memoryUtilizationPercent": 14.23,
+    "updatedAt": "2026-09-08T12:37:08.359695451Z",
+    "fieldTimestamps": {
+      "containerStatus": "2026-09-08T12:36:53.002372224Z",
+      "cpuLimit": "2026-09-08T12:37:08.357085721Z",
+      "cpuRequest": "2026-09-08T12:37:08.357085721Z",
+      "memoryLimit": "2026-09-08T12:37:08.357085721Z",
+      "memoryRequest": "2026-09-08T12:37:08.357085721Z",
+      "ready": "2026-09-08T12:37:08.357085721Z",
+      "restart": "2026-09-08T12:37:08.357085721Z",
+      "cpuUsage": "2026-09-08T12:37:08.359695451Z",
+      "memoryUsage": "2026-09-08T12:36:53.358929867Z"
+    }
+  }
+}

@@ -1,0 +1,50 @@
+[
+  {
+    "account": "faultline-logs",
+    "resource": "pods",
+    "verb": "list",
+    "allowed": true
+  },
+  {
+    "account": "faultline-logs",
+    "resource": "namespaces",
+    "verb": "watch",
+    "allowed": true
+  },
+  {
+    "account": "faultline-events",
+    "resource": "events",
+    "verb": "watch",
+    "allowed": true
+  },
+  {
+    "account": "faultline-logs",
+    "resource": "secrets",
+    "verb": "get",
+    "allowed": false
+  },
+  {
+    "account": "faultline-events",
+    "resource": "secrets",
+    "verb": "get",
+    "allowed": false
+  },
+  {
+    "account": "faultline-logs",
+    "resource": "pods",
+    "verb": "delete",
+    "allowed": false
+  },
+  {
+    "account": "faultline-events",
+    "resource": "events",
+    "verb": "create",
+    "allowed": false
+  },
+  {
+    "account": "faultline-logs",
+    "resource": "nodes",
+    "verb": "get",
+    "allowed": false
+  }
+]

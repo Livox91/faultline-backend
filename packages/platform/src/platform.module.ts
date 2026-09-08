@@ -50,6 +50,43 @@ export class PlatformModule {
               enabledComponents: Object.freeze([
                 ...applicationDefinitions[application].components,
               ]),
+              anomalyThresholds: Object.freeze({
+                memoryWarningPercent: config.get(
+                  'ANOMALY_MEMORY_WARNING_PERCENT',
+                  { infer: true },
+                ),
+                memoryCriticalPercent: config.get(
+                  'ANOMALY_MEMORY_CRITICAL_PERCENT',
+                  { infer: true },
+                ),
+                cpuWarningPercent: config.get('ANOMALY_CPU_WARNING_PERCENT', {
+                  infer: true,
+                }),
+                cpuCriticalPercent: config.get('ANOMALY_CPU_CRITICAL_PERCENT', {
+                  infer: true,
+                }),
+                restartThreshold: config.get('ANOMALY_RESTART_THRESHOLD', {
+                  infer: true,
+                }),
+                notReadyDurationMs: config.get(
+                  'ANOMALY_NOT_READY_DURATION_MS',
+                  { infer: true },
+                ),
+                deploymentDegradationDurationMs: config.get(
+                  'ANOMALY_DEPLOYMENT_DEGRADATION_DURATION_MS',
+                  { infer: true },
+                ),
+              }),
+              incidentCorrelation: Object.freeze({
+                correlationWindowMs: config.get(
+                  'INCIDENT_CORRELATION_WINDOW_MS',
+                  { infer: true },
+                ),
+                stabilizationPeriodMs: config.get(
+                  'INCIDENT_STABILIZATION_PERIOD_MS',
+                  { infer: true },
+                ),
+              }),
             }),
         },
         {

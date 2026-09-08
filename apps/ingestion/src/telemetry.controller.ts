@@ -19,6 +19,9 @@ import {
 import { QUEUE, QueueProducer } from '@faultline/queue';
 import {
   RAW_TELEMETRY_TOPIC,
+  canonicalMetricName,
+  canonicalMetricUnit,
+  metricCategory,
   telemetryEventSchema,
   telemetryRequestSchemas,
 } from '@faultline/telemetry';
@@ -96,59 +99,87 @@ export class TelemetryController {
       this.logger.warn({ event: 'telemetry_authentication_rejected' });
       throw error;
     }
-    const result = telemetryRequestSchemas[kind].safeParse(body);
-    if (!result.success) {
-      this.logger.warn({ event: 'telemetry_validation_rejected', kind });
-      throw new BadRequestException({
-        message: 'Malformed telemetry or unsupported telemetry type',
-        fields: result.error.issues.map((issue) => issue.path.join('.')),
-      });
-    }
-    const request = result.data;
-    if (request.clusterId !== undefined && request.clusterId !== clusterId)
-      throw new BadRequestException('Cluster ID does not match header');
-    const normalized = {
-      ...request,
-      kind,
-      clusterId,
-      id: request.id ?? randomUUID(),
-      ingestedAt: new Date().toISOString(),
-    };
-    if ('involvedObject' in request)
-      Object.assign(normalized, {
-        involvedObject: {
-          ...request.involvedObject,
-          clusterId: request.involvedObject.clusterId ?? clusterId,
-        },
-      });
-    const parsed = telemetryEventSchema.safeParse(normalized);
-    if (!parsed.success)
-      throw new BadRequestException(
-        'Malformed telemetry or resource cluster mismatch',
-      );
-    const event = parsed.data;
+    const isBatch =
+      kind === 'metric' &&
+      body !== null &&
+      typeof body === 'object' &&
+      'records' in body;
+    if (isBatch && Object.keys(body as object).some((key) => key !== 'records'))
+      throw new BadRequestException('Unknown batch fields');
+    const records = isBatch ? (body as { records: unknown }).records : [body];
+    if (!Array.isArray(records) || records.length < 1 || records.length > 256)
+      throw new BadRequestException('Expected 1?256 metric records');
+    // Validate the entire REST batch before publishing anything.
+    const events = records.map((record) => {
+      const result = telemetryRequestSchemas[kind].safeParse(record);
+      if (!result.success) {
+        this.logger.warn({ event: 'telemetry_validation_rejected', kind });
+        throw new BadRequestException({
+          message: 'Malformed telemetry or unsupported telemetry type',
+          fields: result.error.issues.map((issue) => issue.path.join('.')),
+        });
+      }
+      const request = result.data;
+      if (request.clusterId !== undefined && request.clusterId !== clusterId)
+        throw new BadRequestException('Cluster ID does not match header');
+      const normalized = {
+        ...request,
+        kind,
+        clusterId,
+        id: request.id ?? randomUUID(),
+        ingestedAt: new Date().toISOString(),
+      };
+      if ('involvedObject' in request)
+        Object.assign(normalized, {
+          involvedObject: {
+            ...request.involvedObject,
+            clusterId: request.involvedObject.clusterId ?? clusterId,
+          },
+        });
+      if (kind === 'metric' && 'name' in normalized) {
+        const name = canonicalMetricName(normalized.name as string);
+        Object.assign(normalized, {
+          name,
+          category: metricCategory(name),
+          ...('unit' in normalized && typeof normalized.unit === 'string'
+            ? { unit: canonicalMetricUnit(normalized.unit) }
+            : {}),
+        });
+      }
+      const parsed = telemetryEventSchema.safeParse(normalized);
+      if (!parsed.success)
+        throw new BadRequestException(
+          'Malformed telemetry or resource cluster mismatch',
+        );
+      return parsed.data;
+    });
     try {
-      await this.queue.publish(RAW_TELEMETRY_TOPIC, {
-        id: event.id,
-        payload: event,
-      });
+      for (const event of events)
+        await this.queue.publish(RAW_TELEMETRY_TOPIC, {
+          id: event.id,
+          payload: event,
+        });
     } catch {
-      this.logger.error({
-        event: 'telemetry_publish_failed',
-        event_id: event.id,
-      });
+      this.logger.error({ event: 'telemetry_publish_failed' });
       throw new ServiceUnavailableException('Telemetry queue unavailable');
     }
     this.logger.log({
       event: 'telemetry_accepted',
-      event_id: event.id,
-      type: event.kind,
-      cluster_id: event.clusterId,
+      type: kind,
+      cluster_id: clusterId,
+      accepted: events.length,
     });
-    return {
+    const acknowledgements = events.map((event) => ({
       status: 'accepted',
       eventId: event.id,
       ingestedAt: event.ingestedAt,
-    };
+    }));
+    return isBatch
+      ? {
+          status: 'accepted',
+          accepted: events.length,
+          records: acknowledgements,
+        }
+      : acknowledgements[0];
   }
 }

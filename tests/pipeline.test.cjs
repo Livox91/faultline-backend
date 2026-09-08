@@ -1,3 +1,6 @@
+const {
+  InMemoryResourceState,
+} = require('../apps/processor/dist/resource-state/in-memory-resource-state');
 require('reflect-metadata');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -20,6 +23,14 @@ const {
 const {
   TelemetryConsumer,
 } = require('../apps/processor/dist/telemetry.consumer');
+const {
+  InMemoryRuleEngine,
+  createDefaultRules,
+} = require('../apps/processor/dist/rules');
+const { InMemoryIncidentRepository } = require('@faultline/incidents');
+const {
+  IncidentCorrelationEngine,
+} = require('../apps/processor/dist/correlation');
 const timestamp = '2026-09-08T10:00:00Z';
 const log = { timestamp, level: 'info', message: 'hello', stream: 'stdout' };
 const headers = {
@@ -104,7 +115,11 @@ test('HTTP ingestion reaches processor for all variants and handles authenticati
     error: (value) => results.push(value),
   };
   const queue = new InMemoryQueue();
-  const consumer = new TelemetryConsumer(queue, logger);
+  const consumer = new TelemetryConsumer(
+    queue,
+    logger,
+    new InMemoryResourceState(),
+  );
   await consumer.onModuleInit();
   class TestModule {}
   Module({
@@ -217,6 +232,246 @@ test('HTTP ingestion reaches processor for all variants and handles authenticati
     await consumer.onModuleDestroy();
     assert.equal((await post('logs', log)).status, 503);
     assert.ok(!JSON.stringify(results).includes('test-secret'));
+  } finally {
+    await app.close();
+    await consumer.onModuleDestroy();
+    await queue.close();
+  }
+});
+
+test('Kubernetes memory failure flows through ingestion and correlation into one incident', async () => {
+  const entries = [];
+  const logger = {
+    log: (value) => entries.push(value),
+    warn: (value) => entries.push(value),
+    error: (value) => entries.push(value),
+  };
+  const queue = new InMemoryQueue();
+  const thresholds = {
+    memoryWarningPercent: 85,
+    memoryCriticalPercent: 95,
+    cpuWarningPercent: 80,
+    cpuCriticalPercent: 95,
+    restartThreshold: 3,
+    notReadyDurationMs: 0,
+    deploymentDegradationDurationMs: 120_000,
+  };
+  const incidents = new InMemoryIncidentRepository();
+  const correlator = new IncidentCorrelationEngine(incidents, {
+    correlationWindowMs: 10 * 60_000,
+    stabilizationPeriodMs: 60_000,
+  });
+  const consumer = new TelemetryConsumer(
+    queue,
+    logger,
+    new InMemoryResourceState(),
+    new InMemoryRuleEngine(createDefaultRules(), thresholds),
+    correlator,
+  );
+  await consumer.onModuleInit();
+  class AnomalyPipelineModule {}
+  Module({
+    controllers: [TelemetryController],
+    providers: [
+      { provide: QUEUE, useValue: queue },
+      { provide: ApplicationLogger, useValue: logger },
+      {
+        provide: APPLICATION_CONFIG,
+        useValue: { environment: 'test', developmentAgentToken: 'test-secret' },
+      },
+      {
+        provide: CLUSTER_AUTHENTICATOR,
+        useClass: DevelopmentClusterAuthenticator,
+      },
+    ],
+  })(AnomalyPipelineModule);
+  const app = await NestFactory.create(AnomalyPipelineModule, {
+    logger: false,
+  });
+  try {
+    await app.listen(0, '127.0.0.1');
+    const base = await app.getUrl();
+    const now = Date.now();
+    const at = (offset) => new Date(now + offset).toISOString();
+    const common = {
+      namespace: 'payments',
+      workload: 'payment-api',
+      pod: 'payment-api-abc123',
+      container: 'api',
+      node: 'worker-1',
+      metricType: 'gauge',
+      attributes: { 'k8s.pod.uid': 'pod-uid-oom' },
+    };
+    const metrics = [
+      {
+        ...common,
+        id: 'oom-limit',
+        timestamp: at(0),
+        name: 'k8s.container.memory.limit',
+        value: 512,
+        unit: 'MiB',
+      },
+      {
+        ...common,
+        id: 'oom-usage',
+        timestamp: at(1),
+        name: 'k8s.container.memory.usage',
+        value: 500,
+        unit: 'MiB',
+      },
+      {
+        ...common,
+        id: 'oom-usage-confirmed',
+        timestamp: at(2),
+        name: 'k8s.container.memory.usage',
+        value: 500,
+        unit: 'MiB',
+      },
+      {
+        ...common,
+        id: 'oom-restarts-before',
+        timestamp: at(3),
+        name: 'k8s.container.restart_count',
+        value: 2,
+        unit: '1',
+      },
+      {
+        ...common,
+        id: 'oom-restarts-after',
+        timestamp: at(4),
+        name: 'k8s.container.restart_count',
+        value: 3,
+        unit: '1',
+      },
+    ];
+    const metricResponse = await fetch(`${base}/v1/telemetry/metrics`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ records: metrics }),
+    });
+    assert.equal(
+      metricResponse.status,
+      202,
+      await metricResponse.clone().text(),
+    );
+
+    const eventResponse = await fetch(
+      `${base}/v1/telemetry/kubernetes-events`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          id: 'oom-kubernetes-event',
+          timestamp: at(5),
+          namespace: common.namespace,
+          workload: common.workload,
+          pod: common.pod,
+          container: common.container,
+          node: common.node,
+          type: 'Warning',
+          reason: 'OOMKilled',
+          message: 'Container exceeded its memory limit',
+          involvedObject: {
+            apiVersion: 'v1',
+            kind: 'Pod',
+            name: common.pod,
+            namespace: common.namespace,
+            uid: 'pod-uid-oom',
+          },
+          attributes: common.attributes,
+        }),
+      },
+    );
+    assert.equal(eventResponse.status, 202, await eventResponse.clone().text());
+
+    const readinessResponse = await fetch(`${base}/v1/telemetry/metrics`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        ...common,
+        container: undefined,
+        id: 'oom-pod-not-ready',
+        timestamp: at(6),
+        name: 'k8s.pod.ready',
+        value: 0,
+        unit: '1',
+      }),
+    });
+    assert.equal(
+      readinessResponse.status,
+      202,
+      await readinessResponse.clone().text(),
+    );
+
+    let detected;
+    const deadline = Date.now() + 2_000;
+    while (!detected && Date.now() < deadline) {
+      await new Promise(setImmediate);
+      detected = entries.find(
+        (entry) =>
+          entry.event === 'anomaly_detected' &&
+          entry.classification === 'OOM_KILLED',
+      );
+    }
+    assert.ok(detected, JSON.stringify(entries));
+    assert.equal(detected.lifecycle, 'OPEN');
+    assert.equal(detected.severity, 'CRITICAL');
+    assert.equal(detected.cluster, 'development-cluster');
+    assert.equal(detected.namespace, 'payments');
+    assert.equal(detected.workload, 'payment-api');
+    assert.equal(detected.pod, 'payment-api-abc123');
+    assert.equal(detected.container, 'api');
+    assert.ok(
+      detected.evidence.some((item) =>
+        item.summary.includes('Memory utilization'),
+      ),
+    );
+    assert.ok(
+      detected.evidence.some((item) =>
+        item.summary.includes('restart count increased'),
+      ),
+    );
+    let incident;
+    while (!incident && Date.now() < deadline) {
+      await new Promise(setImmediate);
+      incident = (await incidents.listActiveIncidents()).find(
+        (candidate) =>
+          candidate.classification === 'MEMORY_EXHAUSTION' &&
+          ['HIGH_MEMORY_UTILIZATION', 'OOM_KILLED', 'POD_NOT_READY'].every(
+            (classification) =>
+              candidate.anomalies.some(
+                (item) => item.classification === classification,
+              ),
+          ),
+      );
+    }
+    assert.ok(incident);
+    assert.equal(incident.classification, 'MEMORY_EXHAUSTION');
+    assert.equal(incident.primaryResource.scope, 'deployment');
+    assert.equal(incident.primaryResource.workload, 'payment-api');
+    assert.equal(incident.severity, 'CRITICAL');
+    assert.equal(incident.confidence, 0.98);
+    assert.ok(
+      incident.anomalies.some(
+        (item) => item.classification === 'HIGH_MEMORY_UTILIZATION',
+      ),
+    );
+    assert.ok(
+      incident.anomalies.some((item) => item.classification === 'OOM_KILLED'),
+    );
+    assert.ok(
+      incident.anomalies.some(
+        (item) => item.classification === 'POD_NOT_READY',
+      ),
+    );
+    assert.ok(
+      entries.some(
+        (entry) =>
+          entry.event === 'incident_updated' &&
+          entry.incident_id === incident.id &&
+          entry.confidence === 0.98,
+      ),
+    );
   } finally {
     await app.close();
     await consumer.onModuleDestroy();

@@ -1,4 +1,4 @@
-// Development composition root: both independent Nest apps share one process-local queue.
+// Development composition root: independent apps share process-local queue and incidents.
 require('reflect-metadata');
 const { NestFactory } = require('@nestjs/core');
 const {
@@ -17,15 +17,17 @@ async function shutdown() {
 (async () => {
   if (process.env.NODE_ENV === 'production')
     throw new Error('Development pipeline disabled in production');
-  for (const name of ['processor', 'ingestion']) {
+  for (const name of ['processor', 'ingestion', 'api']) {
     process.env.PORT =
       process.env[name.toUpperCase() + '_PORT'] ||
-      (name === 'ingestion' ? '3001' : '3002');
+      (name === 'api' ? '3000' : name === 'ingestion' ? '3001' : '3002');
     const { AppModule } = require(`../apps/${name}/dist/app.module.js`);
     const app = await NestFactory.create(AppModule, {
       logger: new ApplicationLogger(name),
       abortOnError: false,
     });
+    if (name === 'ingestion')
+      require('../apps/ingestion/dist/otlp/http').configureIngestionHttp(app);
     apps.push(app);
     const config = app.get(APPLICATION_CONFIG);
     if (name === 'ingestion' && !config.developmentAgentToken)
