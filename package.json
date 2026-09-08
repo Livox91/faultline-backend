@@ -19,11 +19,14 @@
     "dev:api": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/api/dist/main.js\"",
     "dev:ingestion": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/ingestion/dist/main.js\"",
     "dev:processor": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/processor/dist/main.js\"",
-    "test": "npm run build && node --test tests/*.test.cjs"
+    "test": "npm run build && node --test tests/*.test.cjs",
+    "dev:pipeline": "npm run build && node scripts/dev-pipeline.cjs",
+    "telemetry:sample": "node scripts/sample-telemetry.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "~5.9.3",
-    "concurrently": "^9.2.1"
+    "concurrently": "^9.2.1",
+    "prettier": "3.9.6",
+    "typescript": "~5.9.3"
   }
 }

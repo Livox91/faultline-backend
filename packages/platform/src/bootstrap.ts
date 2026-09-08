@@ -1,6 +1,10 @@
 import { type INestApplication, type Type } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { APPLICATION_CONFIG, type ApplicationConfig, type ApplicationName } from './config';
+import {
+  APPLICATION_CONFIG,
+  type ApplicationConfig,
+  type ApplicationName,
+} from './config';
 import { ApplicationLogger } from './logger';
 
 export async function startApplication(
@@ -24,7 +28,9 @@ export async function startApplication(
     await app.listen(config.port, config.host);
     logger.log({ event: 'application_started', port: config.port });
   } catch (error: unknown) {
-    startupLogger.error(error instanceof Error ? error.message : 'Application startup failed');
+    startupLogger.error(
+      error instanceof Error ? error.message : 'Application startup failed',
+    );
     if (app) await app.close();
     process.exitCode = 1;
   }

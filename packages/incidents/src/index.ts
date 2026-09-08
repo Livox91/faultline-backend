@@ -5,7 +5,8 @@ export interface IncidentReference {
   clusterId: string;
 }
 
-export type IncidentSeverity = 'unknown' | 'info' | 'low' | 'medium' | 'high' | 'critical';
+export type IncidentSeverity =
+  'unknown' | 'info' | 'low' | 'medium' | 'high' | 'critical';
 export type IncidentStatus = 'open' | 'investigating' | 'resolved';
 
 export interface EvidenceReference {

@@ -49,4 +49,5 @@ export interface Node extends KubernetesObjectReference {
   namespace?: never;
 }
 
-export type KubernetesResourceIdentity = Cluster | Namespace | Deployment | Pod | Container | Node;
+export type KubernetesResourceIdentity =
+  Cluster | Namespace | Deployment | Pod | Container | Node;

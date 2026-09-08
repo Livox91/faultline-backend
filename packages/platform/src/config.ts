@@ -1,13 +1,23 @@
 import { z } from 'zod';
 
 export const applicationDefinitions = {
-  api: { port: 3000, components: ['configuration', 'logging', 'health', 'system-info'] },
+  api: {
+    port: 3000,
+    components: ['configuration', 'logging', 'health', 'system-info'],
+  },
   ingestion: { port: 3001, components: ['configuration', 'logging', 'health'] },
   processor: { port: 3002, components: ['configuration', 'logging', 'health'] },
 } as const;
 
 export type ApplicationName = keyof typeof applicationDefinitions;
-export const logLevels = ['fatal', 'error', 'warn', 'log', 'debug', 'verbose'] as const;
+export const logLevels = [
+  'fatal',
+  'error',
+  'warn',
+  'log',
+  'debug',
+  'verbose',
+] as const;
 
 const environmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']),
@@ -15,11 +25,13 @@ const environmentSchema = z.object({
   HOST: z.string().trim().min(1).default('0.0.0.0'),
   PORT: z.coerce.number().int().min(1).max(65535),
   LOG_LEVEL: z.enum(logLevels).default('log'),
+  FAULTLINE_DEV_AGENT_TOKEN: z.string().min(1).optional(),
 });
 
 export type Environment = z.infer<typeof environmentSchema>;
 
 export interface ApplicationConfig {
+  readonly developmentAgentToken?: string;
   readonly application: ApplicationName;
   readonly environment: Environment['NODE_ENV'];
   readonly version: string;
@@ -41,8 +53,12 @@ export function validateEnvironment(
   });
   if (!result.success) {
     // Never echo values: future configuration may contain credentials.
-    throw new Error('Invalid environment fields: ' +
-      [...new Set(result.error.issues.map((issue) => issue.path.join('.')))].join(', '));
+    throw new Error(
+      'Invalid environment fields: ' +
+        [
+          ...new Set(result.error.issues.map((issue) => issue.path.join('.'))),
+        ].join(', '),
+    );
   }
   return result.data;
 }

@@ -1,5 +1,9 @@
 import { Controller, Get, Header, Inject, Injectable } from '@nestjs/common';
-import { APPLICATION_CONFIG, type ApplicationConfig, type ApplicationName } from './config';
+import {
+  APPLICATION_CONFIG,
+  type ApplicationConfig,
+  type ApplicationName,
+} from './config';
 
 export interface HealthStatus {
   application: ApplicationName;
@@ -10,7 +14,9 @@ export interface HealthStatus {
 
 @Injectable()
 export class HealthService {
-  constructor(@Inject(APPLICATION_CONFIG) private readonly config: ApplicationConfig) {}
+  constructor(
+    @Inject(APPLICATION_CONFIG) private readonly config: ApplicationConfig,
+  ) {}
 
   getStatus(): HealthStatus {
     return {
