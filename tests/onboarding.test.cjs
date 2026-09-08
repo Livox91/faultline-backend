@@ -50,3 +50,20 @@ test('destructive development reset requires explicit confirmation', () => {
   assert.match(reset, /--confirm-destroy-data/);
   assert.match(reset, /down[\s\S]*--volumes/);
 });
+
+test('setup generates database credentials instead of hardcoding them', () => {
+  const setup = read('scripts/setup.cjs');
+  assert.match(setup, /POSTGRES_PASSWORD:\s*secret\(\)/);
+  assert.doesNotMatch(setup, /admin123|password123/i);
+  assert.match(
+    read('scripts/bootstrap-infrastructure.cjs'),
+    /No data was changed or deleted/,
+  );
+});
+
+test('combined development pipeline loads every application environment', () => {
+  const pipeline = read('scripts/dev-pipeline.cjs');
+  assert.match(pipeline, /\['api', 'ingestion', 'processor', 'storage'\]/);
+  assert.match(pipeline, /parseEnv/);
+  assert.match(pipeline, /key !== 'PORT'/);
+});

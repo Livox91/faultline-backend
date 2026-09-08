@@ -28,11 +28,25 @@ run(
   { inherit: true, timeout: 180_000 },
 );
 run('npm', ['run', 'build'], { inherit: true, timeout: 180_000 });
-run('npm', ['run', 'db:migrate'], {
-  inherit: true,
-  env: environment,
-  timeout: 120_000,
-});
+try {
+  run('npm', ['run', 'db:migrate'], {
+    inherit: true,
+    env: environment,
+    timeout: 120_000,
+  });
+} catch {
+  throw new Error(
+    [
+      'PostgreSQL rejected the credentials in .env.infrastructure.',
+      'This usually means the persistent Faultline PostgreSQL volume was initialized by an older configuration.',
+      'No data was changed or deleted.',
+      'Restore the original POSTGRES_USER and POSTGRES_PASSWORD, or—only if the retained development data is disposable—run:',
+      'npm run dev:reset -- --confirm-destroy-data',
+      'npm run setup',
+      'npm run faultline:start',
+    ].join('\n'),
+  );
+}
 run('npm', ['run', 'telemetry:schema'], {
   inherit: true,
   env: environment,

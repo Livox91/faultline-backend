@@ -1,5 +1,7 @@
 // Development composition root: independent apps share process-local queue and incidents.
 require('reflect-metadata');
+const { resolve } = require('node:path');
+const { parseEnv } = require('./onboarding/lib.cjs');
 const { NestFactory } = require('@nestjs/core');
 const {
   APPLICATION_CONFIG,
@@ -8,6 +10,17 @@ const {
 const { getDevelopmentQueue } = require('@faultline/queue');
 const apps = [];
 let stopping;
+
+// The composed process must receive the union of the independently deployable
+// applications' local configuration. Nest's dotenv loading only happens once in a
+// shared process, so relying on each AppModule to load its own file drops settings
+// required by modules started later (for example ClickHouse credentials).
+for (const name of ['api', 'ingestion', 'processor', 'storage']) {
+  const values = parseEnv(resolve(__dirname, `../apps/${name}/.env`));
+  for (const [key, value] of Object.entries(values))
+    if (key !== 'PORT' && process.env[key] === undefined)
+      process.env[key] = value;
+}
 async function shutdown() {
   return (stopping ??= (async () => {
     for (const app of [...apps].reverse()) await app.close();
