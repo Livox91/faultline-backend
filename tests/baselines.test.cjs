@@ -1035,8 +1035,10 @@ test('gradual memory growth, a hard threshold and an OOM kill correlate into one
   const pod = 'payment-api-6b4c';
   const container = 'api';
   const limitBytes = 1024 * MiB;
-  // Resource state expires relative to event time, so the scenario runs recently.
-  const base = Math.floor(Date.now() / 1000) * 1000 - 600_000;
+  // Resource state accepts the same bounded event-time range as production. Keep
+  // the complete 165-second scenario inside its 120-second history / 60-second
+  // future-skew envelope so deterministic utilization can join usage to its limit.
+  const base = Math.floor(Date.now() / 1000) * 1000 - 110_000;
   const at = (offset) => iso(base + offset);
 
   // 1. payment-api's normal memory becomes a baseline from telemetry history.

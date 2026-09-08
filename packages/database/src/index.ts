@@ -328,3 +328,4 @@ export class PostgresIncidentRepository implements IncidentRepository {
 export * from './migrations';
 
 export * from './baselines';
+export * from './log-classifications';

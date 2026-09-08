@@ -32,6 +32,8 @@ const classifications = new Set<IncidentClassification>([
   'NODE_FAILURE',
   'WORKLOAD_CONFIGURATION_FAILURE',
   'SCHEDULING_FAILURE',
+  'APPLICATION_DEGRADATION',
+  'APPLICATION_DEPENDENCY_FAILURE',
 ]);
 
 function optional(value: unknown, field: string): string | undefined {

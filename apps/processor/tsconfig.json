@@ -5,9 +5,7 @@
     "outDir": "dist",
     "tsBuildInfoFile": ".tsbuildinfo"
   },
-  "include": [
-    "src/**/*.ts"
-  ],
+  "include": ["src/**/*.ts"],
   "references": [
     {
       "path": "../../packages/telemetry"
@@ -20,6 +18,9 @@
     },
     {
       "path": "../../packages/baselines"
+    },
+    {
+      "path": "../../packages/log-classification"
     },
     {
       "path": "../../packages/database"

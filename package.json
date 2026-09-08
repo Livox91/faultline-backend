@@ -36,7 +36,20 @@
     "telemetry:schema": "npm run build --workspace=@faultline/clickhouse && npm run schema:apply --workspace=@faultline/clickhouse",
     "telemetry:retention": "npm run build --workspace=@faultline/clickhouse && node packages/clickhouse/dist/schema-cli.js retention",
     "telemetry:clear": "npm run build --workspace=@faultline/clickhouse && npm run schema:truncate --workspace=@faultline/clickhouse",
-    "test:clickhouse": "npm run build && node --test tests/clickhouse.test.cjs"
+    "test:clickhouse": "npm run build && node --test tests/clickhouse.test.cjs",
+    "setup": "node scripts/setup.cjs",
+    "preflight": "node scripts/preflight.cjs",
+    "infra:init": "node scripts/bootstrap-infrastructure.cjs",
+    "faultline:start": "node scripts/faultline-start.cjs",
+    "faultline:stop": "node scripts/faultline-stop.cjs",
+    "faultline:restart": "npm run faultline:stop && npm run faultline:start",
+    "cluster:add": "node scripts/cluster.cjs add",
+    "cluster:install": "node scripts/cluster.cjs install",
+    "cluster:verify": "node scripts/cluster.cjs verify",
+    "cluster:onboard": "node scripts/cluster.cjs onboard",
+    "onboarding:test:cleanup": "node scripts/cluster.cjs cleanup",
+    "cluster:uninstall": "node scripts/cluster.cjs uninstall",
+    "dev:reset": "node scripts/reset-development.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

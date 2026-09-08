@@ -28,18 +28,33 @@ export type StatisticalAnomalyClassification =
   | 'NETWORK_TX_ANOMALY'
   | 'LATENCY_ANOMALY';
 
+/** Semantic log findings produced by the staged RULE/ML classifier. */
+export type LogAnomalyClassification =
+  | 'APPLICATION_EXCEPTION'
+  | 'DATABASE_CONNECTIVITY'
+  | 'DEPENDENCY_TIMEOUT'
+  | 'AUTHENTICATION_FAILURE'
+  | 'AUTHORIZATION_FAILURE'
+  | 'CONFIGURATION_ERROR'
+  | 'NETWORK_FAILURE'
+  | 'RATE_LIMITING'
+  | 'RESOURCE_EXHAUSTION'
+  | 'STORAGE_FAILURE'
+  | 'STARTUP_FAILURE';
+
 export type AnomalyClassification =
   | DeterministicAnomalyClassification
-  | StatisticalAnomalyClassification;
+  | StatisticalAnomalyClassification
+  | LogAnomalyClassification;
 
 /**
  * What produced an anomaly.
  *
  * Correlation, severity and evidence all read this, and an operator seeing an incident
  * needs to know whether a signal is "Kubernetes said so" or "this is unusual for you".
- * A future ML detector becomes a third value here rather than a parallel pipeline.
+ * Semantic log classification is a peer source rather than a parallel incident system.
  */
-export type AnomalySource = 'DETERMINISTIC' | 'STATISTICAL';
+export type AnomalySource = 'DETERMINISTIC' | 'STATISTICAL' | 'LOG_CLASSIFIER';
 
 export type OperationalSeverity = 'INFO' | 'WARNING' | 'HIGH' | 'CRITICAL';
 export type OperationalStatus = 'OPEN' | 'ACTIVE' | 'RESOLVED';
@@ -61,7 +76,8 @@ export interface AnomalyAffectedResource {
 
 export interface AnomalyEvidence {
   /** `baseline` entries carry the expected-behaviour numbers behind a statistical call. */
-  type: 'telemetry' | 'resource-state' | 'calculation' | 'baseline';
+  type:
+    'telemetry' | 'resource-state' | 'calculation' | 'baseline' | 'log-pattern';
   summary: string;
   timestamp: string;
   eventId?: string;
@@ -129,14 +145,15 @@ export type IncidentClassification =
   | 'WORKLOAD_CONFIGURATION_FAILURE'
   | 'SCHEDULING_FAILURE'
   /** The workload still runs, but is serving worse than it normally does. */
-  | 'APPLICATION_DEGRADATION';
+  | 'APPLICATION_DEGRADATION'
+  | 'APPLICATION_DEPENDENCY_FAILURE';
 export type IncidentSeverity = OperationalSeverity;
 export type IncidentStatus = OperationalStatus;
 
 export interface IncidentEvidence extends AnomalyEvidence {
   anomalyId: string;
   classification: AnomalyClassification;
-  /** Lets an operator separate "Kubernetes reported this" from "this is unusual". */
+  /** Distinguishes explicit, statistical, and semantic supporting evidence. */
   source: AnomalySource;
 }
 

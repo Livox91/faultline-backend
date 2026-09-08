@@ -297,6 +297,23 @@ export class PlatformModule {
                   { infer: true },
                 ),
               }),
+              logClassification: Object.freeze({
+                enabled: config.get('LOG_CLASSIFIER_ENABLED', { infer: true }),
+                minimumConfidence: config.get('LOG_CLASSIFIER_MIN_CONFIDENCE', {
+                  infer: true,
+                }),
+                highConfidence: config.get('LOG_CLASSIFIER_HIGH_CONFIDENCE', {
+                  infer: true,
+                }),
+                mlUrl: config.get('LOG_CLASSIFIER_ML_URL', { infer: true }),
+                mlTimeoutMs: config.get('LOG_CLASSIFIER_ML_TIMEOUT_MS', {
+                  infer: true,
+                }),
+                aggregationWindowMs: config.get(
+                  'LOG_CLASSIFIER_PATTERN_WINDOW_MS',
+                  { infer: true },
+                ),
+              }),
             }),
         },
         {

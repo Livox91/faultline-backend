@@ -34,6 +34,11 @@ import {
   STATISTICAL_DETECTOR,
   type StatisticalDetector,
 } from './statistical/contracts';
+import {
+  LOG_CLASSIFIER,
+  type LogClassificationOutcome,
+  type LogClassifier,
+} from './log-classification/contracts';
 
 @Injectable()
 export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
@@ -53,6 +58,9 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @Inject(STATISTICAL_DETECTOR)
     private readonly statistical?: StatisticalDetector,
+    @Optional()
+    @Inject(LOG_CLASSIFIER)
+    private readonly logClassifier?: LogClassifier,
   ) {}
   async onModuleInit() {
     this.stateSweep = setInterval(() => {
@@ -148,15 +156,33 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
           : await this.state.findForTelemetry(processed);
       if (state)
         this.logger.log({ event: 'resource_state_updated', resource: state });
-      // Deterministic rules and statistical detection are peers: both read the same
-      // event and the same resource state, neither can veto the other, and both feed
-      // one correlation engine. A statistical failure must not lose a rule anomaly, so
-      // detection is settled independently and only then merged.
-      const [deterministic, statistical] = await Promise.all([
-        Promise.resolve(this.rules?.evaluate(processed, state) ?? []),
-        this.detectStatistically(processed, state),
-      ]);
-      for (const anomaly of [...deterministic, ...statistical]) {
+      // Rules, statistical detection and semantic log classification are peers. They
+      // read the same normalized event, cannot veto one another, and meet only at the
+      // correlation boundary. Optional enrichers are settled independently so their
+      // failure cannot lose an explicit Kubernetes rule anomaly.
+      const [deterministic, statistical, logClassification] = await Promise.all(
+        [
+          Promise.resolve(this.rules?.evaluate(processed, state) ?? []),
+          this.detectStatistically(processed, state),
+          this.classifyLog(processed),
+        ],
+      );
+      if (logClassification)
+        this.logger.log({
+          event: 'log_classified',
+          event_id: logClassification.result.eventId,
+          classification: logClassification.result.classification,
+          classifier_type: logClassification.result.classifierType,
+          confidence: logClassification.result.confidence,
+          model_version: logClassification.result.modelVersion,
+          pattern_id: logClassification.result.patternId,
+          pattern_count: logClassification.aggregate.count,
+          affected_pods: logClassification.aggregate.affectedPods.length,
+        });
+      const classified = logClassification?.anomaly
+        ? [logClassification.anomaly]
+        : [];
+      for (const anomaly of [...deterministic, ...statistical, ...classified]) {
         this.logger.log({
           event:
             anomaly.status === 'RESOLVED'
@@ -237,6 +263,24 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
         event_id: event.id,
       });
       return [];
+    }
+  }
+
+  private async classifyLog(
+    event: Parameters<NonNullable<typeof this.statistical>['detect']>[0],
+  ): Promise<LogClassificationOutcome | undefined> {
+    if (event.kind !== 'log' || !this.logClassifier) return undefined;
+    try {
+      return await this.logClassifier.classify(event);
+    } catch {
+      // Classification is enrichment. Raw telemetry, deterministic rules and
+      // statistical detection remain available when the optional ML runtime fails.
+      this.logger.warn({
+        event: 'log_classification_failed',
+        event_id: event.id,
+        status: 'degraded',
+      });
+      return undefined;
     }
   }
 

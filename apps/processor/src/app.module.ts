@@ -15,7 +15,13 @@ import {
   PostgresBaselineRepository,
   PostgresConnection,
   PostgresIncidentRepository,
+  PostgresLogClassificationRepository,
 } from '@faultline/database';
+import {
+  InMemoryLogClassificationRepository,
+  LOG_CLASSIFICATION_REPOSITORY,
+  type LogClassificationRepository,
+} from '@faultline/log-classification';
 import {
   INCIDENT_REPOSITORY,
   getDevelopmentIncidentRepository,
@@ -48,6 +54,9 @@ import {
 import { STATISTICAL_DETECTOR } from './statistical/contracts';
 import { InMemoryStatisticalDetector } from './statistical/statistical-detector';
 import { RedisStatisticalDetector } from './statistical/redis-statistical-detector';
+import { LOG_CLASSIFIER } from './log-classification/contracts';
+import { StagedLogClassifier } from './log-classification/log-classifier';
+import { HttpMachineLearningLogClassifier } from './log-classification/http-ml-classifier';
 
 export const REDIS_CONNECTION = Symbol('faultline.redis');
 const testMode = process.env.NODE_ENV === 'test';
@@ -60,6 +69,10 @@ if (testMode) {
     {
       provide: INCIDENT_REPOSITORY,
       useFactory: getDevelopmentIncidentRepository,
+    },
+    {
+      provide: LOG_CLASSIFICATION_REPOSITORY,
+      useFactory: () => new InMemoryLogClassificationRepository(),
     },
     {
       provide: RULE_ENGINE,
@@ -112,6 +125,12 @@ if (testMode) {
       inject: [DATABASE],
       useFactory: (database: PostgresConnection) =>
         new PostgresIncidentRepository(database),
+    },
+    {
+      provide: LOG_CLASSIFICATION_REPOSITORY,
+      inject: [DATABASE],
+      useFactory: (database: PostgresConnection) =>
+        new PostgresLogClassificationRepository(database),
     },
     {
       provide: REDIS_CONNECTION,
@@ -185,6 +204,25 @@ providers.push({
   inject: [INCIDENT_REPOSITORY, APPLICATION_CONFIG],
   useFactory: (repository: IncidentRepository, config: ApplicationConfig) =>
     new IncidentCorrelationEngine(repository, config.incidentCorrelation),
+});
+
+providers.push({
+  provide: LOG_CLASSIFIER,
+  inject: [LOG_CLASSIFICATION_REPOSITORY, APPLICATION_CONFIG],
+  useFactory: (
+    repository: LogClassificationRepository,
+    config: ApplicationConfig,
+  ) =>
+    new StagedLogClassifier(
+      repository,
+      config.logClassification,
+      config.logClassification.mlUrl
+        ? new HttpMachineLearningLogClassifier(
+            config.logClassification.mlUrl,
+            config.logClassification.mlTimeoutMs,
+          )
+        : undefined,
+    ),
 });
 
 @Module({

@@ -23,6 +23,7 @@ export const applicationDefinitions = {
       'resource-state',
       'rule-engine',
       'statistical-detection',
+      'log-classification',
       'incident-correlation',
     ],
   },
@@ -232,7 +233,12 @@ const environmentSchema = z
     // the default window, while latency and error rates use the shorter fast window.
     BASELINE_DEFAULT_WINDOW: baselineWindow.default('24h'),
     BASELINE_FAST_WINDOW: baselineWindow.default('1h'),
-    BASELINE_MIN_SAMPLES: z.coerce.number().int().min(2).max(1_000_000).default(60),
+    BASELINE_MIN_SAMPLES: z.coerce
+      .number()
+      .int()
+      .min(2)
+      .max(1_000_000)
+      .default(60),
     BASELINE_BUCKET_MS: z.coerce
       .number()
       .int()
@@ -245,7 +251,12 @@ const environmentSchema = z
       .min(30_000)
       .max(86_400_000)
       .default(900_000),
-    BASELINE_MAX_TARGETS: z.coerce.number().int().min(1).max(10_000).default(200),
+    BASELINE_MAX_TARGETS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10_000)
+      .default(200),
     BASELINE_MAX_SAMPLES_PER_SUMMARY: z.coerce
       .number()
       .int()
@@ -285,7 +296,11 @@ const environmentSchema = z
       .min(2)
       .max(10_000)
       .default(5),
-    STATISTICAL_Z_SCORE_THRESHOLD: z.coerce.number().min(0.5).max(50).default(3),
+    STATISTICAL_Z_SCORE_THRESHOLD: z.coerce
+      .number()
+      .min(0.5)
+      .max(50)
+      .default(3),
     STATISTICAL_Z_SCORE_RESOLVE_THRESHOLD: z.coerce
       .number()
       .min(0.1)
@@ -335,12 +350,37 @@ const environmentSchema = z
       .min(1)
       .max(10_000)
       .default(25),
-    STATISTICAL_GROWTH_MIN_R_SQUARED: z.coerce.number().min(0).max(1).default(0.7),
+    STATISTICAL_GROWTH_MIN_R_SQUARED: z.coerce
+      .number()
+      .min(0)
+      .max(1)
+      .default(0.7),
     STATISTICAL_GROWTH_MIN_MONOTONIC_FRACTION: z.coerce
       .number()
       .min(0)
       .max(1)
       .default(0.7),
+
+    LOG_CLASSIFIER_ENABLED: booleanFlag(true),
+    LOG_CLASSIFIER_ML_URL: z.string().url().optional(),
+    LOG_CLASSIFIER_ML_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(50)
+      .max(120_000)
+      .default(2_000),
+    LOG_CLASSIFIER_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6),
+    LOG_CLASSIFIER_HIGH_CONFIDENCE: z.coerce
+      .number()
+      .min(0)
+      .max(1)
+      .default(0.85),
+    LOG_CLASSIFIER_PATTERN_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(86_400_000)
+      .default(600_000),
   })
   .superRefine((value, context) => {
     if (
@@ -383,6 +423,15 @@ const environmentSchema = z
         path: ['STATISTICAL_PERCENTILE_RATIO_RESOLVE_THRESHOLD'],
         message: 'must be below STATISTICAL_PERCENTILE_RATIO_THRESHOLD',
       });
+    if (
+      value.LOG_CLASSIFIER_MIN_CONFIDENCE >=
+      value.LOG_CLASSIFIER_HIGH_CONFIDENCE
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['LOG_CLASSIFIER_MIN_CONFIDENCE'],
+        message: 'must be below LOG_CLASSIFIER_HIGH_CONFIDENCE',
+      });
   });
 
 export type Environment = z.infer<typeof environmentSchema>;
@@ -402,6 +451,7 @@ export interface ApplicationConfig {
   readonly telemetryStorage: TelemetryStorageConfig;
   readonly baselines: BaselineSettings;
   readonly statisticalDetection: StatisticalDetectionSettings;
+  readonly logClassification: LogClassificationSettings;
 }
 
 /**
@@ -440,6 +490,15 @@ export interface StatisticalDetectionSettings {
   growthMinimumPercent: number;
   growthMinimumRSquared: number;
   growthMinimumMonotonicFraction: number;
+}
+
+export interface LogClassificationSettings {
+  enabled: boolean;
+  minimumConfidence: number;
+  highConfidence: number;
+  mlUrl?: string;
+  mlTimeoutMs: number;
+  aggregationWindowMs: number;
 }
 
 export interface InfrastructureConfig {

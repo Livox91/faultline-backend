@@ -35,6 +35,7 @@ test('shared packages resolve at runtime and telemetry validates envelopes', () 
   assert.equal(typeof require('@faultline/queue').QUEUE, 'symbol');
   require('@faultline/kubernetes');
   require('@faultline/incidents');
+  require('@faultline/log-classification');
 });
 
 async function freePort() {
@@ -89,6 +90,17 @@ for (const [index, app] of [
     assert.equal(
       validate(validEnvironment).INCIDENT_STABILIZATION_PERIOD_MS,
       120000,
+    );
+    assert.equal(validate(validEnvironment).LOG_CLASSIFIER_ENABLED, true);
+    assert.equal(validate(validEnvironment).LOG_CLASSIFIER_MIN_CONFIDENCE, 0.6);
+    assert.throws(
+      () =>
+        validate({
+          ...validEnvironment,
+          LOG_CLASSIFIER_MIN_CONFIDENCE: '0.9',
+          LOG_CLASSIFIER_HIGH_CONFIDENCE: '0.8',
+        }),
+      /LOG_CLASSIFIER_MIN_CONFIDENCE/,
     );
     assert.throws(
       () =>

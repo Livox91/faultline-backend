@@ -5,6 +5,7 @@ const { randomUUID } = require('node:crypto');
 const {
   PostgresConnection,
   PostgresIncidentRepository,
+  PostgresLogClassificationRepository,
   applyMigrations,
 } = require('@faultline/database');
 const { NatsJetStreamQueue } = require('@faultline/queue');
@@ -139,6 +140,63 @@ test(
         assert.deepEqual(await repository.getIncident(created.id), updated);
         await connection.disconnect();
         await assert.rejects(repository.getIncident(created.id));
+      },
+    );
+
+    await t.test(
+      'PostgreSQL stores classification references and idempotent pattern counts',
+      async () => {
+        const connection = new PostgresConnection(databaseUrl);
+        await applyMigrations(connection.pool);
+        const repository = new PostgresLogClassificationRepository(connection);
+        const suffix = randomUUID();
+        const timestamp = new Date().toISOString();
+        const context = {
+          clusterId: `classification-${suffix}`,
+          namespace: 'payments',
+          workload: 'payment-api',
+          pod: 'payment-api-1',
+          aggregationWindowMs: 600_000,
+        };
+        const result = {
+          eventId: `log-${suffix}-1`,
+          classification: 'DATABASE_CONNECTIVITY',
+          confidence: 0.99,
+          classifierType: 'RULE',
+          patternId: `pattern-${suffix}`,
+          modelVersion: 'log-taxonomy-v1',
+          timestamp,
+          evidence: [{ summary: 'Matched database rule' }],
+        };
+        assert.equal((await repository.save(result, context)).count, 1);
+        assert.equal(
+          (await repository.save(result, context)).count,
+          1,
+          'redelivery does not increment the aggregate',
+        );
+        const second = {
+          ...result,
+          eventId: `log-${suffix}-2`,
+          timestamp: new Date(Date.parse(timestamp) + 1).toISOString(),
+        };
+        assert.equal(
+          (
+            await repository.save(second, {
+              ...context,
+              pod: 'payment-api-2',
+            })
+          ).count,
+          2,
+        );
+        assert.equal(
+          (await repository.get(result.eventId)).modelVersion,
+          'log-taxonomy-v1',
+        );
+        assert.equal(
+          (await repository.getPattern(result.patternId)).affectedPods.length,
+          2,
+        );
+        await connection.disconnect();
       },
     );
 

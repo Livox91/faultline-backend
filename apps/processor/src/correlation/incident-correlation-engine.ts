@@ -51,7 +51,25 @@ const saturation = new Set<AnomalyClassification>([
   'NETWORK_RX_ANOMALY',
   'NETWORK_TX_ANOMALY',
 ]);
-const families = [memory, availability, applicationHealth, saturation];
+const dependencyLogs = new Set<AnomalyClassification>([
+  'DATABASE_CONNECTIVITY',
+  'DEPENDENCY_TIMEOUT',
+  'NETWORK_FAILURE',
+  'STORAGE_FAILURE',
+]);
+const accessLogs = new Set<AnomalyClassification>([
+  'AUTHENTICATION_FAILURE',
+  'AUTHORIZATION_FAILURE',
+  'RATE_LIMITING',
+]);
+const families = [
+  memory,
+  availability,
+  applicationHealth,
+  saturation,
+  dependencyLogs,
+  accessLogs,
+];
 
 function resourceKey(resource: AnomalyAffectedResource): string {
   const identity =
@@ -101,6 +119,32 @@ function related(incident: Incident, anomaly: Anomaly): boolean {
   if (memory.has(anomaly.classification) && classes.has('POD_NOT_READY'))
     return true;
   if (
+    dependencyLogs.has(anomaly.classification) &&
+    ([...classes].some((item) => applicationHealth.has(item)) ||
+      classes.has('POD_NOT_READY'))
+  )
+    return true;
+  if (
+    [...classes].some((item) => dependencyLogs.has(item)) &&
+    (applicationHealth.has(anomaly.classification) ||
+      anomaly.classification === 'POD_NOT_READY')
+  )
+    return true;
+  if (
+    (anomaly.classification === 'CONFIGURATION_ERROR' &&
+      (classes.has('CRASH_LOOP') || classes.has('POD_NOT_READY'))) ||
+    ((anomaly.classification === 'CRASH_LOOP' ||
+      anomaly.classification === 'POD_NOT_READY') &&
+      classes.has('CONFIGURATION_ERROR'))
+  )
+    return true;
+  if (
+    (anomaly.classification === 'RESOURCE_EXHAUSTION' &&
+      [...classes].some((item) => memory.has(item))) ||
+    (memory.has(anomaly.classification) && classes.has('RESOURCE_EXHAUSTION'))
+  )
+    return true;
+  if (
     anomaly.classification === 'NODE_NOT_READY' &&
     classes.has('POD_NOT_READY')
   )
@@ -138,17 +182,35 @@ function uniquePods(
 function classify(anomalies: readonly Anomaly[]): IncidentClassification {
   const classes = new Set(anomalies.map((item) => item.classification));
   if (classes.has('NODE_NOT_READY')) return 'NODE_FAILURE';
-  if (classes.has('OOM_KILLED') || classes.has('HIGH_MEMORY_UTILIZATION'))
+  if (
+    classes.has('OOM_KILLED') ||
+    classes.has('HIGH_MEMORY_UTILIZATION') ||
+    (classes.has('RESOURCE_EXHAUSTION') &&
+      (classes.has('MEMORY_USAGE_ANOMALY') ||
+        classes.has('MEMORY_GROWTH_ANOMALY')))
+  )
     return 'MEMORY_EXHAUSTION';
   if (classes.has('DEPLOYMENT_DEGRADED')) return 'DEPLOYMENT_DEGRADATION';
+  if ([...classes].some((item) => dependencyLogs.has(item)))
+    return 'APPLICATION_DEPENDENCY_FAILURE';
+  if (
+    classes.has('CONFIGURATION_ERROR') ||
+    classes.has('STARTUP_FAILURE') ||
+    classes.has('IMAGE_PULL_FAILURE') ||
+    classes.has('FAILED_MOUNT')
+  )
+    return 'WORKLOAD_CONFIGURATION_FAILURE';
   if (classes.has('CRASH_LOOP') || classes.has('POD_NOT_READY'))
     return 'WORKLOAD_CRASHING';
-  if (classes.has('IMAGE_PULL_FAILURE') || classes.has('FAILED_MOUNT'))
-    return 'WORKLOAD_CONFIGURATION_FAILURE';
   if (classes.has('FAILED_SCHEDULING')) return 'SCHEDULING_FAILURE';
   // Checked after the deterministic failures: a crash-looping workload is crashing,
   // even though it is also, incidentally, serving errors.
-  if (classes.has('ERROR_RATE_ANOMALY') || classes.has('LATENCY_ANOMALY'))
+  if (
+    classes.has('ERROR_RATE_ANOMALY') ||
+    classes.has('LATENCY_ANOMALY') ||
+    classes.has('APPLICATION_EXCEPTION') ||
+    [...classes].some((item) => accessLogs.has(item))
+  )
     return 'APPLICATION_DEGRADATION';
   return 'RESOURCE_SATURATION';
 }
@@ -171,7 +233,8 @@ function confidence(
     // A statistical memory signal that preceded the failure is corroboration: the
     // workload was already drifting away from its own normal before Kubernetes acted.
     const statistical =
-      classes.has('MEMORY_GROWTH_ANOMALY') || classes.has('MEMORY_USAGE_ANOMALY');
+      classes.has('MEMORY_GROWTH_ANOMALY') ||
+      classes.has('MEMORY_USAGE_ANOMALY');
     if (highMemory && oom && restart) return 0.98;
     if (highMemory && oom) return statistical ? 0.95 : 0.9;
     if (oom) return statistical ? 0.85 : 0.8;
@@ -184,6 +247,16 @@ function confidence(
     const saturated = [...classes].some((item) => saturation.has(item));
     if (errors && latency) return saturated ? 0.9 : 0.85;
     return saturated ? 0.7 : 0.6;
+  }
+  if (classification === 'APPLICATION_DEPENDENCY_FAILURE') {
+    const semantic = anomalies.filter((item) =>
+      dependencyLogs.has(item.classification),
+    );
+    let value = Math.max(0.5, ...semantic.map((item) => item.confidence * 0.7));
+    if (classes.has('ERROR_RATE_ANOMALY')) value += 0.12;
+    if (classes.has('LATENCY_ANOMALY')) value += 0.12;
+    if (classes.has('POD_NOT_READY')) value += 0.12;
+    return Math.min(0.95, value);
   }
   if (classification === 'WORKLOAD_CRASHING') {
     if (classes.has('CRASH_LOOP') && classes.has('POD_NOT_READY')) return 0.92;
@@ -221,10 +294,19 @@ function deriveSeverity(
   // signal alone cleared HIGH on its own magnitude.
   if (
     classification === 'APPLICATION_DEGRADATION' &&
-    anomalies.some(
-      (item) => item.classification === 'ERROR_RATE_ANOMALY',
-    ) &&
+    anomalies.some((item) => item.classification === 'ERROR_RATE_ANOMALY') &&
     anomalies.some((item) => item.classification === 'LATENCY_ANOMALY') &&
+    severityRank[severity] < severityRank.HIGH
+  )
+    severity = 'HIGH';
+  if (
+    classification === 'APPLICATION_DEPENDENCY_FAILURE' &&
+    anomalies.filter(
+      (item) =>
+        dependencyLogs.has(item.classification) ||
+        applicationHealth.has(item.classification) ||
+        item.classification === 'POD_NOT_READY',
+    ).length >= 3 &&
     severityRank[severity] < severityRank.HIGH
   )
     severity = 'HIGH';
@@ -233,7 +315,10 @@ function deriveSeverity(
 
 function timelineEntry(anomaly: Anomaly): IncidentTimelineEntry {
   return {
-    id: `${anomaly.anomalyId}:${anomaly.status}:${anomaly.timestamp}`,
+    id:
+      anomaly.source === 'LOG_CLASSIFIER'
+        ? `${anomaly.anomalyId}:${anomaly.status}`
+        : `${anomaly.anomalyId}:${anomaly.status}:${anomaly.timestamp}`,
     timestamp: anomaly.timestamp,
     type:
       anomaly.status === 'OPEN'
@@ -272,7 +357,16 @@ function rebuild(incident: Incident, anomaly: Anomaly): Incident {
       classification: anomaly.classification,
       source: anomaly.source,
     };
-    if (
+    const samePattern =
+      next.source === 'LOG_CLASSIFIER'
+        ? evidence.findIndex(
+            (candidate) =>
+              candidate.source === 'LOG_CLASSIFIER' &&
+              candidate.attributes?.patternId === next.attributes?.patternId,
+          )
+        : -1;
+    if (samePattern >= 0) evidence[samePattern] = next;
+    else if (
       !evidence.some(
         (candidate) =>
           candidate.anomalyId === next.anomalyId &&

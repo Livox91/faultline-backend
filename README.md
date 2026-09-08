@@ -1,5 +1,20 @@
 # Faultline
 
+## First-time BookNest onboarding
+
+Faultline can run on the customer machine while its read-only collectors monitor the
+BookNest Kubernetes cluster. Start with [ONBOARDING.md](ONBOARDING.md):
+
+```powershell
+npm install
+npm run setup
+npm run faultline:start
+npm run cluster:onboard
+```
+
+The final command verifies a real Kubernetes stdout log in ClickHouse and its
+`DATABASE_CONNECTIVITY` classification in the existing incident pipeline.
+
 ## Telemetry history and search
 
 Faultline retains high-volume telemetry in ClickHouse and can query it back:
