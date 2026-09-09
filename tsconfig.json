@@ -20,6 +20,9 @@
       "path": "packages/queue"
     },
     {
+      "path": "packages/clickhouse"
+    },
+    {
       "path": "apps/api"
     },
     {
@@ -27,6 +30,9 @@
     },
     {
       "path": "apps/processor"
+    },
+    {
+      "path": "apps/storage"
     }
   ]
 }

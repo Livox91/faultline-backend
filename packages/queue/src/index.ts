@@ -47,10 +47,29 @@ export type QueueMessageHandler<TPayload = unknown> = (
 export interface QueueSubscription {
   close(): Promise<void>;
 }
+export interface SubscribeOptions {
+  /**
+   * Unacknowledged messages a consumer may hold at once.
+   *
+   * The processor keeps the default of 1 so telemetry is handled strictly in order. A
+   * batching consumer must raise it: it acknowledges only once the batch containing a
+   * message has been written, so it needs at least a batch worth of in-flight messages.
+   */
+  maxAckPending?: number;
+  /** Redelivery timer; must exceed the consumer's worst-case handling time. */
+  ackWaitMs?: number;
+  /**
+   * Overrides the durable consumer/queue group, giving a second independent reader of
+   * the same subject its own cursor and its own failure domain.
+   */
+  consumerGroup?: string;
+}
+
 export interface QueueConsumer<TPayload = unknown> {
   subscribe(
     topic: string,
     handler: QueueMessageHandler<TPayload>,
+    options?: SubscribeOptions,
   ): Promise<QueueSubscription>;
   close(): Promise<void>;
 }
@@ -160,20 +179,22 @@ export class NatsJetStreamQueue implements Queue {
   async subscribe(
     topic: string,
     handler: QueueMessageHandler,
+    options: SubscribeOptions = {},
   ): Promise<QueueSubscription> {
     if (this.closed) throw new Error('Queue closed');
-    const durable = sanitize(`${this.options.consumerGroup}_${topic}`);
+    const consumerGroup = options.consumerGroup ?? this.options.consumerGroup;
+    const durable = sanitize(`${consumerGroup}_${topic}`);
     const opts = consumerOpts();
     opts
       .durable(durable)
       .manualAck()
       .ackExplicit()
-      .ackWait(30_000)
+      .ackWait(options.ackWaitMs ?? 30_000)
       .maxDeliver(this.options.maxDeliver)
-      .maxAckPending(1)
+      .maxAckPending(options.maxAckPending ?? 1)
       .deliverAll()
       .deliverTo(createInbox())
-      .queue(this.options.consumerGroup);
+      .queue(consumerGroup);
     const sub = await this.jetstream.subscribe(topic, opts);
     const pending = new Set<Promise<void>>();
     const task = (async () => {
@@ -371,6 +392,8 @@ export class InMemoryQueue implements Queue {
   async subscribe(
     topic: string,
     handler: QueueMessageHandler,
+    // Accepted for interface parity; delivery here is already unordered and in-process.
+    _options: SubscribeOptions = {},
   ): Promise<QueueSubscription> {
     if (this.closed) throw new Error('Queue closed');
     const sub = { handler, pending: new Set<Promise<void>>() };

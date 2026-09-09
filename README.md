@@ -1,13 +1,31 @@
 # Faultline
 
+## Telemetry history and search
+
+Faultline retains high-volume telemetry in ClickHouse and can query it back:
+`GET /telemetry/logs`, `GET /telemetry/metrics`, `GET /telemetry/kubernetes-events`,
+`GET /resources/:resourceId/timeline`, and `GET /incidents/:id/evidence`.
+
+A separate `apps/storage` service consumes `telemetry.raw` on its own durable broker
+consumer and writes batches to ClickHouse. It is not part of the detection path: a
+ClickHouse outage retries there while the processor keeps producing anomalies and
+incidents. Application code depends on the `TelemetryStore` interface, never on a
+ClickHouse client.
+
+See [the telemetry storage guide](docs/TELEMETRY-STORAGE.md) for the schema and the
+reasoning behind its ordering and partitioning, retention and its tradeoffs, batching,
+query safety, multi-cluster isolation, oversized-payload handling, and how to start,
+inspect and clear local telemetry.
+
 ## Durable local infrastructure
 
-Faultline now uses PostgreSQL for control-plane/incident data, Redis for expiring
-processor state, and NATS JetStream for durable event delivery. NATS was selected
-instead of Kafka because this pipeline needs durable fan-out, acknowledgements, and
-redelivery, but not Kafka-specific partitioning or long-term telemetry retention.
-Domain code continues to depend on `IncidentRepository`, `ResourceStateStore`, and
-`Queue`; test mode keeps the in-memory implementations.
+Faultline uses PostgreSQL for control-plane/incident data, Redis for expiring
+processor state, NATS JetStream for durable event delivery, and ClickHouse for telemetry
+history. NATS was selected instead of Kafka because this pipeline needs durable fan-out,
+acknowledgements, and redelivery, but not Kafka-specific partitioning or long-term
+telemetry retention. Domain code continues to depend on `IncidentRepository`,
+`ResourceStateStore`, `Queue`, and `TelemetryStore`; test mode keeps the in-memory
+implementations.
 
 See [the infrastructure guide](docs/INFRASTRUCTURE.md) for setup, migrations,
 delivery semantics, health checks, shutdown behavior, and failure recovery. The
@@ -18,18 +36,24 @@ Copy-Item .env.infrastructure.example .env.infrastructure
 Copy-Item apps/api/.env.example apps/api/.env
 Copy-Item apps/ingestion/.env.example apps/ingestion/.env
 Copy-Item apps/processor/.env.example apps/processor/.env
-# Set one matching local PostgreSQL password in the infrastructure, API, and processor files.
+Copy-Item apps/storage/.env.example apps/storage/.env
+# Set one matching local PostgreSQL password in the infrastructure, API, and processor files,
+# and one matching ClickHouse password in the infrastructure, API, and storage files.
 npm ci
 npm run infra:up
 $env:DATABASE_URL = "postgresql://faultline:<password>@127.0.0.1:5432/faultline"
 npm run db:migrate
+$env:CLICKHOUSE_URL = "http://127.0.0.1:8123"
+$env:CLICKHOUSE_USERNAME = "faultline"; $env:CLICKHOUSE_PASSWORD = "<clickhouse-password>"
+npm run telemetry:schema
 npm run dev:pipeline
 ```
 
 In another terminal run `npm run telemetry:sample`, then inspect incidents at
-`http://127.0.0.1:3000/incidents`. Stop the applications with Ctrl+C and run
-`npm run infra:down`. Named volumes deliberately retain PostgreSQL, Redis, and
-JetStream data across infrastructure restarts.
+`http://127.0.0.1:3000/incidents` and the telemetry behind them at
+`http://127.0.0.1:3000/telemetry/logs`. Stop the applications with Ctrl+C and run
+`npm run infra:down`. Named volumes deliberately retain PostgreSQL, Redis, JetStream,
+and ClickHouse data across infrastructure restarts.
 
 ## Metrics and workload state
 
@@ -63,12 +87,14 @@ $env:FAULTLINE_DEV_AGENT_TOKEN = "your-local-development-token"
 npm run dev:pipeline
 ```
 
-The launcher builds and starts processor, ingestion, and API as separate Nest
+The launcher builds and starts processor, storage, ingestion, and API as separate Nest
 applications in one Node process. They communicate through JetStream and share durable
-PostgreSQL/Redis infrastructure; ingestion still does not import processor logic.
-The combined launcher uses ports 3000, 3001, and 3002, overridden by `API_PORT`,
-`INGESTION_PORT`, and `PROCESSOR_PORT`; it overrides `PORT`. Stop with Ctrl+C to drain
-accepted work. All three apps expose `/health` and `/health/ready`.
+PostgreSQL/Redis/ClickHouse infrastructure; ingestion still does not import processor
+logic, and storage consumes the broker independently of the processor. The combined
+launcher uses ports 3000, 3001, 3002, and 3003, overridden by `API_PORT`,
+`INGESTION_PORT`, `PROCESSOR_PORT`, and `STORAGE_PORT`; it overrides `PORT`. Stop with
+Ctrl+C to drain accepted work and flush pending telemetry batches. All four apps expose
+`/health` and `/health/ready`.
 
 In another PowerShell terminal:
 
@@ -126,25 +152,30 @@ deduplication, and dead-letter subjects.
 
 `npm test` covers HTTP-to-processor delivery for all telemetry variants, authentication,
 validation, queue behavior, anomaly rules, incident correlation/lifecycle, API filtering,
-and the full memory-failure-to-incident scenario alongside the foundation tests.
+telemetry persistence, batching, filtering, aggregation, timelines, pagination, retention,
+query safety and scoping, and the full memory-failure-to-incident scenario alongside the
+foundation tests. `npm run test:clickhouse` runs the same storage contract against a real
+ClickHouse server when `RUN_CLICKHOUSE_TESTS=true`.
 
 NestJS + TypeScript foundation for a Kubernetes production diagnostics platform.
 Requires Node.js 22+ and npm. All workspaces are private.
 
-| Workspace             | Purpose                                                               |
-| --------------------- | --------------------------------------------------------------------- |
-| `apps/api`            | REST control plane; system and incident reads (port 3000)             |
-| `apps/ingestion`      | Validated telemetry receiver (port 3001)                              |
-| `apps/processor`      | Resource state, anomaly rules, and incident correlation (port 3002)   |
-| `packages/platform`   | Shared validated configuration, JSON logger, health and bootstrap     |
-| `packages/telemetry`  | Telemetry metadata, log/metric/Kubernetes event types and Zod schemas |
-| `packages/kubernetes` | Cluster, namespace, deployment, pod, container and node identities    |
-| `packages/incidents`  | Separate incident and diagnostic anomaly domain contracts             |
-| `packages/database`   | Repository/database interfaces and injection token                    |
-| `packages/queue`      | Producer/consumer/subscription interfaces and injection token         |
+| Workspace             | Purpose                                                                       |
+| --------------------- | ----------------------------------------------------------------------------- |
+| `apps/api`            | REST control plane; system, incident and telemetry reads (port 3000)          |
+| `apps/ingestion`      | Validated telemetry receiver (port 3001)                                      |
+| `apps/processor`      | Resource state, anomaly rules, and incident correlation (port 3002)           |
+| `apps/storage`        | Batched telemetry-history writer, independent of detection (port 3003)        |
+| `packages/platform`   | Shared validated configuration, JSON logger, health and bootstrap             |
+| `packages/telemetry`  | Telemetry contracts, the `TelemetryStore` boundary, batching and query safety |
+| `packages/kubernetes` | Cluster, namespace, deployment, pod, container and node identities            |
+| `packages/incidents`  | Separate incident and diagnostic anomaly domain contracts                     |
+| `packages/database`   | Repository/database interfaces and injection token                            |
+| `packages/queue`      | Producer/consumer/subscription interfaces and injection token                 |
+| `packages/clickhouse` | ClickHouse telemetry schema and `TelemetryStore` adapter                      |
 
 The small platform library keeps NestJS concerns separate from domain contracts.
-Only the three apps start processes. Libraries have no start command.
+Only the four apps start processes. Libraries have no start command.
 
 ## Run
 
@@ -170,10 +201,11 @@ Run each application in a separate terminal; all processes use the shared infras
 npm run start:api
 npm run start:ingestion
 npm run start:processor
+npm run start:storage
 ```
 
-For development use `npm run dev:api`, `npm run dev:ingestion`, or
-`npm run dev:processor`. Each builds first, then watches TypeScript and restarts
+For development use `npm run dev:api`, `npm run dev:ingestion`, `npm run dev:processor`,
+or `npm run dev:storage`. Each builds first, then watches TypeScript and restarts
 Node when compiled dependencies change. Run one TypeScript watcher at a time;
 other apps can use `node --watch apps/<app>/dist/main.js`.
 
@@ -188,10 +220,19 @@ at startup and injected as a typed, frozen `ApplicationConfig`.
 | `NODE_ENV`                         | Required: `development`, `test`, or `production`                                 |
 | `APP_VERSION`                      | Required: nonempty release identifier, e.g. `0.1.0` or a commit SHA              |
 | `HOST`                             | Optional; defaults to `0.0.0.0`                                                  |
-| `PORT`                             | Optional integer 1–65535; defaults to 3000/3001/3002 per app                     |
+| `PORT`                             | Optional integer 1–65535; defaults to 3000/3001/3002/3003 per app                |
 | `LOG_LEVEL`                        | Optional; `fatal`, `error`, `warn`, `log`, `debug`, `verbose`; defaults to `log` |
 | `INCIDENT_CORRELATION_WINDOW_MS`   | Optional; related-anomaly window, default `600000`                               |
 | `INCIDENT_STABILIZATION_PERIOD_MS` | Optional; healthy interval before resolution, default `120000`                   |
+| `CLICKHOUSE_URL`                   | Required outside test mode for API and storage; unused by the processor          |
+| `TELEMETRY_BATCH_MAX_SIZE`         | Optional; rows per ClickHouse insert, default `500`                              |
+| `TELEMETRY_BATCH_MAX_AGE_MS`       | Optional; age bound that flushes a partial batch, default `2000`                 |
+| `TELEMETRY_RETENTION_*_DAYS`       | Optional; per-signal ClickHouse TTL, defaults `7`/`14`/`30`                      |
+| `TELEMETRY_QUERY_*`                | Optional; time range, page size, timeout and bucket bounds on telemetry reads    |
+| `TELEMETRY_QUERY_CLUSTER_SCOPE`    | Clusters the API may query; required in production                               |
+
+The telemetry settings are documented in full in
+[the telemetry storage guide](docs/TELEMETRY-STORAGE.md).
 
 Missing or invalid required settings fail startup with exit code 1. Errors name
 fields without logging their values. Set `NODE_ENV=production` and the deployed
@@ -268,8 +309,15 @@ All apps expose `GET /health` and `GET /health/ready`:
 ```
 
 Uptime is process uptime in seconds. Liveness does not contact dependencies. Readiness
-probes the critical PostgreSQL, Redis, and/or NATS dependencies for that application and
-returns 503 with per-dependency status when any is unavailable. Responses disable caching.
+probes that application's dependencies and returns 503 with per-dependency status when a
+**critical** one is unavailable. ClickHouse is critical for storage but not for the API,
+which reports `status: "degraded"` and keeps serving incidents while telemetry history is
+down. Responses disable caching.
+
+Telemetry reads: `GET /telemetry/logs`, `GET /telemetry/metrics`,
+`GET /telemetry/kubernetes-events`, `GET /resources/:resourceId/timeline`, and
+`GET /incidents/:id/evidence`. Every one requires a cluster scope and a bounded time
+range; see [the telemetry storage guide](docs/TELEMETRY-STORAGE.md).
 
 API only: `GET /system/info`:
 

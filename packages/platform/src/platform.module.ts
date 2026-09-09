@@ -11,6 +11,24 @@ import {
 import { ApplicationLogger } from './logger';
 import { HealthController, HealthService } from './health';
 
+/** Undefined stays undefined: the API treats that as the development-only wide scope. */
+function parseClusterScope(
+  value: string | undefined,
+): readonly string[] | undefined {
+  if (!value) return undefined;
+  const clusters = [
+    ...new Set(
+      value
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (!clusters.length)
+    throw new Error('TELEMETRY_QUERY_CLUSTER_SCOPE lists no clusters');
+  return Object.freeze(clusters);
+}
+
 @Global()
 @Module({})
 export class PlatformModule {
@@ -104,6 +122,87 @@ export class PlatformModule {
                 resourceStateTtlMs: config.get('RESOURCE_STATE_TTL_MS', {
                   infer: true,
                 }),
+                clickhouseUrl: config.get('CLICKHOUSE_URL', { infer: true }),
+                clickhouseDatabase: config.get('CLICKHOUSE_DATABASE', {
+                  infer: true,
+                }),
+                clickhouseUsername: config.get('CLICKHOUSE_USERNAME', {
+                  infer: true,
+                }),
+                clickhousePassword: config.get('CLICKHOUSE_PASSWORD', {
+                  infer: true,
+                }),
+                clickhouseRequestTimeoutMs: config.get(
+                  'CLICKHOUSE_REQUEST_TIMEOUT_MS',
+                  { infer: true },
+                ),
+              }),
+              telemetryStorage: Object.freeze({
+                consumerGroup: config.get('TELEMETRY_STORAGE_CONSUMER_GROUP', {
+                  infer: true,
+                }),
+                batchMaxSize: config.get('TELEMETRY_BATCH_MAX_SIZE', {
+                  infer: true,
+                }),
+                batchMaxAgeMs: config.get('TELEMETRY_BATCH_MAX_AGE_MS', {
+                  infer: true,
+                }),
+                retention: Object.freeze({
+                  logsDays: config.get('TELEMETRY_RETENTION_LOGS_DAYS', {
+                    infer: true,
+                  }),
+                  metricsDays: config.get('TELEMETRY_RETENTION_METRICS_DAYS', {
+                    infer: true,
+                  }),
+                  kubernetesEventsDays: config.get(
+                    'TELEMETRY_RETENTION_KUBERNETES_EVENTS_DAYS',
+                    { infer: true },
+                  ),
+                }),
+                payloadLimits: Object.freeze({
+                  maxMessageBytes: config.get('TELEMETRY_MAX_MESSAGE_BYTES', {
+                    infer: true,
+                  }),
+                  maxRawPayloadBytes: config.get(
+                    'TELEMETRY_MAX_RAW_PAYLOAD_BYTES',
+                    { infer: true },
+                  ),
+                  maxAttributeValueBytes: config.get(
+                    'TELEMETRY_MAX_ATTRIBUTE_VALUE_BYTES',
+                    { infer: true },
+                  ),
+                  maxAttributeCount: config.get(
+                    'TELEMETRY_MAX_ATTRIBUTE_COUNT',
+                    { infer: true },
+                  ),
+                }),
+                queryLimits: Object.freeze({
+                  maxTimeRangeMs: config.get('TELEMETRY_QUERY_MAX_RANGE_MS', {
+                    infer: true,
+                  }),
+                  maxMetricTimeRangeMs: config.get(
+                    'TELEMETRY_QUERY_MAX_METRIC_RANGE_MS',
+                    { infer: true },
+                  ),
+                  maxLimit: config.get('TELEMETRY_QUERY_MAX_LIMIT', {
+                    infer: true,
+                  }),
+                  defaultLimit: config.get('TELEMETRY_QUERY_DEFAULT_LIMIT', {
+                    infer: true,
+                  }),
+                  queryTimeoutMs: config.get('TELEMETRY_QUERY_TIMEOUT_MS', {
+                    infer: true,
+                  }),
+                  minBucketMs: config.get('TELEMETRY_QUERY_MIN_BUCKET_MS', {
+                    infer: true,
+                  }),
+                  maxBuckets: config.get('TELEMETRY_QUERY_MAX_BUCKETS', {
+                    infer: true,
+                  }),
+                }),
+                queryClusterScope: parseClusterScope(
+                  config.get('TELEMETRY_QUERY_CLUSTER_SCOPE', { infer: true }),
+                ),
               }),
             }),
         },

@@ -9,6 +9,7 @@ export const applicationDefinitions = {
       'health',
       'system-info',
       'incidents',
+      'telemetry-search',
     ],
   },
   ingestion: { port: 3001, components: ['configuration', 'logging', 'health'] },
@@ -22,6 +23,10 @@ export const applicationDefinitions = {
       'rule-engine',
       'incident-correlation',
     ],
+  },
+  storage: {
+    port: 3003,
+    components: ['configuration', 'logging', 'health', 'telemetry-storage'],
   },
 } as const;
 
@@ -88,6 +93,120 @@ const environmentSchema = z
       .int()
       .min(0)
       .default(120000),
+    CLICKHOUSE_URL: z.string().url().optional(),
+    CLICKHOUSE_DATABASE: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/)
+      .default('faultline'),
+    CLICKHOUSE_USERNAME: z.string().trim().min(1).default('default'),
+    CLICKHOUSE_PASSWORD: z.string().optional(),
+    CLICKHOUSE_REQUEST_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .default(30000),
+    TELEMETRY_BATCH_MAX_SIZE: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(50000)
+      .default(500),
+    TELEMETRY_BATCH_MAX_AGE_MS: z.coerce
+      .number()
+      .int()
+      .min(50)
+      .max(300000)
+      .default(2000),
+    TELEMETRY_RETENTION_LOGS_DAYS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(3650)
+      .default(7),
+    TELEMETRY_RETENTION_METRICS_DAYS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(3650)
+      .default(14),
+    TELEMETRY_RETENTION_KUBERNETES_EVENTS_DAYS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(3650)
+      .default(30),
+    TELEMETRY_MAX_MESSAGE_BYTES: z.coerce
+      .number()
+      .int()
+      .min(256)
+      .max(1048576)
+      .default(32768),
+    TELEMETRY_MAX_RAW_PAYLOAD_BYTES: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(4194304)
+      .default(65536),
+    TELEMETRY_MAX_ATTRIBUTE_VALUE_BYTES: z.coerce
+      .number()
+      .int()
+      .min(64)
+      .max(262144)
+      .default(4096),
+    TELEMETRY_MAX_ATTRIBUTE_COUNT: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(4096)
+      .default(128),
+    TELEMETRY_QUERY_MAX_RANGE_MS: z.coerce
+      .number()
+      .int()
+      .min(1000)
+      .default(86400000),
+    TELEMETRY_QUERY_MAX_METRIC_RANGE_MS: z.coerce
+      .number()
+      .int()
+      .min(1000)
+      .default(604800000),
+    TELEMETRY_QUERY_MAX_LIMIT: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10000)
+      .default(500),
+    TELEMETRY_QUERY_DEFAULT_LIMIT: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10000)
+      .default(100),
+    TELEMETRY_QUERY_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .max(120000)
+      .default(10000),
+    TELEMETRY_QUERY_MIN_BUCKET_MS: z.coerce.number().int().min(1).default(1000),
+    TELEMETRY_QUERY_MAX_BUCKETS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100000)
+      .default(1000),
+    /** Comma-separated clusters this deployment may query; required in production. */
+    TELEMETRY_QUERY_CLUSTER_SCOPE: z.string().trim().min(1).optional(),
+    /**
+     * Durable broker consumer for telemetry storage. It must differ from
+     * `BROKER_CONSUMER_GROUP`: sharing one group would make storage and the processor
+     * split the stream between them instead of each seeing every event.
+     */
+    TELEMETRY_STORAGE_CONSUMER_GROUP: z
+      .string()
+      .trim()
+      .min(1)
+      .default('faultline-telemetry-storage'),
   })
   .superRefine((value, context) => {
     if (
@@ -105,6 +224,12 @@ const environmentSchema = z
         path: ['ANOMALY_CPU_CRITICAL_PERCENT'],
         message: 'must exceed warning threshold',
       });
+    if (value.TELEMETRY_STORAGE_CONSUMER_GROUP === value.BROKER_CONSUMER_GROUP)
+      context.addIssue({
+        code: 'custom',
+        path: ['TELEMETRY_STORAGE_CONSUMER_GROUP'],
+        message: 'must differ from BROKER_CONSUMER_GROUP',
+      });
   });
 
 export type Environment = z.infer<typeof environmentSchema>;
@@ -121,6 +246,7 @@ export interface ApplicationConfig {
   readonly anomalyThresholds: AnomalyThresholds;
   readonly incidentCorrelation: IncidentCorrelationConfig;
   readonly infrastructure: InfrastructureConfig;
+  readonly telemetryStorage: TelemetryStorageConfig;
 }
 
 export interface InfrastructureConfig {
@@ -132,6 +258,53 @@ export interface InfrastructureConfig {
   brokerMaxDeliver: number;
   brokerRetryDelayMs: number;
   resourceStateTtlMs: number;
+  clickhouseUrl?: string;
+  clickhouseDatabase: string;
+  clickhouseUsername: string;
+  clickhousePassword?: string;
+  clickhouseRequestTimeoutMs: number;
+}
+
+/**
+ * Telemetry-history settings.
+ *
+ * Batching and payload limits belong to the storage consumer; query limits and the
+ * cluster scope belong to the API. Both live here so one validated configuration object
+ * describes the whole telemetry-history path.
+ */
+export interface TelemetryStorageConfig {
+  /** Durable broker consumer group; separate from the processor's by construction. */
+  consumerGroup: string;
+  batchMaxSize: number;
+  batchMaxAgeMs: number;
+  retention: TelemetryRetentionSettings;
+  payloadLimits: TelemetryPayloadLimitSettings;
+  queryLimits: TelemetryQueryLimitSettings;
+  /** Clusters this deployment may query; undefined means "development, all clusters". */
+  queryClusterScope?: readonly string[];
+}
+
+export interface TelemetryRetentionSettings {
+  logsDays: number;
+  metricsDays: number;
+  kubernetesEventsDays: number;
+}
+
+export interface TelemetryPayloadLimitSettings {
+  maxMessageBytes: number;
+  maxRawPayloadBytes: number;
+  maxAttributeValueBytes: number;
+  maxAttributeCount: number;
+}
+
+export interface TelemetryQueryLimitSettings {
+  maxTimeRangeMs: number;
+  maxMetricTimeRangeMs: number;
+  maxLimit: number;
+  defaultLimit: number;
+  queryTimeoutMs: number;
+  minBucketMs: number;
+  maxBuckets: number;
 }
 
 export interface AnomalyThresholds {
@@ -177,9 +350,22 @@ export function validateEnvironment(
       ...(application === 'processor' && !result.data.REDIS_URL
         ? ['REDIS_URL']
         : []),
-      ...((application === 'ingestion' || application === 'processor') &&
+      ...((application === 'ingestion' ||
+        application === 'processor' ||
+        application === 'storage') &&
       !result.data.BROKER_URL
         ? ['BROKER_URL']
+        : []),
+      // The processor deliberately never needs ClickHouse: detection must keep
+      // running while telemetry history is unavailable.
+      ...((application === 'api' || application === 'storage') &&
+      !result.data.CLICKHOUSE_URL
+        ? ['CLICKHOUSE_URL']
+        : []),
+      ...(application === 'api' &&
+      result.data.NODE_ENV === 'production' &&
+      !result.data.TELEMETRY_QUERY_CLUSTER_SCOPE
+        ? ['TELEMETRY_QUERY_CLUSTER_SCOPE']
         : []),
     ];
     if (missing.length)

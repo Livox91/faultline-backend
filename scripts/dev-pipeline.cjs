@@ -17,10 +17,17 @@ async function shutdown() {
 (async () => {
   if (process.env.NODE_ENV === 'production')
     throw new Error('Development pipeline disabled in production');
-  for (const name of ['processor', 'ingestion', 'api']) {
+  // Storage runs alongside the processor as a separate consumer of the same broker
+  // subject, mirroring the deployed topology.
+  const defaultPorts = {
+    api: '3000',
+    ingestion: '3001',
+    processor: '3002',
+    storage: '3003',
+  };
+  for (const name of ['processor', 'storage', 'ingestion', 'api']) {
     process.env.PORT =
-      process.env[name.toUpperCase() + '_PORT'] ||
-      (name === 'api' ? '3000' : name === 'ingestion' ? '3001' : '3002');
+      process.env[name.toUpperCase() + '_PORT'] || defaultPorts[name];
     const { AppModule } = require(`../apps/${name}/dist/app.module.js`);
     const app = await NestFactory.create(AppModule, {
       logger: new ApplicationLogger(name),

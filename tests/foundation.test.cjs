@@ -46,7 +46,12 @@ async function freePort() {
   return port;
 }
 
-for (const [index, app] of ['api', 'ingestion', 'processor'].entries()) {
+for (const [index, app] of [
+  'api',
+  'ingestion',
+  'processor',
+  'storage',
+].entries()) {
   test(`${app}: validates required settings and app-specific defaults`, () => {
     const validate = (values) => validateEnvironment(app, values);
     assert.equal(validate(validEnvironment).PORT, 3000 + index);
@@ -127,21 +132,45 @@ for (const [index, app] of ['api', 'ingestion', 'processor'].entries()) {
         }),
       /INCIDENT_STABILIZATION_PERIOD_MS/,
     );
+    // Telemetry storage must never share the processor's durable broker consumer:
+    // one group would split telemetry between them instead of fanning out.
+    assert.notEqual(
+      validate(validEnvironment).TELEMETRY_STORAGE_CONSUMER_GROUP,
+      validate(validEnvironment).BROKER_CONSUMER_GROUP,
+    );
+    assert.throws(
+      () =>
+        validate({
+          ...validEnvironment,
+          TELEMETRY_STORAGE_CONSUMER_GROUP: 'faultline-processors',
+        }),
+      /TELEMETRY_STORAGE_CONSUMER_GROUP/,
+    );
+    assert.equal(validate(validEnvironment).TELEMETRY_RETENTION_LOGS_DAYS, 7);
+    for (const days of ['0', '-1', '1.5'])
+      assert.throws(
+        () =>
+          validate({
+            ...validEnvironment,
+            TELEMETRY_RETENTION_LOGS_DAYS: days,
+          }),
+        /TELEMETRY_RETENTION_LOGS_DAYS/,
+      );
   });
 
   test(`${app}: resolves all shared packages from its workspace`, () => {
+    const manifest = require(resolve(root, `apps/${app}/package.json`));
     const requireFromApp = createRequire(
       resolve(root, `apps/${app}/package.json`),
     );
-    for (const name of [
-      'platform',
-      'telemetry',
-      'kubernetes',
-      'incidents',
-      'database',
-      'queue',
-    ]) {
-      assert.doesNotThrow(() => requireFromApp(`@faultline/${name}`));
+    // Each app declares only the packages it uses; every declared one must resolve.
+    const declared = Object.keys(manifest.dependencies).filter((name) =>
+      name.startsWith('@faultline/'),
+    );
+    assert.ok(declared.includes('@faultline/platform'));
+    assert.ok(declared.includes('@faultline/telemetry'));
+    for (const name of declared) {
+      assert.doesNotThrow(() => requireFromApp(name));
     }
   });
 
@@ -244,6 +273,7 @@ for (const [index, app] of ['api', 'ingestion', 'processor'].entries()) {
               'health',
               'system-info',
               'incidents',
+              'telemetry-search',
             ],
           });
         } else {

@@ -30,7 +30,13 @@
     "db:migrate": "npm run build --workspace=@faultline/database && npm run migration:apply --workspace=@faultline/database",
     "db:rollback": "npm run build --workspace=@faultline/database && npm run migration:rollback --workspace=@faultline/database",
     "db:migration:create": "npm run build --workspace=@faultline/database && npm run migration:create --workspace=@faultline/database --",
-    "test:integration": "npm run build && node --test tests/infrastructure.test.cjs"
+    "test:integration": "npm run build && node --test tests/infrastructure.test.cjs tests/clickhouse.test.cjs",
+    "start:storage": "npm run start --workspace=@faultline/storage",
+    "dev:storage": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/storage/dist/main.js\"",
+    "telemetry:schema": "npm run build --workspace=@faultline/clickhouse && npm run schema:apply --workspace=@faultline/clickhouse",
+    "telemetry:retention": "npm run build --workspace=@faultline/clickhouse && node packages/clickhouse/dist/schema-cli.js retention",
+    "telemetry:clear": "npm run build --workspace=@faultline/clickhouse && npm run schema:truncate --workspace=@faultline/clickhouse",
+    "test:clickhouse": "npm run build && node --test tests/clickhouse.test.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

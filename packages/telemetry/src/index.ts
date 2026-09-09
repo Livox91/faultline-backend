@@ -139,7 +139,10 @@ export const ingestedTelemetryEventSchema = telemetryEventSchema.refine(
 );
 export const RAW_TELEMETRY_TOPIC = 'telemetry.raw';
 
-/** Future high-volume retention boundary. PostgreSQL incident storage never implements this. */
+/**
+ * @deprecated Superseded by `TelemetryStore` in `./store`, which the storage consumer
+ * and `@faultline/clickhouse` implement. Kept so existing wiring keeps compiling.
+ */
 export interface RawTelemetryStore {
   append(event: TelemetryEvent): Promise<void>;
   close(): Promise<void>;
@@ -148,3 +151,9 @@ export const RAW_TELEMETRY_STORE = Symbol('faultline.raw-telemetry-store');
 
 export * from './metrics';
 export * from './workload-state';
+export * from './resource-id';
+export * from './store';
+export * from './query-safety';
+export * from './batch';
+export * from './in-memory-store';
+export * from './retention';

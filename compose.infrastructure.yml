@@ -40,7 +40,27 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3-alpine
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?set CLICKHOUSE_USER in .env.infrastructure}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env.infrastructure}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-faultline}
+    ports:
+      - '127.0.0.1:${CLICKHOUSE_HTTP_PORT:-8123}:8123'
+    volumes:
+      - faultline-clickhouse:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:8123/ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
 volumes:
   faultline-postgres:
   faultline-redis:
   faultline-nats:
+  faultline-clickhouse:
