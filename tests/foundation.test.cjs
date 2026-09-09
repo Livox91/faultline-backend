@@ -274,6 +274,7 @@ for (const [index, app] of [
               'system-info',
               'incidents',
               'telemetry-search',
+              'baselines',
             ],
           });
         } else {

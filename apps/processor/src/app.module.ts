@@ -12,6 +12,7 @@ import {
 } from '@faultline/queue';
 import {
   DATABASE,
+  PostgresBaselineRepository,
   PostgresConnection,
   PostgresIncidentRepository,
 } from '@faultline/database';
@@ -20,6 +21,14 @@ import {
   getDevelopmentIncidentRepository,
   type IncidentRepository,
 } from '@faultline/incidents';
+import {
+  BASELINE_PROVIDER,
+  BASELINE_REPOSITORY,
+  CachedBaselineProvider,
+  getDevelopmentBaselineRepository,
+  type BaselineProvider,
+  type BaselineRepository,
+} from '@faultline/baselines';
 import { resolve } from 'node:path';
 import { RESOURCE_STATE } from './resource-state/resource-state';
 import { InMemoryResourceState } from './resource-state/in-memory-resource-state';
@@ -36,6 +45,9 @@ import {
   RedisConnection,
   RedisProcessingLedger,
 } from './infrastructure/redis';
+import { STATISTICAL_DETECTOR } from './statistical/contracts';
+import { InMemoryStatisticalDetector } from './statistical/statistical-detector';
+import { RedisStatisticalDetector } from './statistical/redis-statistical-detector';
 
 export const REDIS_CONNECTION = Symbol('faultline.redis');
 const testMode = process.env.NODE_ENV === 'test';
@@ -54,6 +66,16 @@ if (testMode) {
       inject: [APPLICATION_CONFIG],
       useFactory: (config: ApplicationConfig) =>
         new InMemoryRuleEngine(createDefaultRules(), config.anomalyThresholds),
+    },
+    {
+      provide: BASELINE_REPOSITORY,
+      useFactory: getDevelopmentBaselineRepository,
+    },
+    {
+      provide: STATISTICAL_DETECTOR,
+      inject: [BASELINE_PROVIDER, APPLICATION_CONFIG],
+      useFactory: (provider: BaselineProvider, config: ApplicationConfig) =>
+        new InMemoryStatisticalDetector(provider, config.statisticalDetection),
     },
   );
 } else {
@@ -124,8 +146,39 @@ if (testMode) {
           ),
         ),
     },
+    {
+      // Baselines are read from PostgreSQL, never from ClickHouse: the processor must
+      // keep detecting deviations while telemetry history is unavailable.
+      provide: BASELINE_REPOSITORY,
+      inject: [DATABASE],
+      useFactory: (database: PostgresConnection) =>
+        new PostgresBaselineRepository(database),
+    },
+    {
+      provide: STATISTICAL_DETECTOR,
+      inject: [REDIS_CONNECTION, BASELINE_PROVIDER, APPLICATION_CONFIG],
+      useFactory: (
+        redis: RedisConnection,
+        provider: BaselineProvider,
+        config: ApplicationConfig,
+      ) =>
+        new RedisStatisticalDetector(
+          redis,
+          new InMemoryStatisticalDetector(
+            provider,
+            config.statisticalDetection,
+          ),
+        ),
+    },
   );
 }
+
+providers.push({
+  provide: BASELINE_PROVIDER,
+  inject: [BASELINE_REPOSITORY, APPLICATION_CONFIG],
+  useFactory: (repository: BaselineRepository, config: ApplicationConfig) =>
+    new CachedBaselineProvider(repository, config.baselines.cacheTtlMs),
+});
 
 providers.push({
   provide: INCIDENT_CORRELATOR,

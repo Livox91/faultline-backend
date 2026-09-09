@@ -24,6 +24,7 @@
   "dependencies": {
     "@faultline/incidents": "0.1.0",
     "@types/pg": "^8.23.1",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "@faultline/baselines": "0.1.0"
   }
 }

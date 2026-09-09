@@ -30,6 +30,10 @@ import {
   PROCESSING_LEDGER,
   type ProcessingLedger,
 } from './infrastructure/redis';
+import {
+  STATISTICAL_DETECTOR,
+  type StatisticalDetector,
+} from './statistical/contracts';
 
 @Injectable()
 export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
@@ -46,6 +50,9 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @Inject(PROCESSING_LEDGER)
     private readonly ledger?: ProcessingLedger,
+    @Optional()
+    @Inject(STATISTICAL_DETECTOR)
+    private readonly statistical?: StatisticalDetector,
   ) {}
   async onModuleInit() {
     this.stateSweep = setInterval(() => {
@@ -141,8 +148,15 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
           : await this.state.findForTelemetry(processed);
       if (state)
         this.logger.log({ event: 'resource_state_updated', resource: state });
-      for (const anomaly of (await this.rules?.evaluate(processed, state)) ??
-        []) {
+      // Deterministic rules and statistical detection are peers: both read the same
+      // event and the same resource state, neither can veto the other, and both feed
+      // one correlation engine. A statistical failure must not lose a rule anomaly, so
+      // detection is settled independently and only then merged.
+      const [deterministic, statistical] = await Promise.all([
+        Promise.resolve(this.rules?.evaluate(processed, state) ?? []),
+        this.detectStatistically(processed, state),
+      ]);
+      for (const anomaly of [...deterministic, ...statistical]) {
         this.logger.log({
           event:
             anomaly.status === 'RESOLVED'
@@ -152,8 +166,11 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
           lifecycle: anomaly.status,
           rule_id: anomaly.ruleId,
           classification: anomaly.classification,
+          source: anomaly.source,
           severity: anomaly.severity,
+          anomaly_score: anomaly.anomalyScore,
           confidence: anomaly.confidence,
+          baseline: anomaly.baseline,
           cluster: anomaly.clusterId,
           namespace: anomaly.affectedResource.namespace,
           workload: anomaly.affectedResource.workload,
@@ -184,10 +201,12 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
         await this.publishIncident(change);
       }
       await this.rules?.commit?.();
+      await this.statistical?.commit?.();
       await this.ledger?.complete(event.id);
       return processed;
     } catch {
       await this.rules?.rollback?.();
+      await this.statistical?.rollback?.();
       await this.ledger?.release(event.id);
       this.logger.error({
         event: 'processor_failed',
@@ -195,6 +214,29 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
         status: 'failed',
       });
       throw new Error('Telemetry processing failed');
+    }
+  }
+
+  /**
+   * Statistical detection is best-effort.
+   *
+   * It depends on baselines, which depend on telemetry history. If that lookup fails,
+   * the event is still processed and deterministic rules still fire: losing "this is
+   * unusual" is acceptable, losing "Kubernetes killed this container" is not.
+   */
+  private async detectStatistically(
+    event: Parameters<NonNullable<typeof this.statistical>['detect']>[0],
+    state: Parameters<NonNullable<typeof this.statistical>['detect']>[1],
+  ) {
+    if (!this.statistical) return [];
+    try {
+      return await this.statistical.detect(event, state);
+    } catch {
+      this.logger.warn({
+        event: 'statistical_detection_failed',
+        event_id: event.id,
+      });
+      return [];
     }
   }
 
@@ -212,6 +254,10 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
       classification: incident.classification,
       severity: incident.severity,
       confidence: incident.confidence,
+      // Makes it obvious at a glance whether history contributed to this incident.
+      statistical_anomalies: incident.anomalies.filter(
+        (item) => item.source === 'STATISTICAL',
+      ).length,
       cluster: incident.clusterId,
       namespace: incident.namespace,
       workload: incident.primaryResource.workload,

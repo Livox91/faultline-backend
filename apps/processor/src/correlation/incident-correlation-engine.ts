@@ -20,15 +20,38 @@ const severityRank: Record<IncidentSeverity, number> = {
   HIGH: 2,
   CRITICAL: 3,
 };
+/**
+ * Signal families.
+ *
+ * Statistical and deterministic anomalies share these groups on purpose: a
+ * MEMORY_GROWTH_ANOMALY seen twenty minutes before an OOM_KILLED belongs to the same
+ * operational story, and correlation is where that story is assembled. There is no
+ * separate incident system for statistical findings.
+ */
 const memory = new Set<AnomalyClassification>([
   'HIGH_MEMORY_UTILIZATION',
   'OOM_KILLED',
+  'MEMORY_USAGE_ANOMALY',
+  'MEMORY_GROWTH_ANOMALY',
 ]);
 const availability = new Set<AnomalyClassification>([
   'CRASH_LOOP',
   'POD_NOT_READY',
   'DEPLOYMENT_DEGRADED',
+  'RESTART_RATE_ANOMALY',
 ]);
+/** The workload is up but serving worse than it normally does. */
+const applicationHealth = new Set<AnomalyClassification>([
+  'ERROR_RATE_ANOMALY',
+  'LATENCY_ANOMALY',
+]);
+const saturation = new Set<AnomalyClassification>([
+  'HIGH_CPU_UTILIZATION',
+  'CPU_USAGE_ANOMALY',
+  'NETWORK_RX_ANOMALY',
+  'NETWORK_TX_ANOMALY',
+]);
+const families = [memory, availability, applicationHealth, saturation];
 
 function resourceKey(resource: AnomalyAffectedResource): string {
   const identity =
@@ -51,14 +74,22 @@ function related(incident: Incident, anomaly: Anomaly): boolean {
     incident.anomalies.map((item) => item.classification),
   );
   if (classes.has(anomaly.classification)) return true;
+  for (const family of families)
+    if (
+      family.has(anomaly.classification) &&
+      [...classes].some((item) => family.has(item))
+    )
+      return true;
+  // Resource pressure and application health reinforce each other: a workload starved
+  // of CPU usually shows it in latency long before anything crashes.
   if (
-    memory.has(anomaly.classification) &&
-    [...classes].some((item) => memory.has(item))
+    applicationHealth.has(anomaly.classification) &&
+    [...classes].some((item) => saturation.has(item))
   )
     return true;
   if (
-    availability.has(anomaly.classification) &&
-    [...classes].some((item) => availability.has(item))
+    saturation.has(anomaly.classification) &&
+    [...classes].some((item) => applicationHealth.has(item))
   )
     return true;
   // Pod availability is supporting evidence for an active memory failure.
@@ -115,6 +146,10 @@ function classify(anomalies: readonly Anomaly[]): IncidentClassification {
   if (classes.has('IMAGE_PULL_FAILURE') || classes.has('FAILED_MOUNT'))
     return 'WORKLOAD_CONFIGURATION_FAILURE';
   if (classes.has('FAILED_SCHEDULING')) return 'SCHEDULING_FAILURE';
+  // Checked after the deterministic failures: a crash-looping workload is crashing,
+  // even though it is also, incidentally, serving errors.
+  if (classes.has('ERROR_RATE_ANOMALY') || classes.has('LATENCY_ANOMALY'))
+    return 'APPLICATION_DEGRADATION';
   return 'RESOURCE_SATURATION';
 }
 
@@ -133,10 +168,22 @@ function confidence(
           Number(evidence.attributes?.delta) > 0,
       ),
     );
+    // A statistical memory signal that preceded the failure is corroboration: the
+    // workload was already drifting away from its own normal before Kubernetes acted.
+    const statistical =
+      classes.has('MEMORY_GROWTH_ANOMALY') || classes.has('MEMORY_USAGE_ANOMALY');
     if (highMemory && oom && restart) return 0.98;
-    if (highMemory && oom) return 0.9;
-    if (oom) return 0.8;
+    if (highMemory && oom) return statistical ? 0.95 : 0.9;
+    if (oom) return statistical ? 0.85 : 0.8;
+    if (highMemory && statistical) return 0.6;
     return 0.45;
+  }
+  if (classification === 'APPLICATION_DEGRADATION') {
+    const errors = classes.has('ERROR_RATE_ANOMALY');
+    const latency = classes.has('LATENCY_ANOMALY');
+    const saturated = [...classes].some((item) => saturation.has(item));
+    if (errors && latency) return saturated ? 0.9 : 0.85;
+    return saturated ? 0.7 : 0.6;
   }
   if (classification === 'WORKLOAD_CRASHING') {
     if (classes.has('CRASH_LOOP') && classes.has('POD_NOT_READY')) return 0.92;
@@ -170,6 +217,17 @@ function deriveSeverity(
     uniquePods(anomalies, 'POD_NOT_READY') > 1
   )
     severity = 'CRITICAL';
+  // Errors and latency degrading together is a user-visible failure even when neither
+  // signal alone cleared HIGH on its own magnitude.
+  if (
+    classification === 'APPLICATION_DEGRADATION' &&
+    anomalies.some(
+      (item) => item.classification === 'ERROR_RATE_ANOMALY',
+    ) &&
+    anomalies.some((item) => item.classification === 'LATENCY_ANOMALY') &&
+    severityRank[severity] < severityRank.HIGH
+  )
+    severity = 'HIGH';
   return severity;
 }
 
@@ -185,6 +243,7 @@ function timelineEntry(anomaly: Anomaly): IncidentTimelineEntry {
           : 'ANOMALY_RESOLVED',
     anomalyId: anomaly.anomalyId,
     classification: anomaly.classification,
+    source: anomaly.source,
     severity: anomaly.severity,
     summary: anomaly.summary,
   };
@@ -211,6 +270,7 @@ function rebuild(incident: Incident, anomaly: Anomaly): Incident {
       ...item,
       anomalyId: anomaly.anomalyId,
       classification: anomaly.classification,
+      source: anomaly.source,
     };
     if (
       !evidence.some(
@@ -324,6 +384,7 @@ export class IncidentCorrelationEngine implements IncidentCorrelator {
         ...item,
         anomalyId: anomaly.anomalyId,
         classification: anomaly.classification,
+        source: anomaly.source,
       })),
       timeline: [timelineEntry(anomaly)],
     };

@@ -29,6 +29,9 @@
     },
     {
       "path": "../../packages/platform"
+    },
+    {
+      "path": "../../packages/baselines"
     }
   ]
 }

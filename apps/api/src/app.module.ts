@@ -7,6 +7,7 @@ import {
 } from '@faultline/platform';
 import {
   DATABASE,
+  PostgresBaselineRepository,
   PostgresConnection,
   PostgresIncidentRepository,
 } from '@faultline/database';
@@ -14,6 +15,10 @@ import {
   INCIDENT_REPOSITORY,
   getDevelopmentIncidentRepository,
 } from '@faultline/incidents';
+import {
+  BASELINE_REPOSITORY,
+  getDevelopmentBaselineRepository,
+} from '@faultline/baselines';
 import {
   TELEMETRY_STORE,
   getDevelopmentTelemetryStore,
@@ -26,6 +31,7 @@ import { resolve } from 'node:path';
 import { SystemController } from './system.controller';
 import { IncidentsController } from './incidents.controller';
 import { IncidentEvidenceController } from './incident-evidence.controller';
+import { BaselinesController } from './baselines.controller';
 import {
   ResourceTimelineController,
   TelemetryController,
@@ -45,6 +51,10 @@ const infrastructureProviders: Provider[] =
           useFactory: getDevelopmentIncidentRepository,
         },
         { provide: TELEMETRY_STORE, useFactory: getDevelopmentTelemetryStore },
+        {
+          provide: BASELINE_REPOSITORY,
+          useFactory: getDevelopmentBaselineRepository,
+        },
       ]
     : [
         {
@@ -67,6 +77,14 @@ const infrastructureProviders: Provider[] =
           inject: [DATABASE],
           useFactory: (database: PostgresConnection) =>
             new PostgresIncidentRepository(database),
+        },
+        {
+          // Baselines are served from PostgreSQL, so they stay inspectable even while
+          // ClickHouse - and therefore refresh - is unavailable.
+          provide: BASELINE_REPOSITORY,
+          inject: [DATABASE],
+          useFactory: (database: PostgresConnection) =>
+            new PostgresBaselineRepository(database),
         },
         {
           provide: CLICKHOUSE_CONNECTION,
@@ -113,6 +131,7 @@ const infrastructureProviders: Provider[] =
     IncidentEvidenceController,
     TelemetryController,
     ResourceTimelineController,
+    BaselinesController,
   ],
   providers: [
     ...infrastructureProviders,

@@ -15,6 +15,9 @@
     "@faultline/telemetry": "0.1.0",
     "@faultline/clickhouse": "0.1.0",
     "@faultline/queue": "0.1.0",
-    "@faultline/platform": "0.1.0"
+    "@faultline/platform": "0.1.0",
+    "@faultline/baselines": "0.1.0",
+    "@faultline/database": "0.1.0",
+    "@faultline/incidents": "0.1.0"
   }
 }

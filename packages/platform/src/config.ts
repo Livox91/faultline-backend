@@ -10,6 +10,7 @@ export const applicationDefinitions = {
       'system-info',
       'incidents',
       'telemetry-search',
+      'baselines',
     ],
   },
   ingestion: { port: 3001, components: ['configuration', 'logging', 'health'] },
@@ -21,6 +22,7 @@ export const applicationDefinitions = {
       'health',
       'resource-state',
       'rule-engine',
+      'statistical-detection',
       'incident-correlation',
     ],
   },
@@ -39,6 +41,24 @@ export const logLevels = [
   'debug',
   'verbose',
 ] as const;
+
+/**
+ * Historical windows a baseline may cover.
+ *
+ * Structurally identical to `BaselineWindow` in `@faultline/baselines`. The platform
+ * package stays dependency-free on purpose, so the two are kept in step by a
+ * compile-time check where both are imported (see the processor's statistical wiring).
+ */
+export const baselineWindowNames = ['1h', '6h', '24h', '7d'] as const;
+export type BaselineWindowName = (typeof baselineWindowNames)[number];
+const baselineWindow = z.enum(baselineWindowNames);
+
+/** Environment values are strings; `true`/`false` are the only accepted spellings. */
+const booleanFlag = (fallback: boolean) =>
+  z
+    .enum(['true', 'false'])
+    .default(fallback ? 'true' : 'false')
+    .transform((value) => value === 'true');
 
 const environmentSchema = z
   .object({
@@ -207,6 +227,120 @@ const environmentSchema = z
       .trim()
       .min(1)
       .default('faultline-telemetry-storage'),
+
+    // Baselines. No universal window is assumed: slow-moving signals such as memory use
+    // the default window, while latency and error rates use the shorter fast window.
+    BASELINE_DEFAULT_WINDOW: baselineWindow.default('24h'),
+    BASELINE_FAST_WINDOW: baselineWindow.default('1h'),
+    BASELINE_MIN_SAMPLES: z.coerce.number().int().min(2).max(1_000_000).default(60),
+    BASELINE_BUCKET_MS: z.coerce
+      .number()
+      .int()
+      .min(1000)
+      .max(3_600_000)
+      .default(60_000),
+    BASELINE_REFRESH_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(30_000)
+      .max(86_400_000)
+      .default(900_000),
+    BASELINE_MAX_TARGETS: z.coerce.number().int().min(1).max(10_000).default(200),
+    BASELINE_MAX_SAMPLES_PER_SUMMARY: z.coerce
+      .number()
+      .int()
+      .min(100)
+      .default(2_000_000),
+    BASELINE_EXCLUDE_DISRUPTED_PERIODS: booleanFlag(true),
+    BASELINE_DISRUPTION_PADDING_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(3_600_000)
+      .default(300_000),
+    BASELINE_CACHE_TTL_MS: z.coerce
+      .number()
+      .int()
+      .min(1000)
+      .max(3_600_000)
+      .default(60_000),
+    BASELINE_STALE_AFTER_MS: z.coerce
+      .number()
+      .int()
+      .min(60_000)
+      .default(604_800_000),
+
+    // Statistical detection. Every threshold here is a tuning knob, never a hard failure
+    // condition: deterministic limits stay in the rule engine's own settings.
+    STATISTICAL_DETECTION_ENABLED: booleanFlag(true),
+    STATISTICAL_EVALUATION_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .min(10_000)
+      .max(86_400_000)
+      .default(900_000),
+    STATISTICAL_MIN_CURRENT_SAMPLES: z.coerce
+      .number()
+      .int()
+      .min(2)
+      .max(10_000)
+      .default(5),
+    STATISTICAL_Z_SCORE_THRESHOLD: z.coerce.number().min(0.5).max(50).default(3),
+    STATISTICAL_Z_SCORE_RESOLVE_THRESHOLD: z.coerce
+      .number()
+      .min(0.1)
+      .max(50)
+      .default(2),
+    STATISTICAL_PERCENTILE_RATIO_THRESHOLD: z.coerce
+      .number()
+      .min(1.05)
+      .max(100)
+      .default(2),
+    STATISTICAL_PERCENTILE_RATIO_RESOLVE_THRESHOLD: z.coerce
+      .number()
+      .min(1)
+      .max(100)
+      .default(1.5),
+    STATISTICAL_MIN_CONSECUTIVE_WINDOWS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(3),
+    STATISTICAL_RESOLVE_CONSECUTIVE_WINDOWS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(3),
+    STATISTICAL_COOLDOWN_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(86_400_000)
+      .default(600_000),
+    STATISTICAL_DEVIATION_RELATIVE_FLOOR: z.coerce
+      .number()
+      .min(0)
+      .max(1)
+      .default(0.05),
+    STATISTICAL_GROWTH_MIN_SAMPLES: z.coerce
+      .number()
+      .int()
+      .min(3)
+      .max(1000)
+      .default(6),
+    STATISTICAL_GROWTH_MIN_PERCENT: z.coerce
+      .number()
+      .min(1)
+      .max(10_000)
+      .default(25),
+    STATISTICAL_GROWTH_MIN_R_SQUARED: z.coerce.number().min(0).max(1).default(0.7),
+    STATISTICAL_GROWTH_MIN_MONOTONIC_FRACTION: z.coerce
+      .number()
+      .min(0)
+      .max(1)
+      .default(0.7),
   })
   .superRefine((value, context) => {
     if (
@@ -230,6 +364,25 @@ const environmentSchema = z
         path: ['TELEMETRY_STORAGE_CONSUMER_GROUP'],
         message: 'must differ from BROKER_CONSUMER_GROUP',
       });
+    // Hysteresis only works when leaving an anomaly is harder than entering one.
+    if (
+      value.STATISTICAL_Z_SCORE_RESOLVE_THRESHOLD >=
+      value.STATISTICAL_Z_SCORE_THRESHOLD
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['STATISTICAL_Z_SCORE_RESOLVE_THRESHOLD'],
+        message: 'must be below STATISTICAL_Z_SCORE_THRESHOLD',
+      });
+    if (
+      value.STATISTICAL_PERCENTILE_RATIO_RESOLVE_THRESHOLD >=
+      value.STATISTICAL_PERCENTILE_RATIO_THRESHOLD
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['STATISTICAL_PERCENTILE_RATIO_RESOLVE_THRESHOLD'],
+        message: 'must be below STATISTICAL_PERCENTILE_RATIO_THRESHOLD',
+      });
   });
 
 export type Environment = z.infer<typeof environmentSchema>;
@@ -247,6 +400,46 @@ export interface ApplicationConfig {
   readonly incidentCorrelation: IncidentCorrelationConfig;
   readonly infrastructure: InfrastructureConfig;
   readonly telemetryStorage: TelemetryStorageConfig;
+  readonly baselines: BaselineSettings;
+  readonly statisticalDetection: StatisticalDetectionSettings;
+}
+
+/**
+ * How expected behaviour is computed and kept fresh.
+ *
+ * Windows are configurable per speed rather than universal: a memory baseline wants a
+ * day of history, while an error rate that only matters over minutes wants an hour.
+ */
+export interface BaselineSettings {
+  windows: { default: BaselineWindowName; fast: BaselineWindowName };
+  /** Below this, a baseline reports BASELINE_NOT_READY instead of a shaky mean. */
+  minimumSamples: number;
+  bucketMs: number;
+  refreshIntervalMs: number;
+  maxTargets: number;
+  maxSamplesPerSummary: number;
+  excludeDisruptedPeriods: boolean;
+  disruptionPaddingMs: number;
+  cacheTtlMs: number;
+  staleAfterMs: number;
+}
+
+export interface StatisticalDetectionSettings {
+  enabled: boolean;
+  evaluationWindowMs: number;
+  minimumCurrentSamples: number;
+  zScoreThreshold: number;
+  zScoreResolveThreshold: number;
+  percentileRatioThreshold: number;
+  percentileRatioResolveThreshold: number;
+  minimumConsecutiveWindows: number;
+  resolveConsecutiveWindows: number;
+  cooldownMs: number;
+  deviationRelativeFloor: number;
+  growthMinimumSamples: number;
+  growthMinimumPercent: number;
+  growthMinimumRSquared: number;
+  growthMinimumMonotonicFraction: number;
 }
 
 export interface InfrastructureConfig {
@@ -357,10 +550,16 @@ export function validateEnvironment(
         ? ['BROKER_URL']
         : []),
       // The processor deliberately never needs ClickHouse: detection must keep
-      // running while telemetry history is unavailable.
+      // running while telemetry history is unavailable, comparing live telemetry
+      // against the baselines already written to PostgreSQL.
       ...((application === 'api' || application === 'storage') &&
       !result.data.CLICKHOUSE_URL
         ? ['CLICKHOUSE_URL']
+        : []),
+      // Storage derives baselines from telemetry history and writes them to PostgreSQL,
+      // reading incident windows from there to keep outages out of the baseline.
+      ...(application === 'storage' && !result.data.DATABASE_URL
+        ? ['DATABASE_URL']
         : []),
       ...(application === 'api' &&
       result.data.NODE_ENV === 'production' &&

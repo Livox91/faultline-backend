@@ -204,6 +204,99 @@ export class PlatformModule {
                   config.get('TELEMETRY_QUERY_CLUSTER_SCOPE', { infer: true }),
                 ),
               }),
+              baselines: Object.freeze({
+                windows: Object.freeze({
+                  default: config.get('BASELINE_DEFAULT_WINDOW', {
+                    infer: true,
+                  }),
+                  fast: config.get('BASELINE_FAST_WINDOW', { infer: true }),
+                }),
+                minimumSamples: config.get('BASELINE_MIN_SAMPLES', {
+                  infer: true,
+                }),
+                bucketMs: config.get('BASELINE_BUCKET_MS', { infer: true }),
+                refreshIntervalMs: config.get('BASELINE_REFRESH_INTERVAL_MS', {
+                  infer: true,
+                }),
+                maxTargets: config.get('BASELINE_MAX_TARGETS', { infer: true }),
+                maxSamplesPerSummary: config.get(
+                  'BASELINE_MAX_SAMPLES_PER_SUMMARY',
+                  { infer: true },
+                ),
+                excludeDisruptedPeriods: config.get(
+                  'BASELINE_EXCLUDE_DISRUPTED_PERIODS',
+                  { infer: true },
+                ),
+                disruptionPaddingMs: config.get(
+                  'BASELINE_DISRUPTION_PADDING_MS',
+                  { infer: true },
+                ),
+                cacheTtlMs: config.get('BASELINE_CACHE_TTL_MS', {
+                  infer: true,
+                }),
+                staleAfterMs: config.get('BASELINE_STALE_AFTER_MS', {
+                  infer: true,
+                }),
+              }),
+              statisticalDetection: Object.freeze({
+                enabled: config.get('STATISTICAL_DETECTION_ENABLED', {
+                  infer: true,
+                }),
+                evaluationWindowMs: config.get(
+                  'STATISTICAL_EVALUATION_WINDOW_MS',
+                  { infer: true },
+                ),
+                minimumCurrentSamples: config.get(
+                  'STATISTICAL_MIN_CURRENT_SAMPLES',
+                  { infer: true },
+                ),
+                zScoreThreshold: config.get('STATISTICAL_Z_SCORE_THRESHOLD', {
+                  infer: true,
+                }),
+                zScoreResolveThreshold: config.get(
+                  'STATISTICAL_Z_SCORE_RESOLVE_THRESHOLD',
+                  { infer: true },
+                ),
+                percentileRatioThreshold: config.get(
+                  'STATISTICAL_PERCENTILE_RATIO_THRESHOLD',
+                  { infer: true },
+                ),
+                percentileRatioResolveThreshold: config.get(
+                  'STATISTICAL_PERCENTILE_RATIO_RESOLVE_THRESHOLD',
+                  { infer: true },
+                ),
+                minimumConsecutiveWindows: config.get(
+                  'STATISTICAL_MIN_CONSECUTIVE_WINDOWS',
+                  { infer: true },
+                ),
+                resolveConsecutiveWindows: config.get(
+                  'STATISTICAL_RESOLVE_CONSECUTIVE_WINDOWS',
+                  { infer: true },
+                ),
+                cooldownMs: config.get('STATISTICAL_COOLDOWN_MS', {
+                  infer: true,
+                }),
+                deviationRelativeFloor: config.get(
+                  'STATISTICAL_DEVIATION_RELATIVE_FLOOR',
+                  { infer: true },
+                ),
+                growthMinimumSamples: config.get(
+                  'STATISTICAL_GROWTH_MIN_SAMPLES',
+                  { infer: true },
+                ),
+                growthMinimumPercent: config.get(
+                  'STATISTICAL_GROWTH_MIN_PERCENT',
+                  { infer: true },
+                ),
+                growthMinimumRSquared: config.get(
+                  'STATISTICAL_GROWTH_MIN_R_SQUARED',
+                  { infer: true },
+                ),
+                growthMinimumMonotonicFraction: config.get(
+                  'STATISTICAL_GROWTH_MIN_MONOTONIC_FRACTION',
+                  { infer: true },
+                ),
+              }),
             }),
         },
         {

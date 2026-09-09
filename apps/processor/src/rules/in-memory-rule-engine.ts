@@ -125,6 +125,9 @@ export class InMemoryRuleEngine implements RuleEngine {
             dedupeKey: evaluation.dedupeKey,
             ruleId: rule.ruleId,
             classification: rule.classification,
+            // Every rule here encodes an explicit failure condition, never a deviation
+            // from history; the statistical detector stamps its own anomalies.
+            source: 'DETERMINISTIC',
             ...evaluation.match,
             clusterId: evaluation.affectedResource.clusterId,
             affectedResource: evaluation.affectedResource,
