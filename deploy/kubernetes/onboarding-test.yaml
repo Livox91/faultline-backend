@@ -28,11 +28,10 @@ spec:
           command: [sh, -c]
           args:
             - |
-              while true; do
-                echo "FAULTLINE_ONBOARDING_TEST"
-                echo "database connection refused FAULTLINE_ONBOARDING_CLASSIFICATION_TEST" >&2
-                sleep 5
-              done
+              sleep 5
+              echo "FAULTLINE_ONBOARDING_TEST"
+              echo "database connection refused FAULTLINE_ONBOARDING_CLASSIFICATION_TEST" >&2
+              sleep 3600
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

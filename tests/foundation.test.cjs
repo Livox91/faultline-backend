@@ -93,6 +93,8 @@ for (const [index, app] of [
     );
     assert.equal(validate(validEnvironment).LOG_CLASSIFIER_ENABLED, true);
     assert.equal(validate(validEnvironment).LOG_CLASSIFIER_MIN_CONFIDENCE, 0.6);
+    assert.equal(validate(validEnvironment).LOG_INCIDENT_ANOMALY_THRESHOLD, 6);
+    assert.equal(validate(validEnvironment).LOG_INCIDENT_INCIDENT_THRESHOLD, 9);
     assert.throws(
       () =>
         validate({
@@ -101,6 +103,24 @@ for (const [index, app] of [
           LOG_CLASSIFIER_HIGH_CONFIDENCE: '0.8',
         }),
       /LOG_CLASSIFIER_MIN_CONFIDENCE/,
+    );
+    assert.throws(
+      () =>
+        validate({
+          ...validEnvironment,
+          LOG_INCIDENT_ANOMALY_THRESHOLD: '9',
+          LOG_INCIDENT_INCIDENT_THRESHOLD: '9',
+        }),
+      /LOG_INCIDENT_INCIDENT_THRESHOLD/,
+    );
+    assert.throws(
+      () =>
+        validate({
+          ...validEnvironment,
+          LOG_INCIDENT_REPEATED_OCCURRENCES: '20',
+          LOG_INCIDENT_FREQUENT_OCCURRENCES: '10',
+        }),
+      /LOG_INCIDENT_FREQUENT_OCCURRENCES/,
     );
     assert.throws(
       () =>

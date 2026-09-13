@@ -34,7 +34,7 @@ test('collector installation is outbound-only and cannot read Secrets', () => {
   assert.match(logs, /FAULTLINE_METRICS_ENDPOINT/);
 });
 
-test('verification workload emits raw and classifiable evidence without credentials', () => {
+test('verification workload emits a finite non-operational probe without credentials', () => {
   const manifest = read('deploy/kubernetes/onboarding-test.yaml');
   assert.match(manifest, /FAULTLINE_ONBOARDING_TEST/);
   assert.match(
@@ -66,4 +66,36 @@ test('combined development pipeline loads every application environment', () => 
   assert.match(pipeline, /\['api', 'ingestion', 'processor', 'storage'\]/);
   assert.match(pipeline, /parseEnv/);
   assert.match(pipeline, /key !== 'PORT'/);
+});
+
+test('cluster registration is persisted before local onboarding state', () => {
+  const cluster = read('scripts/cluster.cjs');
+  assert.match(
+    cluster,
+    /INSERT INTO clusters[\s\S]*workload_namespace[\s\S]*ON CONFLICT \(id\) DO UPDATE/,
+  );
+  assert.match(cluster, /await persistCluster\(state\);\s*saveState\(state\);/);
+  assert.match(
+    cluster,
+    /context\.startsWith\('kind-'\) \? context\.slice\(5\)/,
+  );
+  assert.match(cluster, /if \(command === 'add'\) await register\(\);/);
+});
+
+test('onboarding probes are finite and their persisted artifacts are cleaned', () => {
+  const manifest = read('deploy/kubernetes/onboarding-test.yaml');
+  const cluster = read('scripts/cluster.cjs');
+  assert.doesNotMatch(manifest, /while true/);
+  assert.match(manifest, /sleep 5[\s\S]*FAULTLINE_ONBOARDING_TEST/);
+  assert.match(
+    cluster,
+    /DELETE FROM incidents WHERE cluster_id = \$1 AND namespace = \$2/,
+  );
+  assert.match(cluster, /ALTER TABLE[\s\S]*DELETE WHERE cluster_id/);
+  assert.match(cluster, /faultline:rules:state:v1/);
+  assert.match(cluster, /finally \{\s*await cleanup\(\);\s*\}/);
+  assert.match(
+    cluster,
+    /rollout[\s\S]*restart[\s\S]*daemonset\/faultline-collector-logs/,
+  );
 });

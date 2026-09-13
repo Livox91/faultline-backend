@@ -12,8 +12,8 @@ npm run faultline:start
 npm run cluster:onboard
 ```
 
-The final command verifies a real Kubernetes stdout log in ClickHouse and its
-`DATABASE_CONNECTIVITY` classification in the existing incident pipeline.
+The final command verifies a real Kubernetes stdout log in ClickHouse. Its disposable
+probe namespace is excluded from operational classification and incident creation.
 
 ## Telemetry history and search
 
@@ -285,6 +285,35 @@ Anomaly output includes its stable ID, rule/classification, severity, confidence
 affected resource, summary, timestamps, and bounded supporting evidence.
 
 Anomaly lifecycle, deduplication, and rule-window state are checkpointed in Redis.
+
+## Semantic log classification
+
+Normalized logs are classified from their top-level `message` and `level`; raw OTLP
+severity attributes are retained only as source metadata. The heuristic classifier uses
+weighted, framework-neutral operational signals and the compact taxonomy
+`APPLICATION_EXCEPTION`, `DATABASE_CONNECTIVITY`, `DEPENDENCY_TIMEOUT`,
+`AUTHENTICATION_FAILURE`, `AUTHORIZATION_FAILURE`, `CONFIGURATION_ERROR`,
+`NETWORK_FAILURE`, `RATE_LIMITING`, `RESOURCE_EXHAUSTION`, `STORAGE_FAILURE`,
+`STARTUP_FAILURE`, and `UNKNOWN`. Each result records a confidence and its matched
+signals. An `ERROR` or `FATAL` level strengthens incident evidence but does not invent a
+semantic classification; an unmatched error remains `UNKNOWN`.
+
+The derived fingerprint removes timestamps, UUIDs, request/trace IDs, pod suffixes, IP
+addresses, ports, and changing numeric values while preserving the original log. Redis
+atomically aggregates the resulting pattern by cluster, namespace, workload, and
+classification over a bounded window, including occurrence count and affected pods. Raw
+logs remain in ClickHouse and are not copied into this short-lived counter path.
+
+Incident eligibility is configured rather than embedded in the classifier. Defaults add
+3 points for a known classification, 1 for `ERROR` or 2 for `FATAL`, 2 at five
+occurrences or 3 at twenty occurrences, and 2 when multiple pods are affected. Scores
+below 6 remain classification-only, scores from 6 through 8 emit an anomaly, and scores
+of 9 or more may open an incident through the existing correlation engine. A lower-score
+log anomaly can still strengthen a related active incident. Kubernetes and statistical
+anomalies such as `POD_NOT_READY`, `OOM_KILLED`, error-rate, latency, and memory signals
+continue to raise correlated incident confidence and severity. All weights, repetition
+gates, and decision thresholds use the `LOG_INCIDENT_*` settings documented in
+`apps/processor/.env.example`.
 
 ## Incident correlation
 

@@ -116,15 +116,14 @@ export class InMemoryStatisticalDetector implements StatisticalDetector {
     if (!this.config.enabled) return [];
     const time = Date.parse(event.timestamp);
     if (!Number.isFinite(time)) return [];
-    // Redelivery must not count a sample twice: it would inflate rates and error ratios.
-    if (this.seenIds.has(event.id)) return [];
-    this.seenIds.set(event.id, time);
-
     const contributions = contributionsFor(event, state);
     if (!contributions.length) {
       this.prune(time);
       return [];
     }
+    // Redelivery must not count a sample twice: it would inflate rates and error ratios.
+    if (this.seenIds.has(event.id)) return [];
+    this.seenIds.set(event.id, time);
 
     const candidatesByKey = new Map<string, Candidate>();
     for (const contribution of contributions) {

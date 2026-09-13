@@ -40,6 +40,11 @@ import {
   ConfiguredTelemetryScopeResolver,
   TELEMETRY_SCOPE_RESOLVER,
 } from './telemetry-scope';
+import {
+  CLUSTER_DIRECTORY,
+  ClustersController,
+  type RegisteredCluster,
+} from './clusters.controller';
 
 export const CLICKHOUSE_CONNECTION = Symbol('faultline.clickhouse-connection');
 
@@ -55,6 +60,7 @@ const infrastructureProviders: Provider[] =
           provide: BASELINE_REPOSITORY,
           useFactory: getDevelopmentBaselineRepository,
         },
+        { provide: CLUSTER_DIRECTORY, useValue: { list: async () => [] } },
       ]
     : [
         {
@@ -77,6 +83,60 @@ const infrastructureProviders: Provider[] =
           inject: [DATABASE],
           useFactory: (database: PostgresConnection) =>
             new PostgresIncidentRepository(database),
+        },
+        {
+          provide: CLUSTER_DIRECTORY,
+          inject: [DATABASE],
+          useFactory: (database: PostgresConnection) => ({
+            list: async (): Promise<RegisteredCluster[]> => {
+              const result = await database.pool.query<{
+                id: string;
+                name: string;
+                kubernetes_context: string | null;
+                workload_namespace: string | null;
+                workload_selector: string | null;
+                created_at: Date;
+                updated_at: Date;
+                total: string;
+                open: string;
+                critical: string;
+                last_seen: Date | null;
+              }>(
+                `SELECT c.id, COALESCE(c.name, c.id) AS name,
+                        c.kubernetes_context, c.workload_namespace,
+                        c.workload_selector, c.created_at, c.updated_at,
+                        count(i.id)::text AS total,
+                        count(i.id) FILTER (WHERE i.status <> 'RESOLVED')::text AS open,
+                        count(i.id) FILTER (WHERE i.severity = 'CRITICAL')::text AS critical,
+                        max(i.last_seen) AS last_seen
+                 FROM clusters c
+                 LEFT JOIN incidents i ON i.cluster_id = c.id
+                 GROUP BY c.id
+                 ORDER BY COALESCE(c.name, c.id), c.id`,
+              );
+              return result.rows.map((row) => ({
+                id: row.id,
+                name: row.name,
+                ...(row.kubernetes_context
+                  ? { kubernetesContext: row.kubernetes_context }
+                  : {}),
+                ...(row.workload_namespace
+                  ? { workloadNamespace: row.workload_namespace }
+                  : {}),
+                ...(row.workload_selector
+                  ? { workloadSelector: row.workload_selector }
+                  : {}),
+                createdAt: row.created_at.toISOString(),
+                updatedAt: row.updated_at.toISOString(),
+                total: Number(row.total),
+                open: Number(row.open),
+                critical: Number(row.critical),
+                ...(row.last_seen
+                  ? { lastSeen: row.last_seen.toISOString() }
+                  : {}),
+              }));
+            },
+          }),
         },
         {
           // Baselines are served from PostgreSQL, so they stay inspectable even while
@@ -132,6 +192,7 @@ const infrastructureProviders: Provider[] =
     TelemetryController,
     ResourceTimelineController,
     BaselinesController,
+    ClustersController,
   ],
   providers: [
     ...infrastructureProviders,

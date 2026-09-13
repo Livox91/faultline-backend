@@ -15,7 +15,6 @@ import {
   PostgresBaselineRepository,
   PostgresConnection,
   PostgresIncidentRepository,
-  PostgresLogClassificationRepository,
 } from '@faultline/database';
 import {
   InMemoryLogClassificationRepository,
@@ -57,6 +56,7 @@ import { RedisStatisticalDetector } from './statistical/redis-statistical-detect
 import { LOG_CLASSIFIER } from './log-classification/contracts';
 import { StagedLogClassifier } from './log-classification/log-classifier';
 import { HttpMachineLearningLogClassifier } from './log-classification/http-ml-classifier';
+import { RedisLogClassificationRepository } from './log-classification/redis-repository';
 
 export const REDIS_CONNECTION = Symbol('faultline.redis');
 const testMode = process.env.NODE_ENV === 'test';
@@ -128,9 +128,9 @@ if (testMode) {
     },
     {
       provide: LOG_CLASSIFICATION_REPOSITORY,
-      inject: [DATABASE],
-      useFactory: (database: PostgresConnection) =>
-        new PostgresLogClassificationRepository(database),
+      inject: [REDIS_CONNECTION],
+      useFactory: (redis: RedisConnection) =>
+        new RedisLogClassificationRepository(redis),
     },
     {
       provide: REDIS_CONNECTION,

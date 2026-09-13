@@ -51,6 +51,7 @@ export class InMemoryRuleEngine implements RuleEngine {
   ) {}
 
   evaluate(event: TelemetryEvent, state?: ResourceState): readonly Anomaly[] {
+    if (!isRuleRelevantTelemetry(event, state)) return [];
     if (this.seenIds.has(event.id)) return [];
     const time = Date.parse(event.timestamp);
     if (!Number.isFinite(time)) return [];
@@ -212,7 +213,11 @@ export class InMemoryRuleEngine implements RuleEngine {
     this.active.clear();
     this.restarts.clear();
     this.watermarks.clear();
-    this.evidence.splice(0, this.evidence.length, ...(state.evidence ?? []));
+    this.evidence.splice(
+      0,
+      this.evidence.length,
+      ...(state.evidence ?? []).filter(isRetainedEvidence),
+    );
     for (const item of state.seenIds ?? []) this.seenIds.set(...item);
     for (const item of state.conditions ?? []) this.conditions.set(...item);
     for (const item of state.active ?? []) this.active.set(...item);
@@ -246,7 +251,10 @@ export class InMemoryRuleEngine implements RuleEngine {
 
   private remember(event: TelemetryEvent, time: number): void {
     this.seenIds.set(event.id, time);
-    this.evidence.push(event);
+    // Cross-event rule evidence is currently Kubernetes-native (for example BackOff
+    // supporting a later restart metric). Keeping every high-volume metric and log here
+    // made the complete Redis checkpoint grow by several megabytes without any reader.
+    if (isRetainedEvidence(event)) this.evidence.push(event);
     const cutoff = time - this.historyWindowMs;
     while (
       this.evidence.length &&
@@ -293,4 +301,16 @@ export class InMemoryRuleEngine implements RuleEngine {
     }
     return result.slice(-10);
   }
+}
+
+function isRetainedEvidence(event: TelemetryEvent): boolean {
+  return event.kind === 'kubernetes';
+}
+
+/** Logs and unmapped metrics cannot affect any deterministic rule state. */
+export function isRuleRelevantTelemetry(
+  event: TelemetryEvent,
+  state?: ResourceState,
+): boolean {
+  return event.kind === 'kubernetes' || (event.kind === 'metric' && !!state);
 }

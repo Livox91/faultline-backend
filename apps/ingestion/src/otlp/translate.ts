@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   telemetryEventSchema,
   normalizeWorkloadSnapshot,
+  normalizeLog,
   type TelemetryEvent,
 } from '@faultline/telemetry';
 
@@ -87,22 +88,6 @@ export function nanos(value: unknown): string | undefined {
     'Z'
   );
 }
-function severity(record: ObjectValue): string {
-  const number = record.severityNumber ?? 0;
-  if (!Number.isInteger(number) || Number(number) < 0 || Number(number) > 24)
-    throw new Error('Invalid severity');
-  if (Number(number) > 0)
-    return ['trace', 'debug', 'info', 'warn', 'error', 'fatal'][
-      Math.floor((Number(number) - 1) / 4)
-    ]!;
-  const label = text(record.severityText)?.toLowerCase();
-  if (label === 'warning') return 'warn';
-  return label &&
-    ['trace', 'debug', 'info', 'warn', 'error', 'fatal'].includes(label)
-    ? label
-    : 'unknown';
-}
-
 function translate(
   recordValue: unknown,
   resource: ObjectValue,
@@ -239,12 +224,26 @@ function translate(
     });
   }
   const stream = attrs['log.iostream'] ?? attrs.stream;
+  const normalized = normalizeLog({
+    ...(typeof record.severityText === 'string'
+      ? { severityText: record.severityText }
+      : {}),
+    ...(record.severityNumber !== undefined
+      ? { severityNumber: record.severityNumber as number }
+      : {}),
+    body,
+    stream,
+  });
   return telemetryEventSchema.parse({
     ...common,
     kind: 'log',
-    message: typeof body === 'string' ? body : JSON.stringify(body),
-    level: severity(record),
+    message: normalized.message,
+    level: normalized.level,
     stream,
+    attributes: {
+      ...common.attributes,
+      'faultline.severity.source': normalized.severitySource,
+    },
   });
 }
 

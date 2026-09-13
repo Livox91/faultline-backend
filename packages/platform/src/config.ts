@@ -381,6 +381,27 @@ const environmentSchema = z
       .min(1_000)
       .max(86_400_000)
       .default(600_000),
+    LOG_INCIDENT_WEIGHT_KNOWN_CLASSIFICATION: z.coerce
+      .number()
+      .min(0)
+      .default(3),
+    LOG_INCIDENT_WEIGHT_ERROR_SEVERITY: z.coerce.number().min(0).default(1),
+    LOG_INCIDENT_WEIGHT_FATAL_SEVERITY: z.coerce.number().min(0).default(2),
+    LOG_INCIDENT_WEIGHT_REPEATED: z.coerce.number().min(0).default(2),
+    LOG_INCIDENT_WEIGHT_FREQUENT: z.coerce.number().min(0).default(3),
+    LOG_INCIDENT_WEIGHT_MULTIPLE_PODS: z.coerce.number().min(0).default(2),
+    LOG_INCIDENT_REPEATED_OCCURRENCES: z.coerce
+      .number()
+      .int()
+      .min(2)
+      .default(5),
+    LOG_INCIDENT_FREQUENT_OCCURRENCES: z.coerce
+      .number()
+      .int()
+      .min(3)
+      .default(20),
+    LOG_INCIDENT_ANOMALY_THRESHOLD: z.coerce.number().min(1).default(6),
+    LOG_INCIDENT_INCIDENT_THRESHOLD: z.coerce.number().min(1).default(9),
   })
   .superRefine((value, context) => {
     if (
@@ -431,6 +452,24 @@ const environmentSchema = z
         code: 'custom',
         path: ['LOG_CLASSIFIER_MIN_CONFIDENCE'],
         message: 'must be below LOG_CLASSIFIER_HIGH_CONFIDENCE',
+      });
+    if (
+      value.LOG_INCIDENT_REPEATED_OCCURRENCES >=
+      value.LOG_INCIDENT_FREQUENT_OCCURRENCES
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['LOG_INCIDENT_FREQUENT_OCCURRENCES'],
+        message: 'must exceed LOG_INCIDENT_REPEATED_OCCURRENCES',
+      });
+    if (
+      value.LOG_INCIDENT_ANOMALY_THRESHOLD >=
+      value.LOG_INCIDENT_INCIDENT_THRESHOLD
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['LOG_INCIDENT_INCIDENT_THRESHOLD'],
+        message: 'must exceed LOG_INCIDENT_ANOMALY_THRESHOLD',
       });
   });
 
@@ -499,6 +538,18 @@ export interface LogClassificationSettings {
   mlUrl?: string;
   mlTimeoutMs: number;
   aggregationWindowMs: number;
+  scoring: {
+    knownClassification: number;
+    errorSeverity: number;
+    fatalSeverity: number;
+    repeated: number;
+    frequent: number;
+    multiplePods: number;
+    repeatedOccurrenceThreshold: number;
+    frequentOccurrenceThreshold: number;
+    anomalyThreshold: number;
+    incidentThreshold: number;
+  };
 }
 
 export interface InfrastructureConfig {

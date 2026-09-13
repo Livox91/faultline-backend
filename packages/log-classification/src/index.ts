@@ -29,6 +29,7 @@ export interface LogClassificationEvidence {
   summary: string;
   excerpt?: string;
   matchedPattern?: string;
+  matchedSignals?: readonly string[];
 }
 
 /** A derived record. The normalized LogEvent remains immutable and lives in ClickHouse. */
@@ -47,6 +48,9 @@ export interface LogClassificationResult {
 export interface LogPatternAggregate {
   patternId: string;
   classification: LogClassification;
+  clusterId: string;
+  namespace?: string;
+  workload?: string;
   count: number;
   firstSeen: string;
   lastSeen: string;
@@ -84,7 +88,7 @@ export const LOG_CLASSIFICATION_REPOSITORY = Symbol(
   'faultline.log-classification-repository',
 );
 
-/** Bounded development/test adapter; production uses PostgreSQL. */
+/** Bounded development/test adapter; production uses short-lived Redis state. */
 export class InMemoryLogClassificationRepository implements LogClassificationRepository {
   private readonly results = new Map<string, LogClassificationResult>();
   private readonly patterns = new Map<string, LogPatternAggregate>();
@@ -93,14 +97,20 @@ export class InMemoryLogClassificationRepository implements LogClassificationRep
 
   async save(
     result: LogClassificationResult,
-    context: { pod?: string; aggregationWindowMs: number },
+    context: {
+      clusterId: string;
+      namespace?: string;
+      workload?: string;
+      pod?: string;
+      aggregationWindowMs: number;
+    },
   ): Promise<LogPatternAggregate> {
     const duplicate = this.results.has(result.eventId);
     this.results.set(result.eventId, structuredClone(result));
     const prior = this.patterns.get(result.patternId);
     const inWindow =
       prior !== undefined &&
-      Date.parse(result.timestamp) - Date.parse(prior.lastSeen) <=
+      Math.abs(Date.parse(result.timestamp) - Date.parse(prior.lastSeen)) <=
         context.aggregationWindowMs;
     const current = inWindow ? prior : undefined;
     const pods = new Set(current?.affectedPods ?? []);
@@ -108,6 +118,9 @@ export class InMemoryLogClassificationRepository implements LogClassificationRep
     const aggregate: LogPatternAggregate = {
       patternId: result.patternId,
       classification: result.classification,
+      clusterId: context.clusterId,
+      ...(context.namespace ? { namespace: context.namespace } : {}),
+      ...(context.workload ? { workload: context.workload } : {}),
       count: (current?.count ?? 0) + (duplicate ? 0 : 1),
       firstSeen:
         current && Date.parse(current.firstSeen) <= Date.parse(result.timestamp)

@@ -4,6 +4,7 @@ import type { ResourceState } from '../resource-state/resource-state';
 import type { RedisConnection } from '../infrastructure/redis';
 import type { StatisticalDetector } from './contracts';
 import type { InMemoryStatisticalDetector } from './statistical-detector';
+import { contributionsFor } from './signals';
 
 /**
  * Persists rolling sample windows and anomaly lifecycle state in Redis.
@@ -14,6 +15,7 @@ import type { InMemoryStatisticalDetector } from './statistical-detector';
  */
 export class RedisStatisticalDetector implements StatisticalDetector {
   private pending = false;
+  private hydrated = false;
   constructor(
     private readonly redis: RedisConnection,
     private readonly detector: InMemoryStatisticalDetector,
@@ -25,10 +27,9 @@ export class RedisStatisticalDetector implements StatisticalDetector {
     event: TelemetryEvent,
     state?: ResourceState,
   ): Promise<readonly Anomaly[]> {
-    const stored = await this.redis.client.get(this.key);
-    if (stored) this.detector.importState(JSON.parse(stored));
+    await this.hydrate();
     const result = await this.detector.detect(event, state);
-    this.pending = true;
+    if (contributionsFor(event, state).length) this.pending = true;
     return result;
   }
 
@@ -46,5 +47,13 @@ export class RedisStatisticalDetector implements StatisticalDetector {
     this.pending = false;
     const stored = await this.redis.client.get(this.key);
     this.detector.importState(stored ? JSON.parse(stored) : { version: 1 });
+    this.hydrated = true;
+  }
+
+  private async hydrate(): Promise<void> {
+    if (this.hydrated) return;
+    const stored = await this.redis.client.get(this.key);
+    if (stored) this.detector.importState(JSON.parse(stored));
+    this.hydrated = true;
   }
 }

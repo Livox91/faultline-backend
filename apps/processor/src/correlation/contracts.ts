@@ -10,7 +10,10 @@ export interface IncidentChange {
 }
 
 export interface IncidentCorrelator {
-  correlate(anomaly: Anomaly): Promise<IncidentChange | undefined>;
+  correlate(
+    anomaly: Anomaly,
+    options?: { allowCreate?: boolean },
+  ): Promise<IncidentChange | undefined>;
   /** Advance stabilization using event time, even when no anomaly was emitted. */
   advance(timestamp: string): Promise<readonly IncidentChange[]>;
 }

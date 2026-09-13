@@ -16,6 +16,8 @@ const {
   InMemoryQueue,
   getDevelopmentQueue,
 } = require('@faultline/queue');
+const { normalizeLog } = require('@faultline/telemetry');
+const booknestAnsiError = require('./fixtures/booknest-ansi-error.json');
 const {
   TelemetryConsumer,
 } = require('../apps/processor/dist/telemetry.consumer');
@@ -144,6 +146,206 @@ test('OTLP log normalization preserves nanoseconds, raw message and enriched con
   ).events[0];
   assert.equal(minimal.pod, undefined);
   assert.equal(minimal.level, 'unknown');
+});
+
+test('severity precedence uses OTLP text before number, structure and message', () => {
+  const normalized = normalizeLog({
+    severityText: 'ERROR',
+    severityNumber: 9,
+    body: { level: 'warn', msg: 'INFO application started' },
+    stream: 'stderr',
+  });
+  assert.deepEqual(normalized, {
+    level: 'error',
+    severitySource: 'OTLP_TEXT',
+    message: 'INFO application started',
+  });
+});
+
+test('unspecified OTLP severity falls back to the ANSI-cleaned NestJS message', () => {
+  const normalized = normalizeLog({
+    severityText: booknestAnsiError.attributes['otel.severity_text'],
+    severityNumber: Number(
+      booknestAnsiError.attributes['otel.severity_number'],
+    ),
+    body: booknestAnsiError.rawPayload,
+    stream: booknestAnsiError.stream,
+  });
+  const result = {
+    ...booknestAnsiError,
+    severity: normalized.level,
+    severitySource: normalized.severitySource,
+    message: normalized.message,
+  };
+  assert.equal(result.eventId, '25377cb0-5d49-40a4-94c3-b96d0694a6ac');
+  assert.equal(result.clusterId, 'booknest-app');
+  assert.equal(result.namespace, 'default');
+  assert.equal(result.workload, 'booknest-backend');
+  assert.equal(result.pod, 'booknest-backend-bd687684d-rzjvf');
+  assert.equal(result.container, 'backend');
+  assert.equal(result.node, 'booknest-app-control-plane');
+  assert.equal(result.stream, 'stderr');
+  assert.equal(result.severity, 'error');
+  assert.notEqual(result.severity, 'unknown');
+  assert.equal(result.severitySource, 'MESSAGE_PARSE');
+  assert.equal(
+    result.message,
+    '[Nest] 1 - 09/11/2026, 9:04:28 PM ERROR [TypeOrmModule] Unable to connect to the database. Retrying (1)...',
+  );
+  assert.doesNotMatch(result.message, /\u001b|\x1b/);
+  assert.match(result.rawPayload, /\u001b\[31m/);
+});
+
+test('the supplied BookNest log reaches the processor classifier with clean text and corrected severity', async () => {
+  const attrs = booknestAnsiError.attributes;
+  const resourceAttributes = Object.fromEntries(
+    [
+      'faultline.cluster.id',
+      'k8s.namespace.name',
+      'k8s.pod.name',
+      'k8s.pod.uid',
+      'k8s.container.name',
+      'container.id',
+      'k8s.node.name',
+      'k8s.deployment.name',
+      'k8s.replicaset.name',
+    ].map((key) => [key, attrs[key]]),
+  );
+  const event = translateOtlpLogs(
+    batch(
+      [
+        {
+          timeUnixNano: attrs['otel.time_unix_nano'],
+          observedTimeUnixNano: attrs['otel.observed_time_unix_nano'],
+          severityNumber: 0,
+          severityText: '',
+          attributes: attributes({ 'log.iostream': 'stderr' }),
+          body: value(booknestAnsiError.rawPayload),
+        },
+      ],
+      resourceAttributes,
+    ),
+    booknestAnsiError.clusterId,
+  ).events[0];
+  assert.equal(event.clusterId, booknestAnsiError.clusterId);
+  assert.equal(event.namespace, booknestAnsiError.namespace);
+  assert.equal(event.workload, booknestAnsiError.workload);
+  assert.equal(event.pod, booknestAnsiError.pod);
+  assert.equal(event.container, booknestAnsiError.container);
+  assert.equal(event.node, booknestAnsiError.node);
+  assert.equal(event.stream, booknestAnsiError.stream);
+  assert.equal(event.level, 'error');
+  assert.equal(event.attributes['faultline.severity.source'], 'MESSAGE_PARSE');
+  assert.doesNotMatch(event.message, /\u001b|\x1b/);
+  assert.equal(event.raw, booknestAnsiError.rawPayload);
+
+  let classifiedEvent;
+  const queue = new InMemoryQueue();
+  const logger = { log() {}, warn() {}, error() {}, debug() {}, verbose() {} };
+  const consumer = new TelemetryConsumer(
+    queue,
+    logger,
+    new InMemoryResourceState(),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      classify: async (received) => {
+        classifiedEvent = received;
+        return {
+          result: {
+            eventId: received.id,
+            classification: 'UNKNOWN',
+            confidence: 0,
+            classifierType: 'UNKNOWN',
+            modelVersion: 'normalization-regression',
+            timestamp: received.timestamp,
+            patternId: 'normalization-regression',
+            evidence: [],
+          },
+          aggregate: { count: 1, affectedPods: [received.pod] },
+        };
+      },
+    },
+  );
+  await consumer.process({ id: event.id, payload: event });
+  assert.equal(classifiedEvent.level, 'error');
+  assert.equal(classifiedEvent.message, event.message);
+  await queue.close();
+});
+
+test('structured etcd JSON extracts its message and warn severity without changing raw', () => {
+  const body = {
+    level: 'warn',
+    ts: '2026-09-11T21:03:20.786926Z',
+    caller: 'txn/util.go:93',
+    msg: 'apply request took too long',
+    took: '128.883708ms',
+  };
+  const event = translateOtlpLogs(
+    batch([
+      { ...record, severityNumber: 0, severityText: '', body: value(body) },
+    ]),
+    'cluster-1',
+  ).events[0];
+  assert.equal(event.level, 'warn');
+  assert.equal(event.message, 'apply request took too long');
+  assert.equal(
+    event.attributes['faultline.severity.source'],
+    'STRUCTURED_BODY',
+  );
+  assert.deepEqual(event.raw, body);
+});
+
+test('severity number, message tokens, fatal aliases and stream fallback are consistent', () => {
+  for (const [severityNumber, expected] of [
+    [1, 'trace'],
+    [4, 'trace'],
+    [5, 'debug'],
+    [8, 'debug'],
+    [9, 'info'],
+    [12, 'info'],
+    [13, 'warn'],
+    [16, 'warn'],
+    [17, 'error'],
+    [20, 'error'],
+    [21, 'fatal'],
+    [24, 'fatal'],
+  ])
+    assert.equal(
+      normalizeLog({ severityNumber, body: 'message' }).level,
+      expected,
+    );
+  for (const field of ['level', 'severity', 'severityText', 'logLevel', 'lvl'])
+    assert.equal(
+      normalizeLog({ body: { [field]: 'warning', msg: 'slow' } }).level,
+      'warn',
+    );
+  assert.equal(normalizeLog({ body: 'CRITICAL failure' }).level, 'fatal');
+  assert.equal(
+    normalizeLog({ severityText: 'fatal', body: 'ok' }).level,
+    'fatal',
+  );
+  assert.equal(
+    normalizeLog({ severityText: 'err', body: 'ok' }).level,
+    'error',
+  );
+  assert.equal(normalizeLog({ body: 'terror is a noun' }).level, 'unknown');
+  assert.deepEqual(normalizeLog({ body: 'plain output', stream: 'stdout' }), {
+    level: 'unknown',
+    severitySource: 'UNKNOWN',
+    message: 'plain output',
+  });
+  assert.deepEqual(normalizeLog({ body: 'plain output', stream: 'stderr' }), {
+    level: 'unknown',
+    severitySource: 'STREAM_HINT',
+    message: 'plain output',
+  });
+  assert.equal(
+    normalizeLog({ body: '[Nest] Application successfully started' }).level,
+    'unknown',
+  );
 });
 
 test('Kubernetes watch records normalize core/v1 and events.k8s.io bodies without losing occurrence time', () => {

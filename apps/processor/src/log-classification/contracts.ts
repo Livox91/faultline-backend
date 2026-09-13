@@ -10,6 +10,9 @@ export const LOG_CLASSIFIER = Symbol('faultline.log-classifier');
 export interface LogClassificationOutcome {
   result: LogClassificationResult;
   aggregate: LogPatternAggregate;
+  score: number;
+  decision: 'CLASSIFICATION' | 'ANOMALY' | 'INCIDENT';
+  scoreReasons: readonly string[];
   anomaly?: Anomaly;
 }
 
@@ -23,4 +26,16 @@ export interface LogClassifierConfig {
   minimumConfidence: number;
   highConfidence: number;
   aggregationWindowMs: number;
+  scoring: {
+    knownClassification: number;
+    errorSeverity: number;
+    fatalSeverity: number;
+    repeated: number;
+    frequent: number;
+    multiplePods: number;
+    repeatedOccurrenceThreshold: number;
+    frequentOccurrenceThreshold: number;
+    anomalyThreshold: number;
+    incidentThreshold: number;
+  };
 }

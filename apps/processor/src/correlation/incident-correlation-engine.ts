@@ -165,6 +165,17 @@ function title(classification: IncidentClassification): string {
     .join(' ');
 }
 
+function incidentSummary(
+  classification: IncidentClassification,
+  anomalies: readonly Anomaly[],
+): string {
+  const base = `${title(classification)} supported by ${anomalies.length} anomaly signal${anomalies.length === 1 ? '' : 's'}`;
+  const logEvidence = anomalies.find(
+    (item) => item.source === 'LOG_CLASSIFIER',
+  );
+  return logEvidence ? `${base}; ${logEvidence.summary}` : base;
+}
+
 function uniquePods(
   anomalies: readonly Anomaly[],
   classification?: AnomalyClassification,
@@ -401,7 +412,7 @@ function rebuild(incident: Incident, anomaly: Anomaly): Incident {
     affectedResources,
     classification,
     title: title(classification),
-    summary: `${title(classification)} supported by ${anomalies.length} anomaly signal${anomalies.length === 1 ? '' : 's'}`,
+    summary: incidentSummary(classification, anomalies),
     severity: deriveSeverity(classification, anomalies),
     confidence: confidence(classification, anomalies),
     status: 'ACTIVE',
@@ -429,7 +440,10 @@ export class IncidentCorrelationEngine implements IncidentCorrelator {
     private readonly config: IncidentCorrelationConfig,
   ) {}
 
-  async correlate(anomaly: Anomaly): Promise<IncidentChange | undefined> {
+  async correlate(
+    anomaly: Anomaly,
+    options: { allowCreate?: boolean } = {},
+  ): Promise<IncidentChange | undefined> {
     const prior = await this.repository.findByAnomalyId(anomaly.anomalyId);
     if (prior) {
       const updated = await this.repository.updateIncident(
@@ -457,6 +471,7 @@ export class IncidentCorrelationEngine implements IncidentCorrelator {
       );
       return { type: 'UPDATED', incident: updated };
     }
+    if (options.allowCreate === false) return undefined;
     const classification = classify([anomaly]);
     const incident: Incident = {
       id: randomUUID(),
@@ -467,7 +482,7 @@ export class IncidentCorrelationEngine implements IncidentCorrelator {
       affectedResources: [anomaly.affectedResource],
       classification,
       title: title(classification),
-      summary: `${title(classification)} supported by 1 anomaly signal`,
+      summary: incidentSummary(classification, [anomaly]),
       severity: deriveSeverity(classification, [anomaly]),
       status: 'OPEN',
       confidence: confidence(classification, [anomaly]),

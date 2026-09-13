@@ -44,6 +44,7 @@ import {
 export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
   private subscription?: QueueSubscription;
   private stateSweep?: NodeJS.Timeout;
+  private incidentAdvanceWatermark?: number;
   constructor(
     @Inject(QUEUE) private readonly queue: Queue,
     private readonly logger: ApplicationLogger,
@@ -150,6 +151,12 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
         processor: processed.processor,
         status: processed.status,
       });
+      // Onboarding probes validate transport and storage only. They must never enter
+      // operational state or create synthetic customer-facing incidents.
+      if (processed.namespace === 'faultline-onboarding') {
+        await this.ledger?.complete(event.id);
+        return processed;
+      }
       const state =
         processed.kind === 'metric'
           ? await this.state.update(processed)
@@ -168,7 +175,7 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
         ],
       );
       if (logClassification)
-        this.logger.log({
+        this.logger.debug({
           event: 'log_classified',
           event_id: logClassification.result.eventId,
           classification: logClassification.result.classification,
@@ -178,6 +185,12 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
           pattern_id: logClassification.result.patternId,
           pattern_count: logClassification.aggregate.count,
           affected_pods: logClassification.aggregate.affectedPods.length,
+          matched_signals: logClassification.result.evidence.flatMap(
+            (item) => item.matchedSignals ?? [],
+          ),
+          incident_score: logClassification.score,
+          score_reasons: logClassification.scoreReasons,
+          decision: logClassification.decision,
         });
       const classified = logClassification?.anomaly
         ? [logClassification.anomaly]
@@ -214,17 +227,24 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
           `${anomaly.anomalyId}:${anomaly.status}:${anomaly.timestamp}`,
           anomaly,
         );
-        const change = await this.correlator?.correlate(anomaly);
+        const allowCreate =
+          anomaly.source !== 'LOG_CLASSIFIER' ||
+          logClassification?.decision === 'INCIDENT';
+        const change = await this.correlator?.correlate(anomaly, {
+          allowCreate,
+        });
         if (change) {
           this.logIncident(change);
           await this.publishIncident(change);
         }
       }
-      for (const change of (await this.correlator?.advance(
-        processed.timestamp,
-      )) ?? []) {
-        this.logIncident(change);
-        await this.publishIncident(change);
+      if (this.shouldAdvanceIncidents(processed.timestamp)) {
+        for (const change of (await this.correlator?.advance(
+          processed.timestamp,
+        )) ?? []) {
+          this.logIncident(change);
+          await this.publishIncident(change);
+        }
       }
       await this.rules?.commit?.();
       await this.statistical?.commit?.();
@@ -264,6 +284,23 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
       });
       return [];
     }
+  }
+
+  /**
+   * Stabilization is time based, so scanning every active incident for every telemetry
+   * sample only repeats the same query. Event-time throttling preserves replay behavior
+   * and bounds resolution delay to one second of observed telemetry time.
+   */
+  private shouldAdvanceIncidents(timestamp: string): boolean {
+    const time = Date.parse(timestamp);
+    if (!Number.isFinite(time)) return false;
+    if (
+      this.incidentAdvanceWatermark !== undefined &&
+      time < this.incidentAdvanceWatermark + 1_000
+    )
+      return false;
+    this.incidentAdvanceWatermark = time;
+    return true;
   }
 
   private async classifyLog(

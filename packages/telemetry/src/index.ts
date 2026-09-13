@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export * from './log-normalization';
+
 const identifier = z.string().trim().min(1);
 export const timestampSchema = z.iso.datetime({ offset: true });
 

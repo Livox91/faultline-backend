@@ -34,7 +34,7 @@ export interface ClusterAuthenticator {
 export class DevelopmentClusterAuthenticator implements ClusterAuthenticator {
   constructor(
     @Inject(APPLICATION_CONFIG) private readonly config: ApplicationConfig,
-  ) {}
+  ) { }
   async authenticate(clusterId: unknown, token: unknown): Promise<string> {
     if (typeof clusterId !== 'string' || !clusterId.trim())
       throw new BadRequestException('Missing cluster ID');
@@ -58,7 +58,7 @@ export class TelemetryController {
     @Inject(CLUSTER_AUTHENTICATOR) private readonly auth: ClusterAuthenticator,
     @Inject(QUEUE) private readonly queue: QueueProducer,
     private readonly logger: ApplicationLogger,
-  ) {}
+  ) { }
   @Post('logs')
   @HttpCode(202)
   logs(
@@ -176,10 +176,10 @@ export class TelemetryController {
     }));
     return isBatch
       ? {
-          status: 'accepted',
-          accepted: events.length,
-          records: acknowledgements,
-        }
+        status: 'accepted',
+        accepted: events.length,
+        records: acknowledgements,
+      }
       : acknowledgements[0];
   }
 }

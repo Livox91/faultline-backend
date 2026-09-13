@@ -9,6 +9,9 @@ const {
   StagedLogClassifier,
 } = require('../apps/processor/dist/log-classification/log-classifier');
 const {
+  normalizeLogPattern,
+} = require('../apps/processor/dist/log-classification/fingerprint');
+const {
   InMemoryStatisticalDetector,
 } = require('../apps/processor/dist/statistical/statistical-detector');
 const {
@@ -36,6 +39,18 @@ const settings = {
   minimumConfidence: 0.6,
   highConfidence: 0.85,
   aggregationWindowMs: 600_000,
+  scoring: {
+    knownClassification: 3,
+    errorSeverity: 1,
+    fatalSeverity: 2,
+    repeated: 2,
+    frequent: 3,
+    multiplePods: 2,
+    repeatedOccurrenceThreshold: 5,
+    frequentOccurrenceThreshold: 20,
+    anomalyThreshold: 6,
+    incidentThreshold: 9,
+  },
 };
 const base = Date.now() - 30_000;
 const iso = (offset = 0) => new Date(base + offset).toISOString();
@@ -102,7 +117,9 @@ test('deterministic rules classify stable operational log categories', async (t)
         outcome.result.modelVersion,
         LOG_CLASSIFICATION_TAXONOMY_VERSION,
       );
-      assert.equal(outcome.anomaly.source, 'LOG_CLASSIFIER');
+      assert.ok(outcome.result.evidence[0].matchedSignals.length > 0);
+      assert.equal(outcome.decision, 'CLASSIFICATION');
+      assert.equal(outcome.anomaly, undefined);
       assert.deepEqual(
         event,
         before,
@@ -166,8 +183,8 @@ test('accepted ML classifications keep immutable model provenance and reduced co
   const outcome = await subject.classify(log('opaque failure code beta'));
   assert.equal(outcome.result.classification, 'NETWORK_FAILURE');
   assert.equal(outcome.result.modelVersion, 'log-classifier-v8');
-  assert.equal(outcome.anomaly.ruleId, 'log-classifier.log-classifier-v8');
-  assert.equal(outcome.anomaly.confidence, 0.6);
+  assert.equal(outcome.decision, 'CLASSIFICATION');
+  assert.equal(outcome.anomaly, undefined);
 });
 
 test('volatile values group into one bounded pattern aggregate', async () => {
@@ -182,13 +199,18 @@ test('volatile values group into one bounded pattern aggregate', async () => {
       ),
     );
   assert.equal(new Set(outcomes.map((item) => item.result.patternId)).size, 1);
-  assert.equal(new Set(outcomes.map((item) => item.anomaly.anomalyId)).size, 1);
   const aggregate = await repository.getPattern(outcomes[0].result.patternId);
   const stored = await repository.get(outcomes[0].result.eventId);
   assert.equal(stored.classification, 'DATABASE_CONNECTIVITY');
-  assert.equal(stored.evidence[0].excerpt, 'connection refused');
+  assert.ok(stored.evidence[0].excerpt.includes('connection refused'));
   assert.equal(aggregate.count, 3);
   assert.equal(aggregate.affectedPods.length, 3);
+  assert.equal(aggregate.clusterId, 'production-eu');
+  assert.equal(aggregate.namespace, 'payments');
+  assert.equal(aggregate.workload, 'payment-api');
+  assert.equal(aggregate.firstSeen, outcomes[0].result.timestamp);
+  assert.equal(aggregate.lastSeen, outcomes[2].result.timestamp);
+  assert.equal(outcomes[2].decision, 'ANOMALY');
   assert.equal(outcomes[2].anomaly.status, 'ACTIVE');
   assert.equal(outcomes[2].anomaly.evidence[0].attributes.count, 3);
 
@@ -198,8 +220,100 @@ test('volatile values group into one bounded pattern aggregate', async () => {
       pod: 'payment-api-7d9f-a0003',
     }),
   );
-  assert.equal(afterRestart.anomaly.anomalyId, outcomes[0].anomaly.anomalyId);
   assert.equal(afterRestart.aggregate.count, 4);
+  assert.equal(afterRestart.decision, 'ANOMALY');
+  assert.equal(afterRestart.anomaly.anomalyId, outcomes[2].anomaly.anomalyId);
+});
+
+test('fingerprints normalize volatile identifiers without changing source logs', () => {
+  const first =
+    '2026-09-12T12:30:01.123Z request_id=abc-123 connection refused 10.0.0.4:5432 retry 2 payment-api-7d9f1234-a1b2c';
+  const second =
+    '2026-09-12T12:31:42.999Z request_id=xyz-987 connection refused 10.0.0.5:6432 retry 9 payment-api-8e0a5678-d3e4f';
+  assert.equal(normalizeLogPattern(first), normalizeLogPattern(second));
+  assert.ok(first.includes('10.0.0.4:5432'));
+});
+
+test('equivalent messages classify by semantics across language ecosystems', async () => {
+  const messages = [
+    'ECONNREFUSED 10.0.0.5:5432',
+    'org.postgresql.util.PSQLException: Connection refused',
+    'psycopg.OperationalError: connection refused',
+    'dial tcp 10.0.0.5:5432: connect: connection refused',
+  ];
+  for (const message of messages) {
+    const outcome = await classifier().classifier.classify(log(message));
+    assert.equal(outcome.result.classification, 'DATABASE_CONNECTIVITY');
+    assert.ok(outcome.result.confidence >= 0.8);
+    assert.ok(
+      outcome.result.evidence[0].matchedSignals.includes('connection refused'),
+    );
+  }
+  assert.equal(
+    (await classifier().classifier.classify(log('upstream request timed out')))
+      .result.classification,
+    'DEPENDENCY_TIMEOUT',
+  );
+  assert.equal(
+    (await classifier().classifier.classify(log('permission denied'))).result
+      .classification,
+    'AUTHORIZATION_FAILURE',
+  );
+});
+
+test('generic ERROR with no reliable semantics remains UNKNOWN', async () => {
+  const outcome = await classifier().classifier.classify(
+    log('ERROR something unexpected happened'),
+  );
+  assert.equal(outcome.result.classification, 'UNKNOWN');
+  assert.equal(outcome.decision, 'CLASSIFICATION');
+  assert.equal(outcome.anomaly, undefined);
+});
+
+test('incident scoring gates one error, repetition and replica-wide repetition', async () => {
+  const { classifier: subject } = classifier();
+  const first = await subject.classify(log('database connection refused'));
+  assert.equal(first.score, 4);
+  assert.equal(first.decision, 'CLASSIFICATION');
+  assert.equal(first.anomaly, undefined);
+
+  let repeated;
+  for (let index = 1; index < 10; index++)
+    repeated = await subject.classify(log('database connection refused'));
+  assert.equal(repeated.aggregate.count, 10);
+  assert.equal(repeated.score, 6);
+  assert.equal(repeated.decision, 'ANOMALY');
+  assert.equal(repeated.anomaly.source, 'LOG_CLASSIFIER');
+
+  let replicaWide;
+  for (let index = 10; index < 25; index++)
+    replicaWide = await subject.classify(
+      log('database connection refused', {
+        pod: `payment-api-7d9f-a000${(index % 3) + 1}`,
+      }),
+    );
+  assert.equal(replicaWide.aggregate.count, 25);
+  assert.equal(replicaWide.aggregate.affectedPods.length, 3);
+  assert.equal(replicaWide.score, 9);
+  assert.equal(replicaWide.decision, 'INCIDENT');
+  assert.ok(
+    replicaWide.scoreReasons.some((reason) => reason.includes('pods affected')),
+  );
+
+  const incidents = new InMemoryIncidentRepository();
+  const correlator = new IncidentCorrelationEngine(incidents, {
+    correlationWindowMs: 600_000,
+    stabilizationPeriodMs: 120_000,
+  });
+  assert.equal(
+    await correlator.correlate(repeated.anomaly, { allowCreate: false }),
+    undefined,
+  );
+  assert.equal((await incidents.listIncidents({})).length, 0);
+  const change = await correlator.correlate(replicaWide.anomaly, {
+    allowCreate: true,
+  });
+  assert.equal(change.type, 'CREATED');
 });
 
 test('classifier failure is non-blocking and emits structured degradation telemetry', async () => {
@@ -236,6 +350,74 @@ test('classifier failure is non-blocking and emits structured degradation teleme
         entry.status === 'degraded',
     ),
   );
+});
+
+test('debug tracing exposes the deterministic classification decision path', async () => {
+  const traces = [];
+  const subject = classifier().classifier;
+  const consumer = new TelemetryConsumer(
+    new InMemoryQueue(),
+    {
+      log() {},
+      warn() {},
+      error() {},
+      debug(value) {
+        traces.push(value);
+      },
+      verbose() {},
+    },
+    new InMemoryResourceState(),
+    { evaluate: () => [] },
+    undefined,
+    undefined,
+    { detect: async () => [] },
+    subject,
+  );
+  await consumer.process({
+    id: 'debug-classification',
+    payload: log('database connection refused', {
+      id: 'debug-classification',
+    }),
+  });
+  const trace = traces.find((entry) => entry.event === 'log_classified');
+  assert.equal(trace.classification, 'DATABASE_CONNECTIVITY');
+  assert.equal(trace.incident_score, 4);
+  assert.equal(trace.decision, 'CLASSIFICATION');
+  assert.equal(trace.pattern_count, 1);
+  assert.ok(trace.matched_signals.includes('connection refused'));
+});
+
+test('onboarding probes never create operational classifications or incidents', async () => {
+  let evaluated = 0;
+  let classified = 0;
+  let correlated = 0;
+  const completed = [];
+  const consumer = new TelemetryConsumer(
+    new InMemoryQueue(),
+    { log() {}, warn() {}, error() {}, debug() {}, verbose() {} },
+    new InMemoryResourceState(),
+    { evaluate: () => (evaluated++, []) },
+    {
+      correlate: async () => (correlated++, undefined),
+      advance: async () => [],
+    },
+    {
+      begin: async () => true,
+      complete: async (id) => completed.push(id),
+      release: async () => {},
+    },
+    { detect: async () => [] },
+    { classify: async () => (classified++, undefined) },
+  );
+  const event = log('database connection refused', {
+    namespace: 'faultline-onboarding',
+    workload: 'faultline-log-test',
+  });
+  await consumer.process({ id: event.id, payload: event });
+  assert.equal(evaluated, 0);
+  assert.equal(classified, 0);
+  assert.equal(correlated, 0);
+  assert.deepEqual(completed, [event.id]);
 });
 
 test('database logs, statistical degradation and pod state form one dependency incident', async () => {
@@ -337,7 +519,7 @@ test('database logs, statistical degradation and pod state form one dependency i
   const deliver = (payload) =>
     consumer.process({ id: payload.id, payload: { ...common, ...payload } });
 
-  for (let index = 0; index < 3; index++)
+  for (let index = 0; index < 5; index++)
     await deliver({
       kind: 'log',
       id: `db-error-${index}`,

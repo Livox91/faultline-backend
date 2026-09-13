@@ -45,6 +45,9 @@ function run(command, args = [], options = {}) {
         `${command} ${args.join(' ')} failed${detail ? `:\n${detail}` : ''}`,
     );
     error.status = result.status;
+    error.detail = detail || result.error?.message;
+    error.command = command;
+    error.args = args;
     throw error;
   }
   return (result.stdout ?? '').trim();

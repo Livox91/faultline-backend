@@ -51,6 +51,10 @@
     "cluster:uninstall": "node scripts/cluster.cjs uninstall",
     "dev:reset": "node scripts/reset-development.cjs"
   },
+  "dependencies": {
+    "pg": "^8.23.0",
+    "redis": "^6.2.1"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "concurrently": "^9.2.1",

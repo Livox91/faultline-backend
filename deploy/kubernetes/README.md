@@ -108,8 +108,9 @@ kubectl -n faultline-system logs deployment/faultline-dev --since=5m
 ```
 
 The demo prints normal messages to stdout and simulated ERROR messages to stderr every
-five seconds. Plain text has no explicit OTLP severity, so its level is `unknown` and
-its stream is retained; stderr alone is not treated as an error classification.
+five seconds. When OTLP severity is unspecified, Faultline can derive a level from an
+explicit token such as `ERROR` in the clean message. The stream is retained, and stderr
+alone is not treated as an error classification.
 To request exactly one container restart:
 
 ```powershell
@@ -196,6 +197,19 @@ events with `packages/telemetry`. It does not introduce another domain model.
 | `service.name` or selected app-name label                   | `service`                                                                                         |
 | Pod UID, container ID, selected labels and other attributes | Existing JSON `attributes`                                                                        |
 | Kubernetes Event body or watch wrapper                      | `kind=kubernetes`, `reason`, `message`, `type`, `involvedObject`, `count`, original body in `raw` |
+
+Log severity uses one precedence order: non-empty recognized OTLP severity text, valid
+non-zero OTLP severity number, a structured `level`/`severity`/`severityText`/`logLevel`/`lvl`
+field, a token-aware message match, a non-classifying stream hint, then `unknown`. The
+canonical stored values remain Faultline's existing lowercase `trace`, `debug`, `info`,
+`warn`, `error`, `fatal`, and `unknown` values. `warning` maps to `warn`, `err` to
+`error`, and both `critical` and `fatal` map to `fatal`. OTLP severity number `0` means
+unspecified and therefore continues through the fallback chain.
+
+ANSI escape sequences are removed from normalized messages before search,
+fingerprinting, and classification. The untouched body remains in `raw`. The chosen
+source is retained in the `faultline.severity.source` attribute as `OTLP_TEXT`,
+`OTLP_NUMBER`, `STRUCTURED_BODY`, `MESSAGE_PARSE`, `STREAM_HINT`, or `UNKNOWN`.
 
 Core Events and `events.k8s.io/v1` body shapes are supported by the adapter, although
 the collector deliberately watches only core Events to avoid duplicate API streams.

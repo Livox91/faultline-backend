@@ -313,6 +313,46 @@ export class PlatformModule {
                   'LOG_CLASSIFIER_PATTERN_WINDOW_MS',
                   { infer: true },
                 ),
+                scoring: Object.freeze({
+                  knownClassification: config.get(
+                    'LOG_INCIDENT_WEIGHT_KNOWN_CLASSIFICATION',
+                    { infer: true },
+                  ),
+                  errorSeverity: config.get(
+                    'LOG_INCIDENT_WEIGHT_ERROR_SEVERITY',
+                    { infer: true },
+                  ),
+                  fatalSeverity: config.get(
+                    'LOG_INCIDENT_WEIGHT_FATAL_SEVERITY',
+                    { infer: true },
+                  ),
+                  repeated: config.get('LOG_INCIDENT_WEIGHT_REPEATED', {
+                    infer: true,
+                  }),
+                  frequent: config.get('LOG_INCIDENT_WEIGHT_FREQUENT', {
+                    infer: true,
+                  }),
+                  multiplePods: config.get(
+                    'LOG_INCIDENT_WEIGHT_MULTIPLE_PODS',
+                    { infer: true },
+                  ),
+                  repeatedOccurrenceThreshold: config.get(
+                    'LOG_INCIDENT_REPEATED_OCCURRENCES',
+                    { infer: true },
+                  ),
+                  frequentOccurrenceThreshold: config.get(
+                    'LOG_INCIDENT_FREQUENT_OCCURRENCES',
+                    { infer: true },
+                  ),
+                  anomalyThreshold: config.get(
+                    'LOG_INCIDENT_ANOMALY_THRESHOLD',
+                    { infer: true },
+                  ),
+                  incidentThreshold: config.get(
+                    'LOG_INCIDENT_INCIDENT_THRESHOLD',
+                    { infer: true },
+                  ),
+                }),
               }),
             }),
         },

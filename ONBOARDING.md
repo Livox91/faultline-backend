@@ -1,24 +1,50 @@
-# Faultline onboarding for BookNest
+# Connect Kubernetes to Faultline
 
-This guide takes a new Faultline checkout and an existing Kubernetes cluster running
-BookNest to verified log collection and classification. Faultline runs on the customer
-machine; only its read-only OpenTelemetry collectors are installed in Kubernetes.
+You do not need to edit Kubernetes YAML or create credentials by hand. Once Faultline
+has been set up and `kubectl` points to your cluster, start Faultline:
 
-```text
-BookNest pod stdout/stderr
-          ↓
-Faultline Collector (Kubernetes)
-          ↓ outbound HTTP/HTTPS
-Faultline Ingestion (customer machine, port 3001)
-          ↓ NATS JetStream
-Processor ── log classification
-          ↓
-PostgreSQL incidents + ClickHouse telemetry
-          ↓
-Faultline API (port 3000)
+```powershell
+npm run faultline:start
 ```
 
-## Prerequisites
+Then run:
+
+```powershell
+npm run cluster:onboard
+```
+
+This command connects your current Kubernetes cluster to Faultline and installs the log
+collector automatically. It explains each step, asks before changing the cluster, tests
+the connection from inside Kubernetes, and verifies that a real test log reaches
+Faultline.
+
+```text
+Kubernetes Cluster
+        ↓
+Faultline Collector
+        ↓
+Faultline Ingestion
+```
+
+Running the command again is safe. It reuses the cluster registration and applies the
+desired configuration again, repairing an incomplete installation where practical.
+
+For command details during setup, use:
+
+```powershell
+npm run cluster:onboard -- --verbose
+```
+
+## Initial project setup
+
+For a new checkout, run this once before the two commands above:
+
+```powershell
+npm install
+npm run setup
+```
+
+## Advanced prerequisites and troubleshooting
 
 - Node.js 22 or newer and npm (the repository uses npm workspaces and `package-lock.json`)
 - Docker Engine with Docker Compose v2
@@ -28,11 +54,7 @@ Faultline API (port 3000)
   ClusterRoleBindings, a DaemonSet, and a Deployment
 - A hostname or IP that pods can use to reach port 3001 on the customer machine
 
-BookNest's checked-in manifests use namespace `default` and label its backend
-`app=booknest-backend`. Pass different values during registration if your deployment
-differs.
-
-## 1. Install and generate local configuration
+### Install and generate local configuration
 
 From the `faultline` directory:
 
@@ -66,7 +88,7 @@ fails closed instead of deleting or rewriting it. Restore the matching credentia
 use the explicitly destructive development reset below when the retained data is no
 longer needed.
 
-## 2. Start Faultline
+### Start Faultline
 
 ```powershell
 npm run faultline:start
@@ -93,7 +115,7 @@ http://127.0.0.1:3003/health/ready  storage
 To initialize schemas without starting applications, use `npm run infra:up` followed by
 `npm run infra:init`.
 
-## 3. Register and onboard the BookNest cluster
+### Endpoint and unattended options
 
 Choose an ingestion URL reachable **from a Kubernetes pod**. `localhost` is wrong: it
 would refer to the collector container.
@@ -102,10 +124,12 @@ would refer to the collector container.
 - Minikube: `http://host.minikube.internal:3001`
 - Remote/private cluster: a customer-provided routable HTTPS URL or tunnel
 
-The command infers the first two from the current context. Override it when needed:
+The guided command infers and tests the first two from the current context. For an
+external cluster it asks for a routable address. For unattended setup, pass the answers
+explicitly:
 
 ```powershell
-npm run cluster:onboard -- --id booknest-development --name "BookNest local cluster" --endpoint http://host.docker.internal:3001 --workload-namespace default --workload-label app=booknest-backend
+npm run cluster:onboard -- --yes --name "My local cluster" --endpoint http://host.docker.internal:3001
 ```
 
 For Minikube, use:
@@ -129,7 +153,7 @@ For local kind and Minikube contexts the command enables kubelet TLS verificatio
 for the self-signed local kubelet only. For other clusters it remains disabled. To force
 that local-only behavior, add `--insecure-kubelet`.
 
-You can run the stages separately:
+Advanced users can run the stages separately:
 
 ```powershell
 npm run cluster:add -- --endpoint http://host.docker.internal:3001
@@ -137,40 +161,46 @@ npm run cluster:install
 npm run cluster:verify
 ```
 
-## 4. What verification proves
+### What verification proves
 
 Verification checks:
 
 - the configured Kubernetes API is reachable;
-- BookNest backend pods exist under the registered namespace/label;
 - the collector DaemonSet desired count equals its ready count;
 - the event collector has its desired ready replicas;
 - collectors are not repeatedly reporting export failures;
 - the cluster can reach Faultline ingestion;
 - all Faultline services are ready;
 - a temporary pod's `FAULTLINE_ONBOARDING_TEST` log is queryable from ClickHouse; and
-- `database connection refused` became a `DATABASE_CONNECTIVITY` anomaly visible in
-  an `APPLICATION_DEPENDENCY_FAILURE` incident.
+- the disposable `faultline-onboarding` namespace does not create classifications or
+  customer-facing incidents.
 
 Successful output ends with:
 
 ```text
-FAULTLINE ONBOARDING COMPLETE
+Faultline Kubernetes Setup Complete
 
-Cluster: BookNest local cluster (booknest-development)
-BookNest: 1 pod(s) discovered in default
-Collector: Healthy
-Faultline ingestion: Healthy
-Processor: Healthy
-Telemetry storage: Healthy
-First log: Received
-Log classification: DATABASE_CONNECTIVITY
-Kubernetes → Faultline: CONNECTED
+Cluster:
+My local cluster
+
+Kubernetes:
+Connected
+
+Faultline Collector:
+Running
+
+Faultline Ingestion:
+Reachable
+
+Log Collection:
+Working
 ```
 
-This proves the real path rather than merely checking that a collector pod is running.
+This proves the real transport and storage path rather than merely checking that a
+collector pod is running. The verification namespace is deliberately excluded from the
+operational detection pipeline so synthetic test data cannot appear on dashboards.
 
-## Day-two commands
+### Day-two and diagnostic commands
 
 Check Faultline and recent logs:
 
@@ -197,7 +227,7 @@ npm run faultline:restart
 npm run faultline:stop
 ```
 
-Remove only the temporary verification Deployment:
+Remove any interrupted temporary verification namespace:
 
 ```powershell
 npm run onboarding:test:cleanup

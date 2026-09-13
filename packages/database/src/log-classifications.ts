@@ -22,6 +22,9 @@ interface ResultRow extends QueryResultRow {
 interface PatternRow extends QueryResultRow {
   pattern_id: string;
   classification: string;
+  cluster_id: string;
+  namespace: string | null;
+  workload: string | null;
   occurrence_count: string;
   first_seen: Date;
   last_seen: Date;
@@ -146,6 +149,9 @@ function mapPattern(row: PatternRow): LogPatternAggregate {
   return {
     patternId: row.pattern_id,
     classification: row.classification as LogClassification,
+    clusterId: row.cluster_id,
+    ...(row.namespace ? { namespace: row.namespace } : {}),
+    ...(row.workload ? { workload: row.workload } : {}),
     count: Number(row.occurrence_count),
     firstSeen: row.first_seen.toISOString(),
     lastSeen: row.last_seen.toISOString(),

@@ -17,6 +17,7 @@ import type {
 } from './contracts';
 import { logPatternId } from './fingerprint';
 import { defaultLogPatternRules, type LogPatternRule } from './patterns';
+import { HeuristicLogClassifier } from './heuristic-classifier';
 
 export class StagedLogClassifier implements LogClassifier {
   constructor(
@@ -34,31 +35,30 @@ export class StagedLogClassifier implements LogClassifier {
       ...event,
       aggregationWindowMs: this.config.aggregationWindowMs,
     });
-    const anomaly = isActionable(result.classification)
-      ? this.toAnomaly(event, result, aggregate)
-      : undefined;
-    return { result, aggregate, ...(anomaly ? { anomaly } : {}) };
+    const scoring = score(event, result.classification, aggregate, this.config);
+    const anomaly =
+      isActionable(result.classification) &&
+      scoring.decision !== 'CLASSIFICATION'
+        ? this.toAnomaly(event, result, aggregate, scoring)
+        : undefined;
+    return { result, aggregate, ...scoring, ...(anomaly ? { anomaly } : {}) };
   }
 
   private async classifyEnabled(
     event: LogEvent,
   ): Promise<LogClassificationResult> {
-    for (const rule of this.rules) {
-      for (const pattern of rule.patterns) {
-        const match = pattern.exec(event.message);
-        pattern.lastIndex = 0;
-        if (!match) continue;
-        return this.result(event, {
-          classification: rule.classification,
-          confidence: rule.confidence,
-          classifierType: 'RULE',
-          modelVersion: LOG_CLASSIFICATION_TAXONOMY_VERSION,
-          summary: `Matched deterministic log rule ${rule.id}`,
-          excerpt: match[0],
-          matchedPattern: rule.id,
-        });
-      }
-    }
+    const heuristic = new HeuristicLogClassifier(this.rules).classify(event);
+    if (heuristic)
+      return this.result(event, {
+        classification: heuristic.classification,
+        confidence: heuristic.confidence,
+        classifierType: 'RULE',
+        modelVersion: LOG_CLASSIFICATION_TAXONOMY_VERSION,
+        summary: `Matched weighted semantic rule ${heuristic.ruleId}`,
+        excerpt: heuristic.excerpt,
+        matchedPattern: heuristic.ruleId,
+        matchedSignals: heuristic.matchedSignals,
+      });
     if (!this.ml)
       return this.unknown(event, 'No deterministic pattern matched');
     const prediction = await this.ml.classify(event);
@@ -99,6 +99,7 @@ export class StagedLogClassifier implements LogClassifier {
       summary: string;
       excerpt?: string;
       matchedPattern?: string;
+      matchedSignals?: readonly string[];
     },
   ): LogClassificationResult {
     return {
@@ -116,6 +117,9 @@ export class StagedLogClassifier implements LogClassifier {
           ...(value.matchedPattern
             ? { matchedPattern: value.matchedPattern }
             : {}),
+          ...(value.matchedSignals
+            ? { matchedSignals: value.matchedSignals }
+            : {}),
         },
       ],
     };
@@ -125,6 +129,10 @@ export class StagedLogClassifier implements LogClassifier {
     event: LogEvent,
     result: LogClassificationResult,
     aggregate: LogClassificationOutcome['aggregate'],
+    scoring: Pick<
+      LogClassificationOutcome,
+      'score' | 'decision' | 'scoreReasons'
+    >,
   ): Anomaly {
     const classification = result.classification as ActionableLogClassification;
     const resource = resourceFromEvent(event);
@@ -144,12 +152,13 @@ export class StagedLogClassifier implements LogClassifier {
       ruleId: `log-classifier.${result.modelVersion}`,
       classification,
       source: 'LOG_CLASSIFIER',
-      severity: severity(classification, aggregate.count),
+      severity: severity(scoring.score, this.config),
+      anomalyScore: scoring.score,
       confidence,
       clusterId: event.clusterId,
       affectedResource: resource,
       timestamp: event.timestamp,
-      summary: `${result.classification.replaceAll('_', ' ')} log pattern observed ${aggregate.count} time${aggregate.count === 1 ? '' : 's'}`,
+      summary: `${result.classification.replaceAll('_', ' ')}: ${aggregate.count} matching log${aggregate.count === 1 ? '' : 's'} across ${aggregate.affectedPods.length} pod${aggregate.affectedPods.length === 1 ? '' : 's'}; score ${scoring.score} (${scoring.decision})`,
       evidence: [
         {
           type: 'log-pattern',
@@ -165,6 +174,12 @@ export class StagedLogClassifier implements LogClassifier {
             count: aggregate.count,
             affectedPods: aggregate.affectedPods.length,
             excerpt: result.evidence[0]!.excerpt ?? '',
+            matchedSignals: (result.evidence[0]!.matchedSignals ?? []).join(
+              ', ',
+            ),
+            incidentScore: scoring.score,
+            decision: scoring.decision,
+            scoreReasons: scoring.scoreReasons.join('; '),
           },
         },
       ],
@@ -189,11 +204,43 @@ function round(value: number): number {
   return Math.round(value * 1_000) / 1_000;
 }
 
-function severity(
-  classification: ActionableLogClassification,
-  count: number,
-): AnomalySeverity {
-  if (classification === 'RESOURCE_EXHAUSTION' || count >= 20) return 'HIGH';
-  if (count >= 5) return 'WARNING';
-  return 'INFO';
+function score(
+  event: LogEvent,
+  classification: LogClassification,
+  aggregate: LogClassificationOutcome['aggregate'],
+  config: LogClassifierConfig,
+): Pick<LogClassificationOutcome, 'score' | 'decision' | 'scoreReasons'> {
+  let value = 0;
+  const reasons: string[] = [];
+  const add = (points: number, reason: string) => {
+    value += points;
+    reasons.push(`${reason} +${points}`);
+  };
+  if (isActionable(classification))
+    add(config.scoring.knownClassification, 'known semantic classification');
+  if (event.level === 'error')
+    add(config.scoring.errorSeverity, 'ERROR severity');
+  if (event.level === 'fatal')
+    add(config.scoring.fatalSeverity, 'FATAL severity');
+  if (aggregate.count >= config.scoring.frequentOccurrenceThreshold)
+    add(config.scoring.frequent, `${aggregate.count} repetitions`);
+  else if (aggregate.count >= config.scoring.repeatedOccurrenceThreshold)
+    add(config.scoring.repeated, `${aggregate.count} repetitions`);
+  if (aggregate.affectedPods.length > 1)
+    add(
+      config.scoring.multiplePods,
+      `${aggregate.affectedPods.length} pods affected`,
+    );
+  const decision =
+    value >= config.scoring.incidentThreshold
+      ? 'INCIDENT'
+      : value >= config.scoring.anomalyThreshold
+        ? 'ANOMALY'
+        : 'CLASSIFICATION';
+  return { score: value, decision, scoreReasons: reasons };
+}
+
+function severity(score: number, config: LogClassifierConfig): AnomalySeverity {
+  if (score >= config.scoring.incidentThreshold) return 'HIGH';
+  return 'WARNING';
 }

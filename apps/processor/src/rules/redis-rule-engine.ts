@@ -3,11 +3,15 @@ import type { TelemetryEvent } from '@faultline/telemetry';
 import type { ResourceState } from '../resource-state/resource-state';
 import type { RedisConnection } from '../infrastructure/redis';
 import type { RuleEngine } from './contracts';
-import { InMemoryRuleEngine } from './in-memory-rule-engine';
+import {
+  InMemoryRuleEngine,
+  isRuleRelevantTelemetry,
+} from './in-memory-rule-engine';
 
 /** Persists anomaly dedupe, active windows, counters, evidence, and lifecycle state in Redis. */
 export class RedisRuleEngine implements RuleEngine {
   private pending = false;
+  private hydrated = false;
   constructor(
     private readonly redis: RedisConnection,
     private readonly engine: InMemoryRuleEngine,
@@ -18,10 +22,9 @@ export class RedisRuleEngine implements RuleEngine {
     event: TelemetryEvent,
     state?: ResourceState,
   ): Promise<readonly Anomaly[]> {
-    const stored = await this.redis.client.get(this.key);
-    if (stored) this.engine.importState(JSON.parse(stored));
+    await this.hydrate();
     const result = this.engine.evaluate(event, state);
-    this.pending = true;
+    if (isRuleRelevantTelemetry(event, state)) this.pending = true;
     return result;
   }
 
@@ -39,5 +42,13 @@ export class RedisRuleEngine implements RuleEngine {
     this.pending = false;
     const stored = await this.redis.client.get(this.key);
     this.engine.importState(stored ? JSON.parse(stored) : { version: 1 });
+    this.hydrated = true;
+  }
+
+  private async hydrate(): Promise<void> {
+    if (this.hydrated) return;
+    const stored = await this.redis.client.get(this.key);
+    if (stored) this.engine.importState(JSON.parse(stored));
+    this.hydrated = true;
   }
 }
