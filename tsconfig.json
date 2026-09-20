@@ -20,6 +20,9 @@
       "path": "packages/baselines"
     },
     {
+      "path": "packages/auth"
+    },
+    {
       "path": "packages/database"
     },
     {

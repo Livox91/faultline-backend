@@ -32,6 +32,8 @@ import {
   TELEMETRY_SCOPE_RESOLVER,
   type TelemetryScopeResolver,
 } from './telemetry-scope';
+import { CurrentUser } from './auth/context';
+import type { AuthenticatedUser } from '@faultline/auth';
 
 /**
  * Baseline inspection, for debugging and validating detection.
@@ -53,8 +55,11 @@ export class BaselinesController {
 
   @Get()
   @Header('Cache-Control', 'no-store')
-  async list(@Query() params: Record<string, unknown>) {
-    const scope = await this.scopes.resolve();
+  async list(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() params: Record<string, unknown>,
+  ) {
+    const scope = await this.scopes.resolve(user);
     const filter = translate(() => ({
       // Cluster scoping is applied from the resolved scope, never from the query
       // string, exactly as for telemetry reads.
@@ -83,6 +88,7 @@ export class BaselinesController {
   @Get(':resourceId/:metricName')
   @Header('Cache-Control', 'no-store')
   async get(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('resourceId') resourceId: string,
     @Param('metricName') metricName: string,
     @Query('window') windowValue: unknown,
@@ -92,7 +98,7 @@ export class BaselinesController {
       throw new BadRequestException(
         'Expected a workload resource identifier: workload:<cluster>:<namespace>:<name>',
       );
-    const scope = await this.scopes.resolve();
+    const scope = await this.scopes.resolve(user);
     assertScoped(scope, resource.clusterId);
     const metric = translate(() =>
       requiredIdentifier(metricName, 'metricName'),

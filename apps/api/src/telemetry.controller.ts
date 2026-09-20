@@ -31,6 +31,8 @@ import {
   resolveQueryCluster,
   type TelemetryScopeResolver,
 } from './telemetry-scope';
+import { CurrentUser } from './auth/context';
+import type { AuthenticatedUser } from '@faultline/auth';
 
 /**
  * Read-only telemetry investigation endpoints.
@@ -55,8 +57,11 @@ export class TelemetryController {
 
   @Get('logs')
   @Header('Cache-Control', 'no-store')
-  async logs(@Query() params: Record<string, unknown>) {
-    const scope = await this.scopes.resolve();
+  async logs(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() params: Record<string, unknown>,
+  ) {
+    const scope = await this.scopes.resolve(user);
     const query = translate(() =>
       validateLogSearchQuery(
         {
@@ -83,8 +88,11 @@ export class TelemetryController {
 
   @Get('metrics')
   @Header('Cache-Control', 'no-store')
-  async metrics(@Query() params: Record<string, unknown>) {
-    const scope = await this.scopes.resolve();
+  async metrics(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() params: Record<string, unknown>,
+  ) {
+    const scope = await this.scopes.resolve(user);
     const query = translate(() =>
       validateMetricQuery(
         {
@@ -112,8 +120,11 @@ export class TelemetryController {
 
   @Get('kubernetes-events')
   @Header('Cache-Control', 'no-store')
-  async kubernetesEvents(@Query() params: Record<string, unknown>) {
-    const scope = await this.scopes.resolve();
+  async kubernetesEvents(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() params: Record<string, unknown>,
+  ) {
+    const scope = await this.scopes.resolve(user);
     const query = translate(() =>
       validateKubernetesEventQuery(
         {
@@ -174,10 +185,11 @@ export class ResourceTimelineController {
   @Get(':resourceId/timeline')
   @Header('Cache-Control', 'no-store')
   async timeline(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('resourceId') resourceId: string,
     @Query() params: Record<string, unknown>,
   ) {
-    const scope = await this.scopes.resolve();
+    const scope = await this.scopes.resolve(user);
     const query = translate(() =>
       validateResourceTimelineQuery({ ...params, resourceId }, this.limits),
     );

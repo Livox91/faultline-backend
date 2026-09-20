@@ -194,6 +194,15 @@ export interface Incident {
 
 export interface IncidentFilter {
   clusterId?: string;
+  /**
+   * The clusters the caller may see at all.
+   *
+   * Distinct from `clusterId`, which is a filter the caller chose: this is the limit
+   * imposed on them, applied inside the query so that a listing cannot return a row
+   * from a project they are not assigned to. `undefined` means unrestricted; an empty
+   * array means nothing is visible, and the two must not be conflated.
+   */
+  clusterIds?: readonly string[];
   namespace?: string;
   status?: IncidentStatus;
   severity?: IncidentSeverity;
@@ -305,6 +314,8 @@ export class InMemoryIncidentRepository implements IncidentRepository {
     return [...this.incidents.values()]
       .filter(
         (incident) =>
+          (!filter.clusterIds ||
+            filter.clusterIds.includes(incident.clusterId)) &&
           (!filter.clusterId || incident.clusterId === filter.clusterId) &&
           (!filter.namespace || incident.namespace === filter.namespace) &&
           (!filter.status || incident.status === filter.status) &&

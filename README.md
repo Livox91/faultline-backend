@@ -346,6 +346,13 @@ committed in one transaction and survive application restarts.
 
 ## Endpoints
 
+**Every API route except `/health`, `/health/ready` and `POST /auth/login` requires a
+bearer token**, and what it returns depends on the caller: an Admin reaches every
+project, an Onsite Engineer only the projects assigned to them. The scope is applied
+inside the SQL and inside the telemetry store, so a cluster id in a query string is a
+filter and never a claim. See [the authorization guide](docs/AUTHORIZATION.md) for the
+roles, the schema, the admin endpoints and how to create the first user.
+
 All apps expose `GET /health` and `GET /health/ready`:
 
 ```json

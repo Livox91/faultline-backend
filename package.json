@@ -49,7 +49,16 @@
     "cluster:onboard": "node scripts/cluster.cjs onboard",
     "onboarding:test:cleanup": "node scripts/cluster.cjs cleanup",
     "cluster:uninstall": "node scripts/cluster.cjs uninstall",
-    "dev:reset": "node scripts/reset-development.cjs"
+    "dev:reset": "node scripts/reset-development.cjs",
+    "user:create": "node scripts/user.cjs create",
+    "user:list": "node scripts/user.cjs list",
+    "user:assign": "node scripts/user.cjs assign",
+    "user:unassign": "node scripts/user.cjs unassign",
+    "user:role": "node scripts/user.cjs role",
+    "user:password": "node scripts/user.cjs password",
+    "user:disable": "node scripts/user.cjs disable",
+    "user:enable": "node scripts/user.cjs enable",
+    "test:authorization": "npm run build && node --test tests/authorization.test.cjs"
   },
   "dependencies": {
     "pg": "^8.23.0",

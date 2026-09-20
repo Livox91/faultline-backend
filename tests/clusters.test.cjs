@@ -7,6 +7,10 @@ const {
   CLUSTER_DIRECTORY,
   ClustersController,
 } = require('../apps/api/dist/clusters.controller');
+const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
+const { AUDIT_LOG_REPOSITORY, InMemoryAuditLogRepository } = require('@faultline/auth');
+const { ApplicationLogger } = require('@faultline/platform');
+const { actingAs, admin, silentLogger } = require('./auth-harness.cjs');
 
 test('cluster API returns registration metadata without deriving namespaces from incidents', async () => {
   const registered = {
@@ -27,11 +31,25 @@ test('cluster API returns registration metadata without deriving namespaces from
     providers: [
       {
         provide: CLUSTER_DIRECTORY,
-        useValue: { list: async () => [registered] },
+        useValue: {
+          list: async () => [registered],
+          get: async (id) => (id === registered.id ? registered : undefined),
+          create: async () => registered,
+          update: async () => registered,
+          remove: async () => true,
+        },
       },
+      // Reads are scoped by the caller; an Admin sees every project.
+      actingAs(admin()),
+      AuditTrail,
+      { provide: AUDIT_LOG_REPOSITORY, useValue: new InMemoryAuditLogRepository() },
+      { provide: ApplicationLogger, useValue: silentLogger },
     ],
   })(ClusterApiModule);
-  const app = await NestFactory.create(ClusterApiModule, { logger: false });
+  const app = await NestFactory.create(ClusterApiModule, {
+    logger: false,
+    abortOnError: false,
+  });
   try {
     await app.listen(0, '127.0.0.1');
     const response = await fetch(`${await app.getUrl()}/clusters`);

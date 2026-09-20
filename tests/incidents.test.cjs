@@ -14,6 +14,10 @@ const {
 const {
   IncidentsController,
 } = require('../apps/api/dist/incidents.controller');
+const {
+  TELEMETRY_SCOPE_RESOLVER,
+} = require('../apps/api/dist/telemetry-scope');
+const { actingAs, admin } = require('./auth-harness.cjs');
 
 const start = Date.parse('2026-09-08T12:00:00Z');
 const at = (offset) => new Date(start + offset).toISOString();
@@ -272,9 +276,23 @@ test('incident API lists, filters and retrieves repository incidents', async () 
   class IncidentApiModule {}
   Module({
     controllers: [IncidentsController],
-    providers: [{ provide: INCIDENT_REPOSITORY, useValue: repository }],
+    providers: [
+      { provide: INCIDENT_REPOSITORY, useValue: repository },
+      // An Admin, so this test keeps asserting filtering and retrieval; project-level
+      // isolation is covered separately in authorization.test.cjs.
+      actingAs(admin()),
+      {
+        provide: TELEMETRY_SCOPE_RESOLVER,
+        useValue: {
+          resolve: async () => ({ mode: 'all-development-clusters' }),
+        },
+      },
+    ],
   })(IncidentApiModule);
-  const app = await NestFactory.create(IncidentApiModule, { logger: false });
+  const app = await NestFactory.create(IncidentApiModule, {
+    logger: false,
+    abortOnError: false,
+  });
   try {
     await app.listen(0, '127.0.0.1');
     const base = await app.getUrl();

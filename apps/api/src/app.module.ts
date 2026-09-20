@@ -1,16 +1,30 @@
-import { Module, type Provider } from '@nestjs/common';
+import { Module, SetMetadata, type Provider } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import {
   APPLICATION_CONFIG,
+  HealthController,
   HealthService,
   PlatformModule,
   type ApplicationConfig,
 } from '@faultline/platform';
 import {
   DATABASE,
+  PostgresAuditLogRepository,
   PostgresBaselineRepository,
+  PostgresClusterDirectory,
   PostgresConnection,
   PostgresIncidentRepository,
+  PostgresProjectAssignmentRepository,
+  PostgresUserRepository,
 } from '@faultline/database';
+import {
+  AUDIT_LOG_REPOSITORY,
+  PROJECT_ASSIGNMENT_REPOSITORY,
+  USER_REPOSITORY,
+  getDevelopmentAuditLogRepository,
+  getDevelopmentProjectAssignmentRepository,
+  getDevelopmentUserRepository,
+} from '@faultline/auth';
 import {
   INCIDENT_REPOSITORY,
   getDevelopmentIncidentRepository,
@@ -37,16 +51,30 @@ import {
   TelemetryController,
 } from './telemetry.controller';
 import {
-  ConfiguredTelemetryScopeResolver,
   TELEMETRY_SCOPE_RESOLVER,
+  UserTelemetryScopeResolver,
 } from './telemetry-scope';
-import {
-  CLUSTER_DIRECTORY,
-  ClustersController,
-  type RegisteredCluster,
-} from './clusters.controller';
+import { CLUSTER_DIRECTORY, ClustersController } from './clusters.controller';
+import { IS_PUBLIC } from './auth/context';
+import { AuthenticationGuard } from './auth/authentication.guard';
+import { AuthorizationGuard } from './auth/authorization.guard';
+import { AuditTrail } from './auth/audit-trail';
+import { AdminBootstrap } from './auth/bootstrap';
+import { AuthController, LoginThrottle } from './auth/auth.controller';
+import { AdminUsersController } from './auth/users.controller';
+import { AdminAuditController } from './auth/audit.controller';
 
 export const CLICKHOUSE_CONNECTION = Symbol('faultline.clickhouse-connection');
+
+/**
+ * Liveness and readiness stay reachable without a token.
+ *
+ * The health controller ships in `@faultline/platform`, which knows nothing about
+ * authorization and should not start to. Applying the metadata from here keeps that
+ * separation while still letting the global guard see the exemption - a decorator is
+ * just a function, and this is the one place that decides what is public.
+ */
+SetMetadata(IS_PUBLIC, true)(HealthController);
 
 const infrastructureProviders: Provider[] =
   process.env.NODE_ENV === 'test'
@@ -60,7 +88,27 @@ const infrastructureProviders: Provider[] =
           provide: BASELINE_REPOSITORY,
           useFactory: getDevelopmentBaselineRepository,
         },
-        { provide: CLUSTER_DIRECTORY, useValue: { list: async () => [] } },
+        { provide: USER_REPOSITORY, useFactory: getDevelopmentUserRepository },
+        {
+          provide: PROJECT_ASSIGNMENT_REPOSITORY,
+          useFactory: getDevelopmentProjectAssignmentRepository,
+        },
+        {
+          provide: AUDIT_LOG_REPOSITORY,
+          useFactory: getDevelopmentAuditLogRepository,
+        },
+        {
+          provide: CLUSTER_DIRECTORY,
+          useValue: {
+            list: async () => [],
+            get: async () => undefined,
+            create: async () => {
+              throw new Error('Not available in tests');
+            },
+            update: async () => undefined,
+            remove: async () => false,
+          },
+        },
       ]
     : [
         {
@@ -85,58 +133,28 @@ const infrastructureProviders: Provider[] =
             new PostgresIncidentRepository(database),
         },
         {
+          provide: USER_REPOSITORY,
+          inject: [DATABASE],
+          useFactory: (database: PostgresConnection) =>
+            new PostgresUserRepository(database),
+        },
+        {
+          provide: PROJECT_ASSIGNMENT_REPOSITORY,
+          inject: [DATABASE],
+          useFactory: (database: PostgresConnection) =>
+            new PostgresProjectAssignmentRepository(database),
+        },
+        {
+          provide: AUDIT_LOG_REPOSITORY,
+          inject: [DATABASE],
+          useFactory: (database: PostgresConnection) =>
+            new PostgresAuditLogRepository(database),
+        },
+        {
           provide: CLUSTER_DIRECTORY,
           inject: [DATABASE],
-          useFactory: (database: PostgresConnection) => ({
-            list: async (): Promise<RegisteredCluster[]> => {
-              const result = await database.pool.query<{
-                id: string;
-                name: string;
-                kubernetes_context: string | null;
-                workload_namespace: string | null;
-                workload_selector: string | null;
-                created_at: Date;
-                updated_at: Date;
-                total: string;
-                open: string;
-                critical: string;
-                last_seen: Date | null;
-              }>(
-                `SELECT c.id, COALESCE(c.name, c.id) AS name,
-                        c.kubernetes_context, c.workload_namespace,
-                        c.workload_selector, c.created_at, c.updated_at,
-                        count(i.id)::text AS total,
-                        count(i.id) FILTER (WHERE i.status <> 'RESOLVED')::text AS open,
-                        count(i.id) FILTER (WHERE i.severity = 'CRITICAL')::text AS critical,
-                        max(i.last_seen) AS last_seen
-                 FROM clusters c
-                 LEFT JOIN incidents i ON i.cluster_id = c.id
-                 GROUP BY c.id
-                 ORDER BY COALESCE(c.name, c.id), c.id`,
-              );
-              return result.rows.map((row) => ({
-                id: row.id,
-                name: row.name,
-                ...(row.kubernetes_context
-                  ? { kubernetesContext: row.kubernetes_context }
-                  : {}),
-                ...(row.workload_namespace
-                  ? { workloadNamespace: row.workload_namespace }
-                  : {}),
-                ...(row.workload_selector
-                  ? { workloadSelector: row.workload_selector }
-                  : {}),
-                createdAt: row.created_at.toISOString(),
-                updatedAt: row.updated_at.toISOString(),
-                total: Number(row.total),
-                open: Number(row.open),
-                critical: Number(row.critical),
-                ...(row.last_seen
-                  ? { lastSeen: row.last_seen.toISOString() }
-                  : {}),
-              }));
-            },
-          }),
+          useFactory: (database: PostgresConnection) =>
+            new PostgresClusterDirectory(database),
         },
         {
           // Baselines are served from PostgreSQL, so they stay inspectable even while
@@ -186,6 +204,9 @@ const infrastructureProviders: Provider[] =
 @Module({
   imports: [PlatformModule.forRoot('api', resolve(__dirname, '../.env'))],
   controllers: [
+    AuthController,
+    AdminUsersController,
+    AdminAuditController,
     SystemController,
     IncidentsController,
     IncidentEvidenceController,
@@ -196,10 +217,20 @@ const infrastructureProviders: Provider[] =
   ],
   providers: [
     ...infrastructureProviders,
+    AuditTrail,
+    LoginThrottle,
+    AdminBootstrap,
     {
       provide: TELEMETRY_SCOPE_RESOLVER,
-      useClass: ConfiguredTelemetryScopeResolver,
+      useClass: UserTelemetryScopeResolver,
     },
+    // Registered globally and in this order: authentication establishes who is calling
+    // and rejects with 401, then authorization decides what they may reach and rejects
+    // with 403. Global rather than per-controller so that a route added later is
+    // protected unless it is explicitly marked `@Public()` - the failure mode of a
+    // forgotten decorator is a locked door, not an open one.
+    { provide: APP_GUARD, useClass: AuthenticationGuard },
+    { provide: APP_GUARD, useClass: AuthorizationGuard },
   ],
 })
 export class AppModule {}

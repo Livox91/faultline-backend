@@ -70,6 +70,27 @@ const environmentSchema = z
     LOG_LEVEL: z.enum(logLevels).default('log'),
     FAULTLINE_DEV_AGENT_TOKEN: z.string().min(1).optional(),
     DATABASE_URL: z.string().url().optional(),
+
+    /**
+     * Authentication and authorization.
+     *
+     * The secret signs the access tokens the API issues today. When an enterprise
+     * identity provider (SSO/OIDC/LDAP) is put in front, these are replaced by the
+     * provider's issuer and JWKS and nothing else in the request path changes.
+     */
+    AUTH_JWT_SECRET: z.string().min(32).optional(),
+    AUTH_TOKEN_ISSUER: z.string().trim().min(1).default('faultline'),
+    AUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(60)
+      .max(86_400)
+      .default(3600),
+    /** When true, a login returns a challenge and the token is issued after the code. */
+    AUTH_MFA_REQUIRED: booleanFlag(false),
+    /** Seeds the first Admin on startup when the users table is empty. */
+    AUTH_BOOTSTRAP_ADMIN_EMAIL: z.string().email().optional(),
+    AUTH_BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).optional(),
     REDIS_URL: z.string().url().optional(),
     BROKER_URL: z.string().url().optional(),
     BROKER_CLIENT_ID: z.string().trim().min(1).default('faultline'),
@@ -486,6 +507,7 @@ export interface ApplicationConfig {
   readonly enabledComponents: readonly string[];
   readonly anomalyThresholds: AnomalyThresholds;
   readonly incidentCorrelation: IncidentCorrelationConfig;
+  readonly auth: AuthSettings;
   readonly infrastructure: InfrastructureConfig;
   readonly telemetryStorage: TelemetryStorageConfig;
   readonly baselines: BaselineSettings;
@@ -550,6 +572,21 @@ export interface LogClassificationSettings {
     anomalyThreshold: number;
     incidentThreshold: number;
   };
+}
+
+/**
+ * How a request proves who it is, and how long that proof lasts.
+ *
+ * `bootstrapAdmin` exists so a fresh deployment is reachable at all: without a first
+ * Admin there is nobody who can create one, and every endpoint now refuses anonymous
+ * callers. It seeds only when the users table is empty.
+ */
+export interface AuthSettings {
+  readonly jwtSecret?: string;
+  readonly issuer: string;
+  readonly accessTokenTtlSeconds: number;
+  readonly mfaRequired: boolean;
+  readonly bootstrapAdmin?: { email: string; password: string };
 }
 
 export interface InfrastructureConfig {
@@ -646,6 +683,11 @@ export function validateEnvironment(
   }
   if (result.data.NODE_ENV !== 'test') {
     const missing = [
+      // The API refuses anonymous requests, so it cannot start without the key it
+      // verifies tokens with: starting anyway would mean every request 500s.
+      ...(application === 'api' && !result.data.AUTH_JWT_SECRET
+        ? ['AUTH_JWT_SECRET']
+        : []),
       ...((application === 'api' || application === 'processor') &&
       !result.data.DATABASE_URL
         ? ['DATABASE_URL']
