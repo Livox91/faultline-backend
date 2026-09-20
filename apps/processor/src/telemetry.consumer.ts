@@ -39,10 +39,13 @@ import {
   type LogClassificationOutcome,
   type LogClassifier,
 } from './log-classification/contracts';
+import type { Incident } from '@faultline/incidents';
+import type { IncidentCommunicationState, IncidentLifecycleEvent, IncidentLifecycleEventType } from '@faultline/notifications';
 
 @Injectable()
 export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
   private subscription?: QueueSubscription;
+  private readonly publishedIncidents = new Map<string, Incident>();
   private stateSweep?: NodeJS.Timeout;
   private incidentAdvanceWatermark?: number;
   constructor(
@@ -357,7 +360,20 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
       `${change.incident.id}:${change.type}:${change.incident.lastSeen}:${change.incident.resolvedAt ?? ''}`,
       change,
     );
+    const previous=this.publishedIncidents.get(change.incident.id);
+    const changedFields:string[]=[];
+    if(!previous)changedFields.push('created');
+    else {
+      if(previous.status!==change.incident.status)changedFields.push('status');
+      if(previous.severity!==change.incident.severity)changedFields.push('severity');
+      if(previous.estimatedRestorationAt!==change.incident.estimatedRestorationAt)changedFields.push('estimatedRestorationAt');
+      if(previous.serviceImpact!==change.incident.serviceImpact)changedFields.push('serviceImpact');
+    }
+    const type:IncidentLifecycleEventType|undefined=!previous?'INCIDENT_CREATED':change.incident.status==='RESOLVED'&&previous.status!=='RESOLVED'?'INCIDENT_RESOLVED':changedFields.includes('status')?'INCIDENT_STATUS_CHANGED':changedFields.includes('severity')?'INCIDENT_SEVERITY_CHANGED':changedFields.includes('estimatedRestorationAt')?'INCIDENT_ETA_UPDATED':changedFields.includes('serviceImpact')?'INCIDENT_STATUS_CHANGED':undefined;
+    this.publishedIncidents.set(change.incident.id,structuredClone(change.incident));
+    if(type){const event:IncidentLifecycleEvent={id:`${change.incident.id}:${type}:${change.incident.lastSeen}:${change.incident.estimatedRestorationAt??''}`,type,incident:change.incident,state:this.communicationState(change.incident),previousState:previous?this.communicationState(previous):undefined,previousSeverity:previous?.severity,previousEstimatedRestorationAt:previous?.estimatedRestorationAt,occurredAt:new Date().toISOString(),changedFields};await this.publishOperationalEvent('incidents.lifecycle',event.id,event);}
   }
+  private communicationState(incident:Incident):IncidentCommunicationState{return incident.status==='RESOLVED'?'RESOLVED':incident.status==='OPEN'?'OPEN':'INVESTIGATING';}
 
   private async publishOperationalEvent(
     topic: string,

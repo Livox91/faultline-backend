@@ -11,6 +11,7 @@ export async function startApplication(
   application: ApplicationName,
   loadModule: () => Promise<Type<unknown>>,
   configure?: (app: INestApplication) => void,
+  rawBody = false,
 ): Promise<void> {
   const startupLogger = new ApplicationLogger(application);
   let app: INestApplication | undefined;
@@ -21,6 +22,7 @@ export async function startApplication(
       logger: startupLogger,
       bufferLogs: true,
       abortOnError: false,
+      rawBody,
     });
     configure?.(app);
     const config = app.get<ApplicationConfig>(APPLICATION_CONFIG);

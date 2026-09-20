@@ -22,6 +22,7 @@
     "migration:rollback": "node dist/migrate.js rollback"
   },
   "dependencies": {
+    "@faultline/notifications": "0.1.0",
     "@faultline/incidents": "0.1.0",
     "@types/pg": "^8.23.1",
     "pg": "^8.23.0",

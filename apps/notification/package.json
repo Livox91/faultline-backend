@@ -1,5 +1,5 @@
 {
-  "name": "@faultline/processor",
+  "name": "@faultline/notification",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -7,20 +7,17 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "@faultline/database": "0.1.0",
     "@faultline/incidents": "0.1.0",
-    "@faultline/kubernetes": "0.1.0",
+    "@faultline/database": "0.1.0",
+    "@faultline/notifications": "0.1.0",
     "@faultline/platform": "0.1.0",
     "@faultline/queue": "0.1.0",
-    "@faultline/telemetry": "0.1.0",
     "@nestjs/common": "^11.1.0",
     "@nestjs/core": "^11.1.0",
     "@nestjs/platform-express": "^11.1.0",
-    "redis": "^6.2.1",
     "reflect-metadata": "^0.2.2",
+    "retell-sdk": "^6.0.1",
     "rxjs": "^7.8.2",
-    "@faultline/baselines": "0.1.0",
-    "@faultline/log-classification": "0.1.0"
-    ,"@faultline/notifications": "0.1.0"
+    "zod": "^3.25.0"
   }
 }
