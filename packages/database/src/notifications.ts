@@ -6,6 +6,7 @@ import type {
   NotificationGroupRepository, IncidentCommunication, IncidentCommunicationRepository,
   IdempotencyStore, NotificationStatus,
   AcknowledgementTransaction,
+  ExternalTicket, ExternalTicketRepository,
   OnCallSchedule,OnCallScheduleRepository,OnCallShift,OnCallShiftRepository,AvailabilityOverride,AvailabilityOverrideRepository,
 } from '@faultline/notifications';
 import { canTransitionNotificationStatus, sanitizeProviderMetadata } from '@faultline/notifications';
@@ -64,4 +65,37 @@ export class PostgresNotificationAuditRepository implements NotificationAuditRep
   async purge(before:string){const result=await this.db.pool.query('DELETE FROM notification_audit_events WHERE occurred_at < $1',[before]);return result.rowCount??0;}
 }
 export class PostgresIdempotencyStore implements IdempotencyStore {constructor(private readonly db:PostgresConnection){}async claim(key:string){const result=await this.db.pool.query('INSERT INTO notification_idempotency (key) VALUES ($1) ON CONFLICT DO NOTHING RETURNING key',[key]);return!!result.rowCount;}async release(key:string){await this.db.pool.query('DELETE FROM notification_idempotency WHERE key=$1',[key]);}}
+interface ExternalTicketRow extends QueryResultRow {
+  id: string;
+  incident_id: string;
+  provider: ExternalTicket['provider'];
+  channel_id: string;
+  external_message_id: string;
+  url: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+export class PostgresExternalTicketRepository implements ExternalTicketRepository {
+  constructor(private readonly db:PostgresConnection) {}
+  async findByIncidentAndProvider(incidentId:string,provider:ExternalTicket['provider']) {
+    const result=await this.db.pool.query<ExternalTicketRow>('SELECT id,incident_id,provider,channel_id,external_message_id,url,created_at,updated_at FROM incident_external_tickets WHERE incident_id=$1 AND provider=$2',[incidentId,provider]);
+    return result.rows[0]?this.map(result.rows[0]):undefined;
+  }
+  async saveIfAbsent(ticket:ExternalTicket) {
+    const result=await this.db.pool.query<ExternalTicketRow>(`INSERT INTO incident_external_tickets (id,incident_id,provider,channel_id,external_message_id,url,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      ON CONFLICT (incident_id,provider) DO NOTHING
+      RETURNING id,incident_id,provider,channel_id,external_message_id,url,created_at,updated_at`,[ticket.id,ticket.incidentId,ticket.provider,ticket.channelId,ticket.externalMessageId,ticket.url??null,ticket.createdAt,ticket.updatedAt]);
+    return result.rows[0]?this.map(result.rows[0]):(await this.findByIncidentAndProvider(ticket.incidentId,ticket.provider))!;
+  }
+  async markUpdated(id:string,updatedAt:string) {
+    const result=await this.db.pool.query<ExternalTicketRow>('UPDATE incident_external_tickets SET updated_at=$2 WHERE id=$1 RETURNING id,incident_id,provider,channel_id,external_message_id,url,created_at,updated_at',[id,updatedAt]);
+    return result.rows[0]?this.map(result.rows[0]):undefined;
+  }
+  private map(row:ExternalTicketRow):ExternalTicket {
+    const createdAt=row.created_at instanceof Date?row.created_at.toISOString():new Date(row.created_at).toISOString();
+    const updatedAt=row.updated_at instanceof Date?row.updated_at.toISOString():new Date(row.updated_at).toISOString();
+    return {id:row.id,incidentId:row.incident_id,provider:row.provider,channelId:row.channel_id,externalMessageId:row.external_message_id,createdAt,updatedAt,...(row.url?{url:row.url}:{})};
+  }
+}
 export class PostgresAcknowledgementTransaction implements AcknowledgementTransaction {constructor(private readonly db:PostgresConnection){}async acknowledge(input:Parameters<AcknowledgementTransaction['acknowledge']>[0]){const client=await this.db.pool.connect();try{await client.query('BEGIN');await client.query(`INSERT INTO incident_acknowledgements (incident_id,aggregate) VALUES ($1,$2) ON CONFLICT (incident_id) DO NOTHING`,[input.acknowledgement.incidentId,JSON.stringify(input.acknowledgement)]);await client.query(`UPDATE escalation_executions SET status='ACKNOWLEDGED',next_attempt_at=NULL,lease_owner=NULL,lease_expires_at=NULL,aggregate=$2,updated_at=now() WHERE incident_id=$1 AND status='ACTIVE'`,[input.execution.incidentId,JSON.stringify(input.execution)]);if(input.attempt)await client.query('UPDATE notification_attempts SET aggregate=$2,updated_at=now() WHERE id=$1',[input.attempt.id,JSON.stringify(input.attempt)]);for(const event of input.events)await client.query('INSERT INTO notification_audit_events (id,incident_id,occurred_at,aggregate) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',[event.id,event.incidentId,event.timestamp,JSON.stringify(event)]);await client.query('COMMIT');}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}}}

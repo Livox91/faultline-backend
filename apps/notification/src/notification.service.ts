@@ -1,21 +1,380 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import type { Incident } from '@faultline/incidents';
-import { COMMUNICATION_PROVIDER, ESCALATION_EXECUTION_REPOSITORY, IDEMPOTENCY_STORE, NOTIFICATION_ATTEMPTS, NOTIFICATION_AUDIT_REPOSITORY, NOTIFICATION_POLICY, POLICY_SELECTOR, RecipientResolver, type CommunicationProvider, type EscalationExecutionRepository, type EscalationPolicy, type IdempotencyStore, type NotificationAttempt, type NotificationAttemptRepository, type NotificationAuditEventType, type NotificationAuditRepository, type NotificationPolicy, type NotificationStatus, type PolicySelector } from '@faultline/notifications';
+import {
+  COMMUNICATION_PROVIDER,
+  ESCALATION_EXECUTION_REPOSITORY,
+  IDEMPOTENCY_STORE,
+  NOTIFICATION_ATTEMPTS,
+  NOTIFICATION_AUDIT_REPOSITORY,
+  NOTIFICATION_POLICY,
+  POLICY_SELECTOR,
+  RecipientResolver,
+  type CommunicationProvider,
+  type EscalationExecutionRepository,
+  type EscalationPolicy,
+  type IdempotencyStore,
+  type NotificationAttempt,
+  type NotificationAttemptRepository,
+  type NotificationAuditEventType,
+  type NotificationAuditRepository,
+  type NotificationPolicy,
+  type NotificationStatus,
+  type PolicySelector,
+} from '@faultline/notifications';
 import { ApplicationLogger } from '@faultline/platform';
 import { IncidentMessageBuilder } from './message-builder';
-const terminal = new Set<NotificationStatus>(['FAILED','NO_ANSWER','CANCELLED']);
+const terminal = new Set<NotificationStatus>([
+  'FAILED',
+  'NO_ANSWER',
+  'CANCELLED',
+]);
 @Injectable()
 export class NotificationService {
-  private readonly incidents=new Map<string,Incident>(); private readonly policies=new Map<string,EscalationPolicy>();
-  constructor(@Inject(NOTIFICATION_POLICY) private readonly notificationPolicy:NotificationPolicy,@Inject(POLICY_SELECTOR) private readonly selector:PolicySelector,private readonly resolver:RecipientResolver,@Inject(COMMUNICATION_PROVIDER) private readonly provider:CommunicationProvider,@Inject(NOTIFICATION_ATTEMPTS) private readonly attempts:NotificationAttemptRepository,@Inject(ESCALATION_EXECUTION_REPOSITORY) private readonly executions:EscalationExecutionRepository,@Inject(NOTIFICATION_AUDIT_REPOSITORY) private readonly audit:NotificationAuditRepository,@Inject(IDEMPOTENCY_STORE) private readonly idempotency:IdempotencyStore,private readonly messages:IncidentMessageBuilder,private readonly logger:ApplicationLogger) {}
-  async handleIncident(incident:Incident,organizationId:string):Promise<void>{ this.incidents.set(incident.id,incident); if(incident.status==='RESOLVED'){await this.resolve(incident);return;} if(!this.notificationPolicy.shouldNotify(incident))return; const old=await this.executions.get(incident.id); if(old&&old.status!=='ACTIVE')return; const policy=await this.selector.select(incident,organizationId); if(!policy||old&&old.policyId!==policy.id){this.logger.warn({event:'notification_policy_not_found',incident_id:incident.id});return;} this.policies.set(incident.id,policy); if(!old){const now=new Date().toISOString();await this.executions.save({incidentId:incident.id,policyId:policy.id,currentStep:0,attemptCount:0,status:'ACTIVE',startedAt:now,updatedAt:now});await this.record(incident.id,'POLICY_SELECTED',{policyId:policy.id});} await this.dispatch(incident,policy,old?.currentStep??0,(old?.attemptCount??0)+1); }
-  async recover(execution:import('@faultline/notifications').EscalationExecution,incident:Incident,policy:EscalationPolicy):Promise<void>{this.incidents.set(incident.id,incident);this.policies.set(incident.id,policy);if(incident.status==='RESOLVED'){await this.resolve(incident);return;}if(execution.status!=='ACTIVE')return;await this.dispatch(incident,policy,execution.currentStep,execution.attemptCount+1);}
-  async processProviderEvent(event:{requestId:string;status:NotificationStatus;metadata?:Readonly<Record<string,unknown>>}):Promise<void>{const current=await this.attempts.findByProviderRequestId(event.requestId);if(!current)return;const result=await this.attempts.updateStatus(current.id,event.status,terminal.has(event.status)||event.status==='DELIVERED'?new Date().toISOString():undefined,event.metadata);if(!result.changed)return;const attempt=result.attempt;if(event.status==='ANSWERED'){await this.record(attempt.incidentId,'VOICE_CALL_ANSWERED',{attemptId:attempt.id,contactId:attempt.recipientId});await this.record(attempt.incidentId,'ACKNOWLEDGEMENT_REQUESTED',{attemptId:attempt.id,contactId:attempt.recipientId});}if(terminal.has(event.status)){await this.record(attempt.incidentId,'CALL_FAILED',{attemptId:attempt.id,contactId:attempt.recipientId,details:{status:event.status}});await this.next(attempt);}}
-  async continueAfterDecline(attempt:NotificationAttempt):Promise<void>{await this.next(attempt);}
-  private async dispatch(incident:Incident,policy:EscalationPolicy,index:number,number:number,resolution=false):Promise<void>{if(!(await this.canContinue(incident.id,resolution)))return;const step=[...policy.steps].sort((a,b)=>a.order-b.order)[index];if(!step){const state=await this.executions.get(incident.id);if(state)await this.executions.save({...state,status:'EXHAUSTED',completedAt:new Date().toISOString()});await this.record(incident.id,'ESCALATION_STOPPED',{details:{reason:'EXHAUSTED'}});return;}const found=await this.resolver.resolve(step);for(const skip of found.skipped)await this.record(incident.id,'CONTACT_SKIPPED',{policyId:policy.id,stepId:step.id,contactId:skip.contactId,details:{reason:skip.reason}});if(!found.recipients.length){await this.record(incident.id,'ESCALATION_ADVANCED',{policyId:policy.id,stepId:step.id});await this.dispatch(incident,policy,index+1,1);return;}for(const item of found.recipients){await this.record(incident.id,'CONTACT_RESOLVED',{policyId:policy.id,stepId:step.id,contactId:item.recipient.id});for(const channel of item.channels){const key=`${incident.id}:${resolution?'resolution':step.id}:${item.recipient.id}:${channel}:${number}`;if(!(await this.idempotency.claim(key)))continue;const now=new Date().toISOString();let attempt:NotificationAttempt={id:randomUUID(),incidentId:incident.id,recipientId:item.recipient.id,escalationStep:index,channel,provider:this.provider.name,status:'PENDING',attemptNumber:number,createdAt:now};await this.attempts.save(attempt);try{const message=this.messages.build(incident,item.recipient.audience,resolution);const metadata={incidentId:incident.id,notificationAttemptId:attempt.id};const result=channel==='VOICE'?await this.provider.startVoiceCall({recipient:item.recipient,message,metadata,context:{incident_id:incident.id,severity:incident.severity,affected_service:incident.primaryResource.workload??'',cluster:incident.clusterId,environment:incident.namespace??'',status:incident.status}}):await this.provider.sendSms({recipient:item.recipient,message,metadata});attempt={...attempt,providerRequestId:result.requestId,status:result.status,startedAt:now};await this.attempts.save(attempt);const state=await this.executions.get(incident.id);if(state)await this.executions.save({...state,currentStep:index,lastAttemptAt:now});await this.record(incident.id,channel==='VOICE'?'CALL_REQUESTED':'SMS_REQUESTED',{policyId:policy.id,stepId:step.id,contactId:item.recipient.id,attemptId:attempt.id});}catch(error){attempt={...attempt,status:'FAILED',completedAt:new Date().toISOString(),failureReason:error instanceof Error?error.message:'Provider failure'};await this.attempts.save(attempt);this.logger.error({event:'notification_failed',incident_id:incident.id,attempt_id:attempt.id});await this.record(incident.id,'CALL_FAILED',{attemptId:attempt.id,contactId:attempt.recipientId});await this.next(attempt);}}}}
-  private async next(attempt:NotificationAttempt){const incident=this.incidents.get(attempt.incidentId),policy=this.policies.get(attempt.incidentId);if(!incident||!policy||!(await this.canContinue(incident.id,false)))return;const step=[...policy.steps].sort((a,b)=>a.order-b.order)[attempt.escalationStep];if(!step)return;const retry=attempt.status!=='DECLINED'&&attempt.attemptNumber<step.maximumAttempts,delay=retry?step.retryDelayMs:step.waitBeforeNextStepMs,index=retry?attempt.escalationStep:attempt.escalationStep+1,number=retry?attempt.attemptNumber+1:1,now=new Date();await this.record(incident.id,retry?'RETRY_SCHEDULED':'ESCALATION_ADVANCED',{policyId:policy.id,stepId:step.id,details:{delayMs:delay,nextStep:index}});const state=await this.executions.get(incident.id);if(!state)return;await this.executions.save({...state,currentStep:index,attemptCount:number-1,nextAttemptAt:new Date(now.getTime()+delay).toISOString(),updatedAt:now.toISOString(),leaseOwner:undefined,leaseExpiresAt:undefined});if(!delay)await this.recover((await this.executions.get(incident.id))!,incident,policy);}
-  private async canContinue(id:string,resolution:boolean){if(resolution)return true;const state=await this.executions.get(id);return(!state||state.status==='ACTIVE')&&this.incidents.get(id)?.status!=='RESOLVED';}
-  private async resolve(incident:Incident){const state=await this.executions.get(incident.id);if(!state)return;const now=new Date().toISOString();await this.executions.save({...state,status:'RESOLVED',nextAttemptAt:undefined,leaseOwner:undefined,leaseExpiresAt:undefined,completedAt:now,updatedAt:now});await this.record(incident.id,'INCIDENT_RESOLVED',{policyId:state.policyId});const policy=this.policies.get(incident.id);if(policy?.sendResolution)await this.dispatch(incident,policy,0,1,true);}
-  private record(incidentId:string,type:NotificationAuditEventType,extra:Record<string,unknown>){return this.audit.append({id:randomUUID(),incidentId,type,timestamp:new Date().toISOString(),...extra});}
+  private readonly incidents = new Map<string, Incident>();
+  private readonly policies = new Map<string, EscalationPolicy>();
+  constructor(
+    @Inject(NOTIFICATION_POLICY)
+    private readonly notificationPolicy: NotificationPolicy,
+    @Inject(POLICY_SELECTOR) private readonly selector: PolicySelector,
+    private readonly resolver: RecipientResolver,
+    @Inject(COMMUNICATION_PROVIDER)
+    private readonly provider: CommunicationProvider,
+    @Inject(NOTIFICATION_ATTEMPTS)
+    private readonly attempts: NotificationAttemptRepository,
+    @Inject(ESCALATION_EXECUTION_REPOSITORY)
+    private readonly executions: EscalationExecutionRepository,
+    @Inject(NOTIFICATION_AUDIT_REPOSITORY)
+    private readonly audit: NotificationAuditRepository,
+    @Inject(IDEMPOTENCY_STORE) private readonly idempotency: IdempotencyStore,
+    private readonly messages: IncidentMessageBuilder,
+    private readonly logger: ApplicationLogger,
+  ) {}
+  async handleIncident(
+    incident: Incident,
+    organizationId: string,
+  ): Promise<void> {
+    this.incidents.set(incident.id, incident);
+    if (incident.status === 'RESOLVED') {
+      await this.resolve(incident);
+      return;
+    }
+    if (!this.notificationPolicy.shouldNotify(incident)) return;
+    const old = await this.executions.get(incident.id);
+    if (old && old.status !== 'ACTIVE') return;
+    const policy = await this.selector.select(incident, organizationId);
+    if (!policy || (old && old.policyId !== policy.id)) {
+      this.logger.warn({
+        event: 'notification_policy_not_found',
+        incident_id: incident.id,
+      });
+      return;
+    }
+    this.policies.set(incident.id, policy);
+    if (!old) {
+      const now = new Date().toISOString();
+      await this.executions.save({
+        incidentId: incident.id,
+        policyId: policy.id,
+        currentStep: 0,
+        attemptCount: 0,
+        status: 'ACTIVE',
+        startedAt: now,
+        updatedAt: now,
+      });
+      await this.record(incident.id, 'POLICY_SELECTED', {
+        policyId: policy.id,
+      });
+    }
+    await this.dispatch(
+      incident,
+      policy,
+      old?.currentStep ?? 0,
+      (old?.attemptCount ?? 0) + 1,
+    );
+  }
+  async recover(
+    execution: import('@faultline/notifications').EscalationExecution,
+    incident: Incident,
+    policy: EscalationPolicy,
+  ): Promise<void> {
+    this.incidents.set(incident.id, incident);
+    this.policies.set(incident.id, policy);
+    if (incident.status === 'RESOLVED') {
+      await this.resolve(incident);
+      return;
+    }
+    if (execution.status !== 'ACTIVE') return;
+    await this.dispatch(
+      incident,
+      policy,
+      execution.currentStep,
+      execution.attemptCount + 1,
+    );
+  }
+  async processProviderEvent(event: {
+    requestId: string;
+    status: NotificationStatus;
+    metadata?: Readonly<Record<string, unknown>>;
+  }): Promise<void> {
+    const current = await this.attempts.findByProviderRequestId(
+      event.requestId,
+    );
+    if (!current) return;
+    const result = await this.attempts.updateStatus(
+      current.id,
+      event.status,
+      terminal.has(event.status) || event.status === 'DELIVERED'
+        ? new Date().toISOString()
+        : undefined,
+      event.metadata,
+    );
+    if (!result.changed) return;
+    const attempt = result.attempt;
+    if (event.status === 'ANSWERED') {
+      await this.record(attempt.incidentId, 'VOICE_CALL_ANSWERED', {
+        attemptId: attempt.id,
+        contactId: attempt.recipientId,
+      });
+      await this.record(attempt.incidentId, 'ACKNOWLEDGEMENT_REQUESTED', {
+        attemptId: attempt.id,
+        contactId: attempt.recipientId,
+      });
+    }
+    if (terminal.has(event.status)) {
+      await this.record(attempt.incidentId, 'CALL_FAILED', {
+        attemptId: attempt.id,
+        contactId: attempt.recipientId,
+        details: { status: event.status },
+      });
+      await this.next(attempt);
+    }
+  }
+  async continueAfterDecline(attempt: NotificationAttempt): Promise<void> {
+    await this.next(attempt);
+  }
+  private async dispatch(
+    incident: Incident,
+    policy: EscalationPolicy,
+    index: number,
+    number: number,
+    resolution = false,
+  ): Promise<void> {
+    if (!(await this.canContinue(incident.id, resolution))) return;
+    const step = [...policy.steps].sort((a, b) => a.order - b.order)[index];
+    if (!step) {
+      const state = await this.executions.get(incident.id);
+      if (state)
+        await this.executions.save({
+          ...state,
+          status: 'EXHAUSTED',
+          completedAt: new Date().toISOString(),
+        });
+      await this.record(incident.id, 'ESCALATION_STOPPED', {
+        details: { reason: 'EXHAUSTED' },
+      });
+      return;
+    }
+    const found = await this.resolver.resolve(step);
+    for (const skip of found.skipped)
+      await this.record(incident.id, 'CONTACT_SKIPPED', {
+        policyId: policy.id,
+        stepId: step.id,
+        contactId: skip.contactId,
+        details: { reason: skip.reason },
+      });
+    if (!found.recipients.length) {
+      await this.record(incident.id, 'ESCALATION_ADVANCED', {
+        policyId: policy.id,
+        stepId: step.id,
+      });
+      await this.dispatch(incident, policy, index + 1, 1);
+      return;
+    }
+    for (const item of found.recipients) {
+      await this.record(incident.id, 'CONTACT_RESOLVED', {
+        policyId: policy.id,
+        stepId: step.id,
+        contactId: item.recipient.id,
+      });
+      for (const channel of item.channels) {
+        const key = `${incident.id}:${resolution ? 'resolution' : step.id}:${item.recipient.id}:${channel}:${number}`;
+        if (!(await this.idempotency.claim(key))) continue;
+        const now = new Date().toISOString();
+        let attempt: NotificationAttempt = {
+          id: randomUUID(),
+          incidentId: incident.id,
+          recipientId: item.recipient.id,
+          escalationStep: index,
+          channel,
+          provider: this.provider.name,
+          status: 'PENDING',
+          attemptNumber: number,
+          createdAt: now,
+        };
+        await this.attempts.save(attempt);
+        try {
+          const message = this.messages.build(
+            incident,
+            item.recipient.audience,
+            resolution,
+          );
+        const metadata = {
+          incidentId: incident.id,
+          notificationAttemptId: attempt.id,
+          recipientId: item.recipient.id,
+        };
+          const result =
+            channel === 'VOICE'
+              ? await this.provider.startVoiceCall({
+                  recipient: item.recipient,
+                  message,
+                  metadata,
+                  context: {
+              incident_id: incident.id,
+              notification_attempt_id: attempt.id,
+              recipient_id: item.recipient.id,
+                    severity: incident.severity,
+                    affected_service: incident.primaryResource.workload ?? '',
+                    cluster: incident.clusterId,
+                    environment: incident.namespace ?? '',
+                    status: incident.status,
+                  },
+                })
+              : await this.provider.sendSms({
+                  recipient: item.recipient,
+                  message,
+                  metadata,
+                });
+          attempt = {
+            ...attempt,
+            providerRequestId: result.requestId,
+            status: result.status,
+            startedAt: now,
+          };
+          await this.attempts.save(attempt);
+          const state = await this.executions.get(incident.id);
+          if (state)
+            await this.executions.save({
+              ...state,
+              currentStep: index,
+              lastAttemptAt: now,
+            });
+          await this.record(
+            incident.id,
+            channel === 'VOICE' ? 'CALL_REQUESTED' : 'SMS_REQUESTED',
+            {
+              policyId: policy.id,
+              stepId: step.id,
+              contactId: item.recipient.id,
+              attemptId: attempt.id,
+            },
+          );
+        } catch (error) {
+          attempt = {
+            ...attempt,
+            status: 'FAILED',
+            completedAt: new Date().toISOString(),
+            failureReason:
+              error instanceof Error ? error.message : 'Provider failure',
+          };
+          await this.attempts.save(attempt);
+          this.logger.error({
+            event: 'notification_failed',
+            incident_id: incident.id,
+            attempt_id: attempt.id,
+          });
+          await this.record(incident.id, 'CALL_FAILED', {
+            attemptId: attempt.id,
+            contactId: attempt.recipientId,
+          });
+          await this.next(attempt);
+        }
+      }
+    }
+  }
+  private async next(attempt: NotificationAttempt) {
+    const incident = this.incidents.get(attempt.incidentId),
+      policy = this.policies.get(attempt.incidentId);
+    if (!incident || !policy || !(await this.canContinue(incident.id, false)))
+      return;
+    const step = [...policy.steps].sort((a, b) => a.order - b.order)[
+      attempt.escalationStep
+    ];
+    if (!step) return;
+    const retry =
+        attempt.status !== 'DECLINED' &&
+        attempt.attemptNumber < step.maximumAttempts,
+      delay = retry ? step.retryDelayMs : step.waitBeforeNextStepMs,
+      index = retry ? attempt.escalationStep : attempt.escalationStep + 1,
+      number = retry ? attempt.attemptNumber + 1 : 1,
+      now = new Date();
+    await this.record(
+      incident.id,
+      retry ? 'RETRY_SCHEDULED' : 'ESCALATION_ADVANCED',
+      {
+        policyId: policy.id,
+        stepId: step.id,
+        details: { delayMs: delay, nextStep: index },
+      },
+    );
+    const state = await this.executions.get(incident.id);
+    if (!state) return;
+    await this.executions.save({
+      ...state,
+      currentStep: index,
+      attemptCount: number - 1,
+      nextAttemptAt: new Date(now.getTime() + delay).toISOString(),
+      updatedAt: now.toISOString(),
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
+    });
+    if (!delay)
+      await this.recover(
+        (await this.executions.get(incident.id))!,
+        incident,
+        policy,
+      );
+  }
+  private async canContinue(id: string, resolution: boolean) {
+    if (resolution) return true;
+    const state = await this.executions.get(id);
+    return (
+      (!state || state.status === 'ACTIVE') &&
+      this.incidents.get(id)?.status !== 'RESOLVED'
+    );
+  }
+  private async resolve(incident: Incident) {
+    const state = await this.executions.get(incident.id);
+    if (!state) return;
+    const now = new Date().toISOString();
+    await this.executions.save({
+      ...state,
+      status: 'RESOLVED',
+      nextAttemptAt: undefined,
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
+      completedAt: now,
+      updatedAt: now,
+    });
+    await this.record(incident.id, 'INCIDENT_RESOLVED', {
+      policyId: state.policyId,
+    });
+    const policy = this.policies.get(incident.id);
+    if (policy?.sendResolution)
+      await this.dispatch(incident, policy, 0, 1, true);
+  }
+  private record(
+    incidentId: string,
+    type: NotificationAuditEventType,
+    extra: Record<string, unknown>,
+  ) {
+    return this.audit.append({
+      id: randomUUID(),
+      incidentId,
+      type,
+      timestamp: new Date().toISOString(),
+      ...extra,
+    });
+  }
 }

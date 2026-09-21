@@ -225,6 +225,77 @@ export interface IdempotencyStore {
   claim(key: string): Promise<boolean>;
   release(key: string): Promise<void>;
 }
+
+export interface IncidentTicketPayload {
+  incidentId: string;
+}
+
+export interface ExternalTicket {
+  id: string;
+  provider: 'slack';
+  externalMessageId: string;
+  incidentId: string;
+  channelId: string;
+  createdAt: string;
+  updatedAt: string;
+  url?: string;
+}
+
+export interface ExternalTicketRepository {
+  findByIncidentAndProvider(
+    incidentId: string,
+    provider: ExternalTicket['provider'],
+  ): Promise<ExternalTicket | undefined>;
+  /** Persists a ticket or returns the record that already owns the unique incident/provider key. */
+  saveIfAbsent(ticket: ExternalTicket): Promise<ExternalTicket>;
+  markUpdated(id: string, updatedAt: string): Promise<ExternalTicket | undefined>;
+}
+
+export class InMemoryExternalTicketRepository
+  implements ExternalTicketRepository
+{
+  private readonly values = new Map<string, ExternalTicket>();
+  private key(incidentId: string, provider: ExternalTicket['provider']) {
+    return `${incidentId}:${provider}`;
+  }
+  async findByIncidentAndProvider(
+    incidentId: string,
+    provider: ExternalTicket['provider'],
+  ): Promise<ExternalTicket | undefined> {
+    const value = this.values.get(this.key(incidentId, provider));
+    return value ? structuredClone(value) : undefined;
+  }
+  async saveIfAbsent(ticket: ExternalTicket): Promise<ExternalTicket> {
+    const key = this.key(ticket.incidentId, ticket.provider);
+    const existing = this.values.get(key);
+    if (existing) return structuredClone(existing);
+    this.values.set(key, structuredClone(ticket));
+    return structuredClone(ticket);
+  }
+  async markUpdated(id: string, updatedAt: string): Promise<ExternalTicket | undefined> {
+    const entry = [...this.values.entries()].find(([, value]) => value.id === id);
+    if (!entry) return undefined;
+    const updated = { ...entry[1], updatedAt };
+    this.values.set(entry[0], updated);
+    return structuredClone(updated);
+  }
+}
+
+export interface IncidentTicketUpdatePayload {
+  incidentId: string;
+  state: IncidentCommunicationState;
+}
+
+/** Create-only external incident ticket boundary. Updates and threads are intentionally absent. */
+export interface IncidentTicketPublisher {
+  createIncidentTicket(
+    payload: IncidentTicketPayload,
+  ): Promise<ExternalTicket | undefined>;
+  updateIncidentTicket(
+    payload: IncidentTicketUpdatePayload,
+  ): Promise<ExternalTicket | undefined>;
+  publishTimelineUpdates(event: IncidentLifecycleEvent): Promise<void>;
+}
 export class InMemoryIdempotencyStore implements IdempotencyStore {
   private readonly keys = new Set<string>();
   async claim(key: string): Promise<boolean> { if (this.keys.has(key)) return false; this.keys.add(key); return true; }
@@ -235,6 +306,12 @@ export const NOTIFICATION_POLICY = Symbol('faultline.notification-policy');
 export const COMMUNICATION_PROVIDER = Symbol('faultline.communication-provider');
 export const NOTIFICATION_ATTEMPTS = Symbol('faultline.notification-attempts');
 export const IDEMPOTENCY_STORE = Symbol('faultline.notification-idempotency');
+export const INCIDENT_TICKET_PUBLISHER = Symbol(
+  'faultline.incident-ticket-publisher',
+);
+export const EXTERNAL_TICKET_REPOSITORY = Symbol(
+  'faultline.external-ticket-repository',
+);
 export const CONTACT_REPOSITORY = Symbol('faultline.contact-repository');
 export const NOTIFICATION_GROUP_REPOSITORY = Symbol('faultline.notification-group-repository');
 export const ESCALATION_POLICY_REPOSITORY = Symbol('faultline.escalation-policy-repository');

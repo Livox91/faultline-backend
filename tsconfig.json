@@ -17,6 +17,9 @@
       "path": "packages/notifications"
     },
     {
+      "path": "packages/reporting"
+    },
+    {
       "path": "packages/log-classification"
     },
     {
