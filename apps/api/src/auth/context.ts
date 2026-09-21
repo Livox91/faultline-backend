@@ -1,5 +1,6 @@
 import { SetMetadata, createParamDecorator, type ExecutionContext } from '@nestjs/common';
 import type { AuthenticatedUser, Permission, Role } from '@faultline/auth';
+import type { PlanFeature } from '@faultline/billing';
 
 /**
  * The request as the guards leave it.
@@ -24,6 +25,8 @@ export const IS_PUBLIC = 'faultline.auth.public';
 export const REQUIRED_ROLES = 'faultline.auth.roles';
 export const REQUIRED_PERMISSION = 'faultline.auth.permission';
 export const PROJECT_SOURCE = 'faultline.auth.project-source';
+export const PASSWORD_CHANGE_EXEMPT = 'faultline.auth.password-change-exempt';
+export const REQUIRED_FEATURE = 'faultline.billing.feature';
 
 /**
  * Opts a route out of authentication.
@@ -41,6 +44,32 @@ export const Roles = (...roles: readonly Role[]) =>
 /** Restricts a route to holders of a permission, whatever role carries it. */
 export const RequirePermission = (permission: Permission) =>
   SetMetadata(REQUIRED_PERMISSION, permission);
+
+/**
+ * Lets a route run for an account that still owes a password change.
+ *
+ * An account provisioned with an emailed temporary password is authenticated but not
+ * yet trusted: the credential that opened it travelled through a mailbox. Every route
+ * is therefore closed to it *except* the few needed to get out of that state, and those
+ * few have to say so explicitly. As with `@Public()`, the direction matters - a route
+ * added later is closed to such an account unless someone opts it in.
+ */
+export const AllowWhilePasswordChangePending = () =>
+  SetMetadata(PASSWORD_CHANGE_EXEMPT, true);
+
+/**
+ * Restricts a route to accounts whose subscription tier includes a module.
+ *
+ * A different question from `@RequirePermission`, and deliberately a different
+ * decorator: permission asks whether this person may do the thing, this asks whether
+ * the thing was bought. Both can apply, and both must pass - an Admin on Basic is still
+ * an Admin, there is simply no Voice Call Agent on their plan to administer.
+ *
+ * Declared per route rather than checked inside handlers for the same reason the
+ * project check is: one place it can be forgotten, and it is visible in the signature.
+ */
+export const RequiresFeature = (feature: PlanFeature) =>
+  SetMetadata(REQUIRED_FEATURE, feature);
 
 export type ProjectSource = { in: 'param' | 'query' | 'body'; name: string };
 

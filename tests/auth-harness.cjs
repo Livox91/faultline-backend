@@ -24,12 +24,20 @@ const {
 } = require('@faultline/auth');
 const { APPLICATION_CONFIG } = require('@faultline/platform');
 const {
+  SUBSCRIPTION_REPOSITORY,
+  InMemorySubscriptionRepository,
+} = require('@faultline/billing');
+const {
   AuthenticationGuard,
 } = require('../apps/api/dist/auth/authentication.guard');
 const {
   AuthorizationGuard,
 } = require('../apps/api/dist/auth/authorization.guard');
 const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
+const {
+  EntitlementsGuard,
+  PlanEntitlements,
+} = require('../apps/api/dist/billing/entitlements');
 
 const TOKEN_SECRET = 'test-secret-that-is-long-enough-to-sign-with';
 const ISSUER = 'faultline-test';
@@ -61,6 +69,9 @@ function apiConfig(overrides = {}) {
         ? { queryClusterScope: overrides.queryClusterScope }
         : {}),
     },
+    // Off unless a test says otherwise: a deployment that sells nothing enforces no
+    // tiers, which is also what every pre-existing authorization test assumes.
+    billing: { enabled: false, provider: 'stripe', priceIds: {}, ...(overrides.billing ?? {}) },
     ...overrides.extra,
   };
 }
@@ -119,6 +130,7 @@ async function bootWithRealGuards({
   users = new InMemoryUserRepository(),
   assignments = new InMemoryProjectAssignmentRepository(),
   audit = new InMemoryAuditLogRepository(),
+  subscriptions = new InMemorySubscriptionRepository(),
   config = apiConfig(),
 } = {}) {
   class TestModule {}
@@ -129,17 +141,28 @@ async function bootWithRealGuards({
       { provide: USER_REPOSITORY, useValue: users },
       { provide: PROJECT_ASSIGNMENT_REPOSITORY, useValue: assignments },
       { provide: AUDIT_LOG_REPOSITORY, useValue: audit },
+      { provide: SUBSCRIPTION_REPOSITORY, useValue: subscriptions },
       { provide: APPLICATION_CONFIG, useValue: config },
       { provide: Reflector, useValue: new Reflector() },
       { provide: require('@faultline/platform').ApplicationLogger, useValue: silentLogger },
       AuditTrail,
+      PlanEntitlements,
       { provide: APP_GUARD, useClass: AuthenticationGuard },
       { provide: APP_GUARD, useClass: AuthorizationGuard },
+      // Same order as the application: identity is settled before the plan is asked.
+      { provide: APP_GUARD, useClass: EntitlementsGuard },
     ],
   })(TestModule);
   const app = await NestFactory.create(TestModule, { logger: false });
   await app.listen(0, '127.0.0.1');
-  return { app, users, assignments, audit, base: await app.getUrl() };
+  return {
+    app,
+    users,
+    assignments,
+    audit,
+    subscriptions,
+    base: await app.getUrl(),
+  };
 }
 
 module.exports = {
@@ -151,6 +174,7 @@ module.exports = {
   bootWithRealGuards,
   engineer,
   silentLogger,
+  InMemorySubscriptionRepository,
   tokenFor,
   SetMetadata,
 };

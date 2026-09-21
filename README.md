@@ -351,7 +351,9 @@ bearer token**, and what it returns depends on the caller: an Admin reaches ever
 project, an Onsite Engineer only the projects assigned to them. The scope is applied
 inside the SQL and inside the telemetry store, so a cluster id in a query string is a
 filter and never a claim. See [the authorization guide](docs/AUTHORIZATION.md) for the
-roles, the schema, the admin endpoints and how to create the first user.
+roles, the schema, the admin endpoints and how to create the first user, and
+[the subscriptions guide](docs/SUBSCRIPTIONS.md) for the public purchase flow that
+provisions an Admin from a confirmed payment.
 
 All apps expose `GET /health` and `GET /health/ready`:
 

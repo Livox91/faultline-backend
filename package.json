@@ -21,6 +21,7 @@
     "dev:processor": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/processor/dist/main.js\"",
     "test": "npm run build && node --test tests/*.test.cjs",
     "dev:pipeline": "npm run build && node scripts/dev-pipeline.cjs",
+    "webhooks": "node scripts/stripe-webhooks.cjs",
     "telemetry:sample": "node scripts/sample-telemetry.cjs",
     "verify:kubernetes": "node scripts/verify-kubernetes.cjs",
     "validate:collector": "node scripts/validate-collector.cjs",
@@ -58,7 +59,11 @@
     "user:password": "node scripts/user.cjs password",
     "user:disable": "node scripts/user.cjs disable",
     "user:enable": "node scripts/user.cjs enable",
-    "test:authorization": "npm run build && node --test tests/authorization.test.cjs"
+    "test:authorization": "npm run build && node --test tests/authorization.test.cjs",
+    "subscriptions:pending": "node scripts/subscriptions.cjs pending",
+    "subscriptions:resend": "node scripts/subscriptions.cjs resend",
+    "test:subscriptions": "npm run build && node --test tests/subscriptions.test.cjs",
+    "test:entitlements": "npm run build && node --test tests/entitlements.test.cjs"
   },
   "dependencies": {
     "pg": "^8.23.0",

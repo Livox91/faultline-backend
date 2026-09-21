@@ -16,6 +16,7 @@ import {
 import { AuditTrail } from './audit-trail';
 import {
   IS_PUBLIC,
+  PASSWORD_CHANGE_EXEMPT,
   PROJECT_SOURCE,
   REQUIRED_PERMISSION,
   REQUIRED_ROLES,
@@ -53,6 +54,25 @@ export class AuthorizationGuard implements CanActivate {
     // The authentication guard runs first and throws 401 when there is no user; this
     // is the belt to that braces, in case guard order is ever changed.
     if (!user) throw new ForbiddenException('Authentication required');
+
+    /**
+     * An account holding an emailed temporary password is confined.
+     *
+     * Checked before role, permission and project, because it outranks all three: it
+     * does not matter that the account is an Admin if the credential that opened it
+     * arrived in a mailbox and has not been replaced yet. Only routes that explicitly
+     * opt in - reading your own identity, changing the password, signing out - run.
+     *
+     * This is what makes the restriction real rather than cosmetic. A user who skips
+     * the React redirect and calls the API directly arrives here, and is refused.
+     */
+    if (user.mustChangePassword) {
+      const exempt = this.reflector.getAllAndOverride<boolean>(
+        PASSWORD_CHANGE_EXEMPT,
+        [context.getHandler(), context.getClass()],
+      );
+      if (!exempt) return this.deny(request, 'password-change', 'pending');
+    }
 
     const roles = this.reflector.getAllAndOverride<readonly Role[]>(
       REQUIRED_ROLES,
@@ -107,7 +127,9 @@ export class AuthorizationGuard implements CanActivate {
     throw new ForbiddenException(
       check === 'project'
         ? 'You do not have access to this project'
-        : 'Your role does not permit this action',
+        : check === 'password-change'
+          ? 'You must change your temporary password before continuing'
+          : 'Your role does not permit this action',
     );
   }
 }

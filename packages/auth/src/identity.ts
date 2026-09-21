@@ -32,10 +32,21 @@ export interface ProjectAssignment {
 export interface AuthenticatedUser {
   readonly id: string;
   readonly email: string;
+  /** Unique login handle. Null for accounts created before usernames existed. */
+  readonly username: string | null;
   readonly name: string;
   readonly role: Role;
   readonly status: UserStatus;
   readonly mfaEnabled: boolean;
+  /**
+   * The account is holding a credential it did not choose.
+   *
+   * Set when an account is provisioned with a temporary password. While it is true the
+   * account is confined to the password-change endpoint: it is authenticated, but it is
+   * not yet trusted with anything, because the credential that opened it was emailed
+   * and may have been read by someone else.
+   */
+  readonly mustChangePassword: boolean;
   readonly assignments: readonly ProjectAssignment[];
 }
 
@@ -144,10 +155,14 @@ export function presentUser(user: AuthenticatedUser) {
   return {
     id: user.id,
     email: user.email,
+    username: user.username,
     name: user.name,
     role: user.role,
     status: user.status,
     mfaEnabled: user.mfaEnabled,
+    // The client needs this to send the user to the password-change screen, but it is
+    // a hint for routing only - the API enforces the same confinement itself.
+    mustChangePassword: user.mustChangePassword,
     permissions: permissionsFor(user.role),
     // Admins are not listed against projects: their access is not enumerable, and a
     // client that received a list would wrongly treat it as the limit of their reach.

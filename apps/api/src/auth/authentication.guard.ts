@@ -80,10 +80,14 @@ export class AuthenticationGuard implements CanActivate {
     const authenticated: AuthenticatedUser = {
       id: user.id,
       email: user.email,
+      username: user.username,
       name: user.name,
       role: user.role,
       status: user.status,
       mfaEnabled: user.mfaEnabled,
+      // Read from storage, never from the token: the whole point is that it flips to
+      // false the moment the password is changed, without re-issuing anything.
+      mustChangePassword: user.mustChangePassword,
       assignments: await this.assignments.listForUser(user.id),
     };
     request.user = authenticated;

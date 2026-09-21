@@ -134,6 +134,41 @@ export class PlatformModule {
                   config.get('AUTH_BOOTSTRAP_ADMIN_PASSWORD', { infer: true }),
                 ),
               }),
+              publicUrl: config
+                .get('APP_PUBLIC_URL', { infer: true })
+                .replace(/\/+$/, ''),
+              applicationName: config.get('APP_NAME', { infer: true }),
+              billing: Object.freeze({
+                enabled: config.get('BILLING_ENABLED', { infer: true }),
+                provider: 'stripe' as const,
+                secretKey: config.get('STRIPE_SECRET_KEY', { infer: true }),
+                webhookSecret: config.get('STRIPE_WEBHOOK_SECRET', {
+                  infer: true,
+                }),
+                priceIds: Object.freeze({
+                  basic: config.get('STRIPE_PRICE_ID_BASIC', { infer: true }),
+                  pro: config.get('STRIPE_PRICE_ID_PRO', { infer: true }),
+                  // `enterprise` is priced by conversation and has no price id.
+                }),
+                salesContact: config.get('BILLING_SALES_CONTACT', {
+                  infer: true,
+                }),
+              }),
+              email: Object.freeze({
+                transport: config.get('EMAIL_TRANSPORT', { infer: true }),
+                from: config.get('EMAIL_FROM', { infer: true }),
+                ...(config.get('EMAIL_TRANSPORT', { infer: true }) === 'smtp'
+                  ? {
+                      smtp: Object.freeze({
+                        host: config.get('SMTP_HOST', { infer: true })!,
+                        port: config.get('SMTP_PORT', { infer: true }),
+                        secure: config.get('SMTP_SECURE', { infer: true }),
+                        username: config.get('SMTP_USERNAME', { infer: true }),
+                        password: config.get('SMTP_PASSWORD', { infer: true }),
+                      }),
+                    }
+                  : {}),
+              }),
               infrastructure: Object.freeze({
                 databaseUrl: config.get('DATABASE_URL', { infer: true }),
                 redisUrl: config.get('REDIS_URL', { infer: true }),

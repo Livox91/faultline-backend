@@ -7,10 +7,23 @@ import {
 } from './config';
 import { ApplicationLogger } from './logger';
 
+export interface StartOptions {
+  /**
+   * Keep the unparsed request body available as `request.rawBody`.
+   *
+   * Opt-in because it costs a second copy of every payload, which the ingestion app -
+   * whose whole job is large OTLP batches - should not pay. The API needs it for
+   * payment webhooks, where the provider's signature covers the exact bytes sent and
+   * re-serialising the parsed JSON would invalidate it.
+   */
+  readonly rawBody?: boolean;
+}
+
 export async function startApplication(
   application: ApplicationName,
   loadModule: () => Promise<Type<unknown>>,
   configure?: (app: INestApplication) => void,
+  options: StartOptions = {},
 ): Promise<void> {
   const startupLogger = new ApplicationLogger(application);
   let app: INestApplication | undefined;
@@ -21,6 +34,7 @@ export async function startApplication(
       logger: startupLogger,
       bufferLogs: true,
       abortOnError: false,
+      ...(options.rawBody ? { rawBody: true } : {}),
     });
     configure?.(app);
     const config = app.get<ApplicationConfig>(APPLICATION_CONFIG);

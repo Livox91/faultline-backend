@@ -88,6 +88,57 @@ const environmentSchema = z
       .default(3600),
     /** When true, a login returns a challenge and the token is issued after the code. */
     AUTH_MFA_REQUIRED: booleanFlag(false),
+    /**
+     * Public base URL of the web application.
+     *
+     * Used to build the links a purchaser receives - the checkout return URLs and the
+     * sign-in link in the credentials email - which is why it must be the address the
+     * customer's browser can reach, not the API's own host.
+     */
+    APP_PUBLIC_URL: z.string().url().default('http://localhost:5173'),
+    APP_NAME: z.string().trim().min(1).default('Faultline'),
+
+    // --- Billing (Stripe) ---------------------------------------------------
+    /** Server-side secret key. Never reaches the browser. */
+    STRIPE_SECRET_KEY: z.string().trim().min(1).optional(),
+    /**
+     * Signing secret for the webhook endpoint.
+     *
+     * Without it a webhook cannot be verified, and an unverified webhook is simply an
+     * anonymous HTTP request asking us to create an Admin account - so the endpoint
+     * refuses to operate when this is unset.
+     */
+    STRIPE_WEBHOOK_SECRET: z.string().trim().min(1).optional(),
+    /**
+     * The Stripe Price the Basic plan is sold at, e.g. `price_1234`.
+     *
+     * Basic is free, but it is still a recurring price of zero at the provider: that
+     * keeps one provisioning path for every self-serve tier instead of an unpaid side
+     * door that creates Admin accounts.
+     */
+    STRIPE_PRICE_ID_BASIC: z.string().trim().min(1).optional(),
+    /** The Stripe Price the Pro plan is sold at, e.g. `price_1234`. */
+    STRIPE_PRICE_ID_PRO: z.string().trim().min(1).optional(),
+    /**
+     * Where an Enterprise enquiry goes. Shown on the pricing page as a mailto.
+     *
+     * Optional: with it unset the Enterprise card simply tells the visitor to talk to
+     * their account contact, which is better than a link to an address nobody reads.
+     */
+    BILLING_SALES_CONTACT: z.string().email().optional(),
+    /** Turns the public purchase flow on. Off by default. */
+    BILLING_ENABLED: booleanFlag(false),
+
+    // --- Outbound email -----------------------------------------------------
+    /** `smtp` sends; `log` records to the application log (development only). */
+    EMAIL_TRANSPORT: z.enum(['smtp', 'log']).default('log'),
+    EMAIL_FROM: z.string().trim().min(1).default('Faultline <no-reply@faultline.local>'),
+    SMTP_HOST: z.string().trim().min(1).optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+    SMTP_SECURE: booleanFlag(false),
+    SMTP_USERNAME: z.string().trim().min(1).optional(),
+    SMTP_PASSWORD: z.string().optional(),
+
     /** Seeds the first Admin on startup when the users table is empty. */
     AUTH_BOOTSTRAP_ADMIN_EMAIL: z.string().email().optional(),
     AUTH_BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).optional(),
@@ -508,6 +559,10 @@ export interface ApplicationConfig {
   readonly anomalyThresholds: AnomalyThresholds;
   readonly incidentCorrelation: IncidentCorrelationConfig;
   readonly auth: AuthSettings;
+  readonly billing: BillingSettings;
+  readonly email: EmailSettings;
+  readonly publicUrl: string;
+  readonly applicationName: string;
   readonly infrastructure: InfrastructureConfig;
   readonly telemetryStorage: TelemetryStorageConfig;
   readonly baselines: BaselineSettings;
@@ -587,6 +642,35 @@ export interface AuthSettings {
   readonly accessTokenTtlSeconds: number;
   readonly mfaRequired: boolean;
   readonly bootstrapAdmin?: { email: string; password: string };
+}
+
+/**
+ * The public purchase flow.
+ *
+ * `enabled` is a real switch, not a formality: with billing off the checkout and
+ * webhook routes are not registered at all, so a deployment that does not sell
+ * subscriptions has no public account-creating surface to attack.
+ */
+export interface BillingSettings {
+  readonly enabled: boolean;
+  readonly provider: 'stripe';
+  readonly secretKey?: string;
+  readonly webhookSecret?: string;
+  readonly priceIds: Readonly<Record<string, string | undefined>>;
+  /** Address for tiers that are sold by conversation; absent when none is configured. */
+  readonly salesContact?: string;
+}
+
+export interface EmailSettings {
+  readonly transport: 'smtp' | 'log';
+  readonly from: string;
+  readonly smtp?: {
+    host: string;
+    port: number;
+    secure: boolean;
+    username?: string;
+    password?: string;
+  };
 }
 
 export interface InfrastructureConfig {
@@ -717,6 +801,31 @@ export function validateEnvironment(
       result.data.NODE_ENV === 'production' &&
       !result.data.TELEMETRY_QUERY_CLUSTER_SCOPE
         ? ['TELEMETRY_QUERY_CLUSTER_SCOPE']
+        : []),
+      // Half-configured billing is worse than none: checkout would succeed and the
+      // webhook that provisions the account would be unverifiable.
+      ...(application === 'api' && result.data.BILLING_ENABLED
+        ? [
+            ...(result.data.STRIPE_SECRET_KEY ? [] : ['STRIPE_SECRET_KEY']),
+            ...(result.data.STRIPE_WEBHOOK_SECRET
+              ? []
+              : ['STRIPE_WEBHOOK_SECRET']),
+            // Only the paid tier is required to boot. A tier with no configured price
+            // cannot be bought, which the pricing page says on its card - unlike a
+            // missing secret, it degrades one card rather than the whole flow.
+            ...(result.data.STRIPE_PRICE_ID_PRO ? [] : ['STRIPE_PRICE_ID_PRO']),
+          ]
+        : []),
+      // Credentials are emailed. A production deployment that only logs them would
+      // strand every purchaser, so the log transport is refused there.
+      ...(application === 'api' &&
+      result.data.NODE_ENV === 'production' &&
+      result.data.BILLING_ENABLED &&
+      result.data.EMAIL_TRANSPORT !== 'smtp'
+        ? ['EMAIL_TRANSPORT']
+        : []),
+      ...(application === 'api' && result.data.EMAIL_TRANSPORT === 'smtp'
+        ? [...(result.data.SMTP_HOST ? [] : ['SMTP_HOST'])]
         : []),
     ];
     if (missing.length)

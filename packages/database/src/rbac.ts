@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   DuplicateEmailError,
+  DuplicateUsernameError,
   hashPassword,
   type AuditEntry,
   type AuditFilter,
@@ -20,12 +21,14 @@ import type { PostgresConnection } from './index';
 interface UserRow {
   id: string;
   email: string;
+  username: string | null;
   name: string;
   role: string;
   password_hash: string | null;
   external_subject: string | null;
   status: string;
   mfa_enabled: boolean;
+  must_change_password: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -33,23 +36,29 @@ interface UserRow {
 const toUser = (row: UserRow): UserRecord => ({
   id: row.id,
   email: row.email,
+  username: row.username,
   name: row.name,
   role: row.role as Role,
   status: row.status as UserStatus,
   mfaEnabled: row.mfa_enabled,
+  mustChangePassword: row.must_change_password,
   passwordHash: row.password_hash,
   externalSubject: row.external_subject,
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
 });
 
-const columns = `id, email, name, role, password_hash, external_subject, status, mfa_enabled, created_at, updated_at`;
+const columns = `id, email, username, name, role, password_hash, external_subject, status, mfa_enabled, must_change_password, created_at, updated_at`;
 
 /** Raised distinctly so the API can answer 409 rather than 500. */
 const isUniqueViolation = (error: unknown): boolean =>
   typeof error === 'object' &&
   error !== null &&
   (error as { code?: string }).code === '23505';
+
+/** Which unique index was violated, so the caller can say what to change. */
+const uniqueViolationOn = (error: unknown, constraint: string): boolean =>
+  (error as { constraint?: string })?.constraint === constraint;
 
 export class PostgresUserRepository implements UserRepository {
   constructor(private readonly connection: PostgresConnection) {}
@@ -69,6 +78,14 @@ export class PostgresUserRepository implements UserRepository {
     const result = await this.connection.pool.query<UserRow>(
       `SELECT ${columns} FROM users WHERE lower(email) = lower($1)`,
       [email.trim()],
+    );
+    return result.rows[0] ? toUser(result.rows[0]) : undefined;
+  }
+
+  async findByUsername(username: string): Promise<UserRecord | undefined> {
+    const result = await this.connection.pool.query<UserRow>(
+      `SELECT ${columns} FROM users WHERE lower(username) = lower($1)`,
+      [username.trim()],
     );
     return result.rows[0] ? toUser(result.rows[0]) : undefined;
   }
@@ -96,23 +113,30 @@ export class PostgresUserRepository implements UserRepository {
       : null;
     try {
       const result = await this.connection.pool.query<UserRow>(
-        `INSERT INTO users (id, email, name, role, password_hash, external_subject, status, mfa_enabled)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO users (id, email, username, name, role, password_hash, external_subject, status, mfa_enabled, must_change_password)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING ${columns}`,
         [
           randomUUID(),
           user.email.trim().toLowerCase(),
+          user.username ?? null,
           user.name.trim(),
           user.role,
           passwordHash,
           user.externalSubject ?? null,
           user.status ?? 'active',
           user.mfaEnabled ?? false,
+          user.mustChangePassword ?? false,
         ],
       );
       return toUser(result.rows[0]!);
     } catch (error) {
-      if (isUniqueViolation(error)) throw new DuplicateEmailError();
+      // Both the email and the username carry unique indexes, so the constraint name
+      // decides which error the caller gets - they are fixed differently.
+      if (isUniqueViolation(error))
+        throw uniqueViolationOn(error, 'users_username_key')
+          ? new DuplicateUsernameError()
+          : new DuplicateEmailError();
       throw error;
     }
   }
@@ -140,6 +164,8 @@ export class PostgresUserRepository implements UserRepository {
          status = COALESCE($4, status),
          mfa_enabled = COALESCE($5, mfa_enabled),
          password_hash = COALESCE($6, password_hash),
+         username = COALESCE($7, username),
+         must_change_password = COALESCE($8, must_change_password),
          updated_at = now()
        WHERE id = $1
        RETURNING ${columns}`,
@@ -150,6 +176,8 @@ export class PostgresUserRepository implements UserRepository {
         changes.status ?? null,
         changes.mfaEnabled ?? null,
         passwordHash,
+        changes.username ?? null,
+        changes.mustChangePassword ?? null,
       ],
     );
     return result.rows[0] ? toUser(result.rows[0]) : undefined;

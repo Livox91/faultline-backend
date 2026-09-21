@@ -2,6 +2,7 @@ import { Module, SetMetadata, type Provider } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import {
   APPLICATION_CONFIG,
+  ApplicationLogger,
   HealthController,
   HealthService,
   PlatformModule,
@@ -10,6 +11,8 @@ import {
 import {
   DATABASE,
   PostgresAuditLogRepository,
+  PostgresProcessedEventRepository,
+  PostgresSubscriptionRepository,
   PostgresBaselineRepository,
   PostgresClusterDirectory,
   PostgresConnection,
@@ -25,6 +28,18 @@ import {
   getDevelopmentProjectAssignmentRepository,
   getDevelopmentUserRepository,
 } from '@faultline/auth';
+import {
+  PROCESSED_EVENT_REPOSITORY,
+  SUBSCRIPTION_REPOSITORY,
+  InMemoryProcessedEventRepository,
+  InMemorySubscriptionRepository,
+} from '@faultline/billing';
+import {
+  EMAIL_SENDER,
+  RecordingEmailSender,
+  SmtpEmailSender,
+  type EmailSender,
+} from '@faultline/email';
 import {
   INCIDENT_REPOSITORY,
   getDevelopmentIncidentRepository,
@@ -42,6 +57,7 @@ import {
   ClickHouseTelemetryStore,
 } from '@faultline/clickhouse';
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { SystemController } from './system.controller';
 import { IncidentsController } from './incidents.controller';
 import { IncidentEvidenceController } from './incident-evidence.controller';
@@ -61,6 +77,11 @@ import { AuthorizationGuard } from './auth/authorization.guard';
 import { AuditTrail } from './auth/audit-trail';
 import { AdminBootstrap } from './auth/bootstrap';
 import { AuthController, LoginThrottle } from './auth/auth.controller';
+import { BillingController } from './billing/billing.controller';
+import { EntitlementsController } from './billing/entitlements.controller';
+import { EntitlementsGuard, PlanEntitlements } from './billing/entitlements';
+import { SubscriptionProvisioningService } from './billing/provisioning.service';
+import { PAYMENT_GATEWAY, StripeGateway } from './billing/stripe.gateway';
 import { AdminUsersController } from './auth/users.controller';
 import { AdminAuditController } from './auth/audit.controller';
 
@@ -96,6 +117,14 @@ const infrastructureProviders: Provider[] =
         {
           provide: AUDIT_LOG_REPOSITORY,
           useFactory: getDevelopmentAuditLogRepository,
+        },
+        {
+          provide: SUBSCRIPTION_REPOSITORY,
+          useFactory: () => new InMemorySubscriptionRepository(),
+        },
+        {
+          provide: PROCESSED_EVENT_REPOSITORY,
+          useFactory: () => new InMemoryProcessedEventRepository(),
         },
         {
           provide: CLUSTER_DIRECTORY,
@@ -151,6 +180,18 @@ const infrastructureProviders: Provider[] =
             new PostgresAuditLogRepository(database),
         },
         {
+          provide: SUBSCRIPTION_REPOSITORY,
+          inject: [DATABASE],
+          useFactory: (database: PostgresConnection) =>
+            new PostgresSubscriptionRepository(database),
+        },
+        {
+          provide: PROCESSED_EVENT_REPOSITORY,
+          inject: [DATABASE],
+          useFactory: (database: PostgresConnection) =>
+            new PostgresProcessedEventRepository(database),
+        },
+        {
           provide: CLUSTER_DIRECTORY,
           inject: [DATABASE],
           useFactory: (database: PostgresConnection) =>
@@ -201,10 +242,101 @@ const infrastructureProviders: Provider[] =
         },
       ];
 
+/**
+ * Outbound email.
+ *
+ * The transport is configuration, not code: `log` records messages for development, and
+ * configuration validation refuses it for a production deployment that sells
+ * subscriptions - a purchaser whose credentials only reached a log file has bought
+ * nothing they can use.
+ */
+const emailProvider: Provider = {
+  provide: EMAIL_SENDER,
+  inject: [APPLICATION_CONFIG, ApplicationLogger],
+  useFactory: (
+    config: ApplicationConfig,
+    logger: ApplicationLogger,
+  ): EmailSender =>
+    config.email.transport === 'smtp'
+      ? new SmtpEmailSender({
+          host: config.email.smtp!.host,
+          port: config.email.smtp!.port,
+          secure: config.email.smtp!.secure,
+          ...(config.email.smtp!.username
+            ? { username: config.email.smtp!.username }
+            : {}),
+          ...(config.email.smtp!.password
+            ? { password: config.email.smtp!.password }
+            : {}),
+          from: config.email.from,
+        })
+      : new RecordingEmailSender((message) =>
+          // The body carries a temporary password, so it is printed only by the
+          // development transport, which production configuration forbids.
+          logger.warn({
+            event: 'email_not_sent_development_transport',
+            to: message.to,
+            subject: message.subject,
+            body: message.text,
+          }),
+        ),
+};
+
+/**
+ * Reads one flag the way the application's own configuration reads it.
+ *
+ * Nest builds module metadata before any provider is instantiated, so the validated
+ * `ApplicationConfig` does not exist yet - but whether billing is registered has to be
+ * decided here. `PlatformModule` loads configuration from the app's `.env` file with
+ * `skipProcessEnv: true`, so consulting `process.env` alone would let the two disagree:
+ * the routes could be registered while the config said billing was off, or the reverse.
+ * This reads the same file, and lets a real environment variable win for container
+ * deployments that inject settings that way.
+ */
+const NEWLINE = new RegExp(String.fromCharCode(13) + "?" + String.fromCharCode(10));
+
+function readEnvFlag(name: string): string | undefined {
+  const fromProcess = process.env[name];
+  if (fromProcess !== undefined) return fromProcess;
+  try {
+    const text = readFileSync(resolve(__dirname, '../.env'), 'utf8');
+    const lines = text.split(NEWLINE);
+    for (const line of lines) {
+      const match = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
+      if (match?.[1] === name) return match[2]?.replace(/^["']|["']$/g, '');
+    }
+  } catch {
+    // No file in a container deployment; the process environment is the only source.
+  }
+  return undefined;
+}
+
+/**
+ * Billing is registered only when it is turned on.
+ *
+ * With `BILLING_ENABLED=false` the checkout and webhook routes do not exist at all, so
+ * a deployment that does not sell subscriptions exposes no public, account-creating
+ * surface to probe - which is a stronger position than having the routes present and
+ * refusing.
+ */
+const billingEnabled = readEnvFlag('BILLING_ENABLED') === 'true';
+
+const billingProviders: Provider[] = billingEnabled
+  ? [
+      SubscriptionProvisioningService,
+      { provide: PAYMENT_GATEWAY, useClass: StripeGateway },
+    ]
+  : [];
+
 @Module({
   imports: [PlatformModule.forRoot('api', resolve(__dirname, '../.env'))],
   controllers: [
     AuthController,
+    ...(billingEnabled ? [BillingController] : []),
+    // Unlike the purchase routes, this one is registered either way: the console asks
+    // what the account may reach on every deployment, and with billing off the honest
+    // answer is "everything, unenforced" rather than a 404 to interpret.
+    EntitlementsController,
     AdminUsersController,
     AdminAuditController,
     SystemController,
@@ -217,7 +349,10 @@ const infrastructureProviders: Provider[] =
   ],
   providers: [
     ...infrastructureProviders,
+    emailProvider,
+    ...billingProviders,
     AuditTrail,
+    PlanEntitlements,
     LoginThrottle,
     AdminBootstrap,
     {
@@ -231,6 +366,10 @@ const infrastructureProviders: Provider[] =
     // forgotten decorator is a locked door, not an open one.
     { provide: APP_GUARD, useClass: AuthenticationGuard },
     { provide: APP_GUARD, useClass: AuthorizationGuard },
+    // Last, and only for routes that declare a module: who you are is settled before
+    // what your plan bought is consulted, so a stranger is never told which tier a
+    // module needs, and the lookup is paid for only where it is asked for.
+    { provide: APP_GUARD, useClass: EntitlementsGuard },
   ],
 })
 export class AppModule {}

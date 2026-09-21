@@ -13,10 +13,13 @@ import type {
 export interface UserRecord {
   readonly id: string;
   readonly email: string;
+  readonly username: string | null;
   readonly name: string;
   readonly role: Role;
   readonly status: UserStatus;
   readonly mfaEnabled: boolean;
+  /** True while the account still holds a temporary password it must replace. */
+  readonly mustChangePassword: boolean;
   /** Absent for users whose credentials live in an external identity provider. */
   readonly passwordHash?: string | null;
   /** The subject claim an SSO/OIDC provider will present. Unused until one is wired. */
@@ -29,9 +32,11 @@ export interface NewUser {
   email: string;
   name: string;
   role: Role;
+  username?: string | null;
   password?: string;
   status?: UserStatus;
   mfaEnabled?: boolean;
+  mustChangePassword?: boolean;
   externalSubject?: string | null;
 }
 
@@ -41,12 +46,16 @@ export interface UserChanges {
   status?: UserStatus;
   password?: string;
   mfaEnabled?: boolean;
+  mustChangePassword?: boolean;
+  username?: string;
 }
 
 export interface UserRepository {
   findById(id: string): Promise<UserRecord | undefined>;
   /** Case-insensitive: an email is one identity however it was typed. */
   findByEmail(email: string): Promise<UserRecord | undefined>;
+  /** Case-insensitive, like email: one handle however it was typed. */
+  findByUsername(username: string): Promise<UserRecord | undefined>;
   findByExternalSubject(subject: string): Promise<UserRecord | undefined>;
   list(): Promise<readonly UserRecord[]>;
   create(user: NewUser): Promise<UserRecord>;
@@ -85,6 +94,12 @@ export class DuplicateEmailError extends Error {
     this.name = 'DuplicateEmailError';
   }
 }
+export class DuplicateUsernameError extends Error {
+  constructor() {
+    super('That username is already taken');
+    this.name = 'DuplicateUsernameError';
+  }
+}
 
 const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
@@ -105,6 +120,12 @@ export class InMemoryUserRepository implements UserRepository {
     const wanted = normalizeEmail(email);
     return [...this.users.values()].find((user) => user.email === wanted);
   }
+  async findByUsername(username: string): Promise<UserRecord | undefined> {
+    const wanted = username.trim().toLowerCase();
+    return [...this.users.values()].find(
+      (user) => user.username?.toLowerCase() === wanted,
+    );
+  }
   async findByExternalSubject(
     subject: string,
   ): Promise<UserRecord | undefined> {
@@ -120,14 +141,18 @@ export class InMemoryUserRepository implements UserRepository {
   async create(user: NewUser): Promise<UserRecord> {
     const email = normalizeEmail(user.email);
     if (await this.findByEmail(email)) throw new DuplicateEmailError();
+    if (user.username && (await this.findByUsername(user.username)))
+      throw new DuplicateUsernameError();
     const now = new Date().toISOString();
     const record: UserRecord = {
       id: randomUUID(),
       email,
+      username: user.username ?? null,
       name: user.name,
       role: user.role,
       status: user.status ?? 'active',
       mfaEnabled: user.mfaEnabled ?? false,
+      mustChangePassword: user.mustChangePassword ?? false,
       passwordHash: user.password ? await hashPassword(user.password) : null,
       externalSubject: user.externalSubject ?? null,
       createdAt: now,
@@ -149,6 +174,12 @@ export class InMemoryUserRepository implements UserRepository {
       ...(changes.status !== undefined ? { status: changes.status } : {}),
       ...(changes.mfaEnabled !== undefined
         ? { mfaEnabled: changes.mfaEnabled }
+        : {}),
+      ...(changes.username !== undefined
+        ? { username: changes.username }
+        : {}),
+      ...(changes.mustChangePassword !== undefined
+        ? { mustChangePassword: changes.mustChangePassword }
         : {}),
       ...(changes.password !== undefined
         ? { passwordHash: await hashPassword(changes.password) }
