@@ -37,6 +37,12 @@ import {
   TELEMETRY_SCOPE_RESOLVER,
   type TelemetryScopeResolver,
 } from './telemetry-scope';
+import { CurrentUser } from './auth/context';
+import {
+  hasProjectAccess,
+  isAdmin,
+  type AuthenticatedUser,
+} from '@faultline/auth';
 
 const DEFAULT_LEAD_MS = 120_000;
 const DEFAULT_TRAIL_MS = 300_000;
@@ -69,6 +75,7 @@ export class IncidentEvidenceController {
   @Get(':id/evidence')
   @Header('Cache-Control', 'no-store')
   async evidence(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
     @Query('leadMs') leadValue: unknown,
     @Query('trailMs') trailValue: unknown,
@@ -76,7 +83,11 @@ export class IncidentEvidenceController {
   ) {
     const incident = await this.incidents.getIncident(id);
     if (!incident) throw new NotFoundException('Incident not found');
-    const scope = await this.scopes.resolve();
+    // Same answer as a missing incident: an incident in a project the caller has no
+    // assignment to must not be distinguishable from one that does not exist.
+    if (!isAdmin(user) && !hasProjectAccess(user, incident.clusterId))
+      throw new NotFoundException('Incident not found');
+    const scope = await this.scopes.resolve(user);
     const lead = padding(leadValue, DEFAULT_LEAD_MS, 'leadMs');
     const trail = padding(trailValue, DEFAULT_TRAIL_MS, 'trailMs');
     const limit = parseLimit(limitValue, this.limits);

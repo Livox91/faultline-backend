@@ -39,11 +39,24 @@ const {
   BaselinesController,
 } = require('../apps/api/dist/baselines.controller');
 const {
-  ConfiguredTelemetryScopeResolver,
+  UserTelemetryScopeResolver,
 } = require('../apps/api/dist/telemetry-scope');
 const { InMemoryIncidentRepository } = require('@faultline/incidents');
 const { InMemoryQueue } = require('@faultline/queue');
 const { defaultQueryLimits } = require('@faultline/telemetry');
+
+// Baseline reads resolve their cluster scope from the caller; an Admin keeps these
+// assertions about scoping-by-configuration rather than scoping-by-assignment, which
+// authorization.test.cjs covers separately.
+const adminUser = {
+  id: '00000000-0000-4000-8000-000000000001',
+  email: 'admin@faultline.test',
+  name: 'Administrator',
+  role: 'admin',
+  status: 'active',
+  mfaEnabled: false,
+  assignments: [],
+};
 
 const silentLogger = { log() {}, warn() {}, error() {}, debug() {}, verbose() {} };
 const MiB = 1024 * 1024;
@@ -971,11 +984,11 @@ test('the baselines API scopes by cluster and explains unready baselines', async
   };
   const controller = new BaselinesController(
     repository,
-    new ConfiguredTelemetryScopeResolver(config),
+    new UserTelemetryScopeResolver(config),
     silentLogger,
   );
 
-  const listed = await controller.list({});
+  const listed = await controller.list(adminUser, {});
   assert.equal(listed.items.length, 2, 'another tenant is invisible');
   assert.ok(listed.items.every((item) => item.clusterId === workload.clusterId));
   const memory = listed.items.find(
@@ -995,6 +1008,7 @@ test('the baselines API scopes by cluster and explains unready baselines', async
   assert.equal(unready.mean, undefined, 'unusable statistics are not served');
 
   const single = await controller.get(
+    adminUser,
     `workload:${workload.clusterId}:${workload.namespace}:${workload.workload}`,
     'k8s.container.memory.usage',
     undefined,
@@ -1004,6 +1018,7 @@ test('the baselines API scopes by cluster and explains unready baselines', async
 
   await assert.rejects(
     controller.get(
+      adminUser,
       'workload:another-tenant:payments:payment-api',
       'k8s.container.memory.usage',
       undefined,
@@ -1011,11 +1026,17 @@ test('the baselines API scopes by cluster and explains unready baselines', async
     (error) => error.getStatus() === 403,
   );
   await assert.rejects(
-    controller.get('not-a-resource', 'k8s.container.memory.usage', undefined),
+    controller.get(
+      adminUser,
+      'not-a-resource',
+      'k8s.container.memory.usage',
+      undefined,
+    ),
     (error) => error.getStatus() === 400,
   );
   await assert.rejects(
     controller.get(
+      adminUser,
       `workload:${workload.clusterId}:${workload.namespace}:${workload.workload}`,
       'k8s.container.cpu.usage',
       undefined,
@@ -1023,7 +1044,7 @@ test('the baselines API scopes by cluster and explains unready baselines', async
     (error) => error.getStatus() === 404,
   );
   await assert.rejects(
-    controller.list({ window: '3h' }),
+    controller.list(adminUser, { window: '3h' }),
     (error) => error.getStatus() === 400,
   );
 });

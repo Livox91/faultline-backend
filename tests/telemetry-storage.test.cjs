@@ -36,7 +36,7 @@ const {
   IncidentEvidenceController,
 } = require('../apps/api/dist/incident-evidence.controller');
 const {
-  ConfiguredTelemetryScopeResolver,
+  UserTelemetryScopeResolver,
 } = require('../apps/api/dist/telemetry-scope');
 const {
   TelemetryConsumer,
@@ -56,6 +56,19 @@ const {
   telemetryStoreContract,
   iso,
 } = require('./telemetry-store-contract.cjs');
+
+// Every API read now resolves its cluster scope from the caller. An Admin is used here
+// so these tests keep asserting what they were written to assert - query bounds and
+// pagination - while project-level isolation is covered in authorization.test.cjs.
+const adminUser = {
+  id: '00000000-0000-4000-8000-000000000001',
+  email: 'admin@faultline.test',
+  name: 'Administrator',
+  role: 'admin',
+  status: 'active',
+  mfaEnabled: false,
+  assignments: [],
+};
 
 const silentLogger = {
   log() {},
@@ -629,7 +642,7 @@ test('the API bounds, scopes and paginates telemetry endpoints', async () => {
       queryClusterScope: [clusterId],
     },
   };
-  const resolver = new ConfiguredTelemetryScopeResolver(config);
+  const resolver = new UserTelemetryScopeResolver(config);
   const controller = new TelemetryController(
     store,
     resolver,
@@ -666,14 +679,14 @@ test('the API bounds, scopes and paginates telemetry endpoints', async () => {
   };
 
   // A single-cluster scope does not require the caller to name the cluster.
-  const all = await controller.logs({ ...window });
+  const all = await controller.logs(adminUser, { ...window });
   assert.equal(all.items.length, 3);
   assert.equal(all.query.clusterId, clusterId);
 
-  const firstPage = await controller.logs({ ...window, limit: '2' });
+  const firstPage = await controller.logs(adminUser, { ...window, limit: '2' });
   assert.equal(firstPage.items.length, 2);
   assert.ok(firstPage.nextCursor);
-  const secondPage = await controller.logs({
+  const secondPage = await controller.logs(adminUser, {
     ...window,
     limit: '2',
     cursor: firstPage.nextCursor,
@@ -683,19 +696,23 @@ test('the API bounds, scopes and paginates telemetry endpoints', async () => {
 
   // A cluster outside the configured scope is refused, whatever the client claims.
   await assert.rejects(
-    controller.logs({ ...window, clusterId: 'someone-elses-cluster' }),
+    controller.logs(adminUser, {
+      ...window,
+      clusterId: 'someone-elses-cluster',
+    }),
     (error) => error.getStatus() === 403,
   );
   await assert.rejects(
-    controller.logs({ clusterId, startTime: window.startTime }),
+    controller.logs(adminUser, { clusterId, startTime: window.startTime }),
     (error) => error.getStatus() === 400,
   );
   await assert.rejects(
-    timelines.timeline('not-a-resource', window),
+    timelines.timeline(adminUser, 'not-a-resource', window),
     (error) => error.getStatus() === 400,
   );
 
   const timeline = await timelines.timeline(
+    adminUser,
     encodeTelemetryResourceId({
       scope: 'pod',
       clusterId,
@@ -720,28 +737,28 @@ test('the API bounds, scopes and paginates telemetry endpoints', async () => {
     silentLogger,
   );
   await assert.rejects(
-    broken.logs({ ...window }),
+    broken.logs(adminUser, { ...window }),
     (error) => error.getStatus() === 503,
   );
   await store.close();
 });
 
 test('an unscoped API deployment fails closed in production', async () => {
-  const resolver = new ConfiguredTelemetryScopeResolver({
+  const resolver = new UserTelemetryScopeResolver({
     application: 'api',
     environment: 'production',
     telemetryStorage: { queryLimits: defaultQueryLimits },
   });
   await assert.rejects(
-    resolver.resolve(),
+    resolver.resolve(adminUser),
     (error) => error.getStatus() === 503,
   );
-  const development = new ConfiguredTelemetryScopeResolver({
+  const development = new UserTelemetryScopeResolver({
     application: 'api',
     environment: 'development',
     telemetryStorage: { queryLimits: defaultQueryLimits },
   });
-  assert.deepEqual(await development.resolve(), {
+  assert.deepEqual(await development.resolve(adminUser), {
     mode: 'all-development-clusters',
   });
 });
@@ -931,7 +948,7 @@ test('ERROR log, Kubernetes event and rising memory produce an incident whose ev
       queryClusterScope: [clusterId],
     },
   };
-  const resolver = new ConfiguredTelemetryScopeResolver(apiConfig);
+  const resolver = new UserTelemetryScopeResolver(apiConfig);
   const evidenceController = new IncidentEvidenceController(
     incidents,
     telemetryStore,
@@ -942,6 +959,7 @@ test('ERROR log, Kubernetes event and rising memory produce an incident whose ev
 
   // 7. Evidence lookup and the timeline return the supporting telemetry.
   const evidence = await evidenceController.evidence(
+    adminUser,
     incident.id,
     undefined,
     undefined,
@@ -972,6 +990,7 @@ test('ERROR log, Kubernetes event and rising memory produce an incident whose ev
     silentLogger,
   );
   const timeline = await timelines.timeline(
+    adminUser,
     encodeTelemetryResourceId({
       scope: 'container',
       clusterId,

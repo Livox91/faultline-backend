@@ -5,9 +5,10 @@
     "outDir": "dist",
     "tsBuildInfoFile": ".tsbuildinfo"
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/**/*.ts"
+  ],
   "references": [
-    { "path": "../notifications" },
     {
       "path": "../incidents"
     },
@@ -19,6 +20,15 @@
     },
     {
       "path": "../reporting"
+    },
+    {
+      "path": "../notifications"
+    },
+    {
+      "path": "../auth"
+    },
+    {
+      "path": "../billing"
     }
   ]
 }

@@ -29,6 +29,22 @@ function parseClusterScope(
   return Object.freeze(clusters);
 }
 
+/**
+ * Both halves or neither: a half-configured bootstrap admin is a configuration mistake,
+ * not a user with an empty password.
+ */
+function bootstrapAdmin(
+  email: string | undefined,
+  password: string | undefined,
+): { email: string; password: string } | undefined {
+  if (!email && !password) return undefined;
+  if (!email || !password)
+    throw new Error(
+      'AUTH_BOOTSTRAP_ADMIN_EMAIL and AUTH_BOOTSTRAP_ADMIN_PASSWORD must be set together',
+    );
+  return Object.freeze({ email, password });
+}
+
 @Global()
 @Module({})
 export class PlatformModule {
@@ -104,6 +120,54 @@ export class PlatformModule {
                   'INCIDENT_STABILIZATION_PERIOD_MS',
                   { infer: true },
                 ),
+              }),
+              auth: Object.freeze({
+                jwtSecret: config.get('AUTH_JWT_SECRET', { infer: true }),
+                issuer: config.get('AUTH_TOKEN_ISSUER', { infer: true }),
+                accessTokenTtlSeconds: config.get(
+                  'AUTH_ACCESS_TOKEN_TTL_SECONDS',
+                  { infer: true },
+                ),
+                mfaRequired: config.get('AUTH_MFA_REQUIRED', { infer: true }),
+                bootstrapAdmin: bootstrapAdmin(
+                  config.get('AUTH_BOOTSTRAP_ADMIN_EMAIL', { infer: true }),
+                  config.get('AUTH_BOOTSTRAP_ADMIN_PASSWORD', { infer: true }),
+                ),
+              }),
+              publicUrl: config
+                .get('APP_PUBLIC_URL', { infer: true })
+                .replace(/\/+$/, ''),
+              applicationName: config.get('APP_NAME', { infer: true }),
+              billing: Object.freeze({
+                enabled: config.get('BILLING_ENABLED', { infer: true }),
+                provider: 'stripe' as const,
+                secretKey: config.get('STRIPE_SECRET_KEY', { infer: true }),
+                webhookSecret: config.get('STRIPE_WEBHOOK_SECRET', {
+                  infer: true,
+                }),
+                priceIds: Object.freeze({
+                  basic: config.get('STRIPE_PRICE_ID_BASIC', { infer: true }),
+                  pro: config.get('STRIPE_PRICE_ID_PRO', { infer: true }),
+                  // `enterprise` is priced by conversation and has no price id.
+                }),
+                salesContact: config.get('BILLING_SALES_CONTACT', {
+                  infer: true,
+                }),
+              }),
+              email: Object.freeze({
+                transport: config.get('EMAIL_TRANSPORT', { infer: true }),
+                from: config.get('EMAIL_FROM', { infer: true }),
+                ...(config.get('EMAIL_TRANSPORT', { infer: true }) === 'smtp'
+                  ? {
+                      smtp: Object.freeze({
+                        host: config.get('SMTP_HOST', { infer: true })!,
+                        port: config.get('SMTP_PORT', { infer: true }),
+                        secure: config.get('SMTP_SECURE', { infer: true }),
+                        username: config.get('SMTP_USERNAME', { infer: true }),
+                        password: config.get('SMTP_PASSWORD', { infer: true }),
+                      }),
+                    }
+                  : {}),
               }),
               infrastructure: Object.freeze({
                 databaseUrl: config.get('DATABASE_URL', { infer: true }),

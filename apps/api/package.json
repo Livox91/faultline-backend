@@ -7,21 +7,25 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@faultline/auth": "0.1.0",
+    "@faultline/baselines": "0.1.0",
+    "@faultline/billing": "0.1.0",
+    "@faultline/clickhouse": "0.1.0",
+    "@faultline/database": "0.1.0",
+    "@faultline/email": "0.1.0",
+    "@faultline/incidents": "0.1.0",
+    "@faultline/kubernetes": "0.1.0",
+    "@faultline/notifications": "0.1.0",
+    "@faultline/platform": "0.1.0",
+    "@faultline/queue": "0.1.0",
+    "@faultline/reporting": "0.1.0",
+    "@faultline/telemetry": "0.1.0",
     "@nestjs/common": "^11.1.0",
     "@nestjs/core": "^11.1.0",
     "@nestjs/platform-express": "^11.1.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
-    "@faultline/telemetry": "0.1.0",
-    "@faultline/kubernetes": "0.1.0",
-    "@faultline/incidents": "0.1.0",
-    "@faultline/database": "0.1.0",
-    "@faultline/queue": "0.1.0",
-    "@faultline/platform": "0.1.0",
-    "@faultline/clickhouse": "0.1.0",
-    "@faultline/baselines": "0.1.0"
-    ,"@faultline/notifications": "0.1.0"
-    ,"@faultline/reporting": "0.1.0"
-    ,"zod": "^4.0.0"
+    "stripe": "^22.6.2",
+    "zod": "^4.0.0"
   }
 }

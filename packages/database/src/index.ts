@@ -158,6 +158,12 @@ export class PostgresIncidentRepository implements IncidentRepository {
   ): Promise<readonly Incident[]> {
     const values: unknown[] = [];
     const clauses: string[] = [];
+    // The caller's visible clusters are applied in SQL, before any row is built, so an
+    // authorization limit can never be lost between the query and the response.
+    if (filter.clusterIds) {
+      values.push([...filter.clusterIds]);
+      clauses.push(`cluster_id = ANY($${values.length}::text[])`);
+    }
     for (const [column, value] of [
       ['cluster_id', filter.clusterId],
       ['namespace', filter.namespace],
@@ -331,3 +337,6 @@ export * from './baselines';
 export * from './log-classifications';
 export * from './notifications';
 export * from './reporting';
+export * from './rbac';
+export * from './projects';
+export * from './billing';

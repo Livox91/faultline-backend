@@ -294,21 +294,10 @@ for (const [index, app] of [
         assert.ok(readiness.uptime >= health.uptime);
         const info = await fetch(`http://127.0.0.1:${port}/system/info`);
         if (app === 'api') {
-          assert.equal(info.status, 200);
-          assert.deepEqual(await info.json(), {
-            application: 'api',
-            environment: 'test',
-            version: validEnvironment.APP_VERSION,
-            enabledComponents: [
-              'configuration',
-              'logging',
-              'health',
-              'system-info',
-              'incidents',
-              'telemetry-search',
-              'baselines',
-            ],
-          });
+          // The API refuses anonymous callers on every route but health and login.
+          // Asserting that here, against a really booted process, is what proves the
+          // global guard is wired rather than merely written.
+          assert.equal(info.status, 401);
         } else {
           assert.equal(info.status, 404);
         }
