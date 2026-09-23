@@ -10,7 +10,28 @@ import {
   PostgresBaselineRepository,
   PostgresConnection,
   PostgresIncidentRepository,
+  PostgresContactRepository,
+  PostgresNotificationGroupRepository,
+  PostgresEscalationPolicyRepository,
+  PostgresEscalationExecutionRepository,
+  PostgresIncidentAcknowledgementRepository,
+  PostgresNotificationAuditRepository,
+  PostgresNotificationAttemptRepository,
+  PostgresIncidentCommunicationRepository,
+  PostgresOnCallScheduleRepository,PostgresOnCallShiftRepository,PostgresAvailabilityOverrideRepository,
+  PostgresIncidentAnalyticsRepository,
+  PostgresExternalTicketRepository,
 } from '@faultline/database';
+import {
+  CONTACT_REPOSITORY, ESCALATION_EXECUTION_REPOSITORY, ESCALATION_POLICY_REPOSITORY,
+  INCIDENT_ACKNOWLEDGEMENTS, InMemoryContactRepository, InMemoryEscalationExecutionRepository,
+  InMemoryEscalationPolicyRepository, InMemoryIncidentAcknowledgementRepository,
+  InMemoryNotificationAuditRepository, InMemoryNotificationGroupRepository,
+  InMemoryNotificationAttemptRepository,InMemoryIncidentCommunicationRepository,INCIDENT_COMMUNICATION_REPOSITORY,NOTIFICATION_ATTEMPTS,
+  NOTIFICATION_AUDIT_REPOSITORY, NOTIFICATION_GROUP_REPOSITORY,
+  ON_CALL_SCHEDULE_REPOSITORY,ON_CALL_SHIFT_REPOSITORY,AVAILABILITY_OVERRIDE_REPOSITORY,InMemoryOnCallScheduleRepository,InMemoryOnCallShiftRepository,InMemoryAvailabilityOverrideRepository,
+  EXTERNAL_TICKET_REPOSITORY,InMemoryExternalTicketRepository,
+} from '@faultline/notifications';
 import {
   INCIDENT_REPOSITORY,
   getDevelopmentIncidentRepository,
@@ -27,6 +48,7 @@ import {
   ClickHouseConnection,
   ClickHouseTelemetryStore,
 } from '@faultline/clickhouse';
+import { OnCallController } from './on-call.controller';
 import { resolve } from 'node:path';
 import { SystemController } from './system.controller';
 import { IncidentsController } from './incidents.controller';
@@ -45,6 +67,32 @@ import {
   ClustersController,
   type RegisteredCluster,
 } from './clusters.controller';
+import { ContactsController, EscalationPoliciesController, NotificationGroupsController } from './notification-management.controller';
+import { IncidentAcknowledgementController } from './incident-acknowledgement.controller';
+import { IncidentNotificationStateController } from './incident-notification-state.controller';
+import {
+  INCIDENT_REPORT_BUILDER,
+  IncidentReportController,
+} from './incident-report.controller';
+import {
+  AnalyticsService,
+  CSV_REPORT_EXPORTER,
+  CsvReportExporter,
+  CurrentApplicationHealthProvider,
+  INCIDENT_ANALYTICS_REPOSITORY,
+  IncidentReportBuilder,
+  JSON_REPORT_EXPORTER,
+  JsonReportExporter,
+  PDF_REPORT_EXPORTER,
+  PdfReportExporter,
+  SystemSummaryService,
+  type IncidentAnalyticsRepository,
+} from '@faultline/reporting';
+import {
+  IncidentAnalyticsController,
+  SystemSummaryController,
+} from './analytics.controller';
+import { IncidentExternalTicketController } from './incident-external-ticket.controller';
 
 export const CLICKHOUSE_CONNECTION = Symbol('faultline.clickhouse-connection');
 
@@ -61,6 +109,25 @@ const infrastructureProviders: Provider[] =
           useFactory: getDevelopmentBaselineRepository,
         },
         { provide: CLUSTER_DIRECTORY, useValue: { list: async () => [] } },
+        { provide: CONTACT_REPOSITORY, useClass: InMemoryContactRepository },
+        { provide: NOTIFICATION_GROUP_REPOSITORY, useClass: InMemoryNotificationGroupRepository },
+        { provide: ESCALATION_POLICY_REPOSITORY, useClass: InMemoryEscalationPolicyRepository },
+        { provide: ESCALATION_EXECUTION_REPOSITORY, useClass: InMemoryEscalationExecutionRepository },
+        { provide: INCIDENT_ACKNOWLEDGEMENTS, useClass: InMemoryIncidentAcknowledgementRepository },
+        {
+          provide: INCIDENT_ANALYTICS_REPOSITORY,
+          useValue: {
+            listIncidentMetricRecords: async () => [],
+            getIncidentTrendPoints: async () => [],
+          } satisfies IncidentAnalyticsRepository,
+        },
+        { provide: NOTIFICATION_AUDIT_REPOSITORY, useClass: InMemoryNotificationAuditRepository },
+        { provide: NOTIFICATION_ATTEMPTS, useClass: InMemoryNotificationAttemptRepository },
+        { provide: INCIDENT_COMMUNICATION_REPOSITORY, useClass: InMemoryIncidentCommunicationRepository },
+        { provide: ON_CALL_SCHEDULE_REPOSITORY, useClass: InMemoryOnCallScheduleRepository },
+        { provide: ON_CALL_SHIFT_REPOSITORY, useClass: InMemoryOnCallShiftRepository },
+        { provide: AVAILABILITY_OVERRIDE_REPOSITORY, useClass: InMemoryAvailabilityOverrideRepository },
+        { provide: EXTERNAL_TICKET_REPOSITORY, useClass: InMemoryExternalTicketRepository },
       ]
     : [
         {
@@ -84,6 +151,24 @@ const infrastructureProviders: Provider[] =
           useFactory: (database: PostgresConnection) =>
             new PostgresIncidentRepository(database),
         },
+        {
+          provide: INCIDENT_ANALYTICS_REPOSITORY,
+          inject: [DATABASE],
+          useFactory: (database: PostgresConnection) =>
+            new PostgresIncidentAnalyticsRepository(database),
+        },
+        { provide: CONTACT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresContactRepository(database) },
+        { provide: NOTIFICATION_GROUP_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationGroupRepository(database) },
+        { provide: ESCALATION_POLICY_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresEscalationPolicyRepository(database) },
+        { provide: ESCALATION_EXECUTION_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresEscalationExecutionRepository(database) },
+        { provide: INCIDENT_ACKNOWLEDGEMENTS, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentAcknowledgementRepository(database) },
+        { provide: NOTIFICATION_AUDIT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationAuditRepository(database) },
+        { provide: NOTIFICATION_ATTEMPTS, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationAttemptRepository(database) },
+        { provide: INCIDENT_COMMUNICATION_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentCommunicationRepository(database) },
+        { provide: ON_CALL_SCHEDULE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresOnCallScheduleRepository(database) },
+        { provide: ON_CALL_SHIFT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresOnCallShiftRepository(database) },
+        { provide: AVAILABILITY_OVERRIDE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresAvailabilityOverrideRepository(database) },
+        { provide: EXTERNAL_TICKET_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresExternalTicketRepository(database) },
         {
           provide: CLUSTER_DIRECTORY,
           inject: [DATABASE],
@@ -193,12 +278,56 @@ const infrastructureProviders: Provider[] =
     ResourceTimelineController,
     BaselinesController,
     ClustersController,
+    ContactsController,
+    NotificationGroupsController,
+    EscalationPoliciesController,
+    IncidentAcknowledgementController,
+    IncidentNotificationStateController,
+    IncidentExternalTicketController,
+    IncidentReportController,
+    IncidentAnalyticsController,
+    SystemSummaryController,
+    OnCallController,
   ],
   providers: [
     ...infrastructureProviders,
     {
       provide: TELEMETRY_SCOPE_RESOLVER,
       useClass: ConfiguredTelemetryScopeResolver,
+    },
+    {
+      provide: INCIDENT_REPORT_BUILDER,
+      inject: [INCIDENT_REPOSITORY, INCIDENT_ACKNOWLEDGEMENTS],
+      useFactory: (
+        incidents: import('@faultline/incidents').IncidentRepository,
+        acknowledgements: import('@faultline/notifications').IncidentAcknowledgementRepository,
+      ) => new IncidentReportBuilder(incidents, acknowledgements),
+    },
+    {
+      provide: JSON_REPORT_EXPORTER,
+      useClass: JsonReportExporter,
+    },
+    {
+      provide: CSV_REPORT_EXPORTER,
+      useClass: CsvReportExporter,
+    },
+    {
+      provide: PDF_REPORT_EXPORTER,
+      useClass: PdfReportExporter,
+    },
+    {
+      provide: AnalyticsService,
+      inject: [INCIDENT_ANALYTICS_REPOSITORY],
+      useFactory: (repository: IncidentAnalyticsRepository) =>
+        new AnalyticsService(repository),
+    },
+    {
+      provide: SystemSummaryService,
+      inject: [AnalyticsService, HealthService],
+      useFactory: (analytics: AnalyticsService, health: HealthService) =>
+        new SystemSummaryService(analytics, {
+          health: new CurrentApplicationHealthProvider(health),
+        }),
     },
   ],
 })

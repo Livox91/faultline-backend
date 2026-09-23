@@ -14,6 +14,12 @@
       "path": "packages/incidents"
     },
     {
+      "path": "packages/notifications"
+    },
+    {
+      "path": "packages/reporting"
+    },
+    {
       "path": "packages/log-classification"
     },
     {
@@ -39,6 +45,9 @@
     },
     {
       "path": "apps/storage"
+    },
+    {
+      "path": "apps/notification"
     }
   ]
 }

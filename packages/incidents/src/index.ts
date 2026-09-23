@@ -181,6 +181,14 @@ export interface Incident {
   summary: string;
   severity: IncidentSeverity;
   status: IncidentStatus;
+  /** Logical customer-facing service; deliberately independent of Kubernetes names. */
+  logicalService?: string;
+  /** Explicit operator-provided estimate. Detection must never infer this value. */
+  estimatedRestorationAt?: string;
+  /** Concise confirmed impact statement suitable for lifecycle communication. */
+  serviceImpact?: string;
+  /** Confirmed root cause only; absence means it must not be claimed. */
+  confirmedRootCause?: string;
   /** Deterministic evidence score, not a probability or mathematical certainty. */
   confidence: number;
   firstSeen: string;

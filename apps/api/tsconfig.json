@@ -32,6 +32,12 @@
     },
     {
       "path": "../../packages/baselines"
+    },
+    {
+      "path": "../../packages/notifications"
+    },
+    {
+      "path": "../../packages/reporting"
     }
   ]
 }

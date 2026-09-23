@@ -20,5 +20,8 @@
     "@faultline/platform": "0.1.0",
     "@faultline/clickhouse": "0.1.0",
     "@faultline/baselines": "0.1.0"
+    ,"@faultline/notifications": "0.1.0"
+    ,"@faultline/reporting": "0.1.0"
+    ,"zod": "^4.0.0"
   }
 }

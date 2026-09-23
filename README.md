@@ -1,5 +1,9 @@
 # Faultline
 
+## Calling agent and notification setup
+
+See [Configure and test the Faultline calling agent](docs/CALLING-AGENT.md) for Retell voice-agent instructions, environment configuration, signed webhook and acknowledgement actions, mocked automated tests, and a controlled real-call checklist.
+
 ## First-time BookNest onboarding
 
 Faultline can run on the customer machine while its read-only collectors monitor the
@@ -391,6 +395,30 @@ The list endpoint supports exact `cluster`, `namespace`, `status`, `severity`, a
 `classification` query filters. Enum filters are case-insensitive. Unknown incident IDs
 return 404 and invalid filters return 400. Responses disable caching.
 
+Reporting and analytics API:
+
+```text
+GET /reports/incidents/:incidentId
+GET /reports/incidents/:incidentId/export?format=json|csv|pdf
+GET /analytics/incidents?from=<iso>&to=<iso>
+GET /analytics/incidents/trends?from=<iso>&to=<iso>&bucket=hour|day|week|month
+GET /reports/system-summary?from=<iso>&to=<iso>
+GET /incidents/:incidentId/external-tickets/slack
+```
+
+Analytics, averages, resolution rate, rankings, and UTC trend buckets are calculated by
+the backend. Date ranges include `from` and exclude `to`. Technical reports and exports
+apply the shared sensitive-data redactor. The Slack metadata endpoint is read-only,
+returns `{ "ticket": null }` when no ticket exists, and intentionally omits the external
+message ID. JSON, CSV, and PDF exports use attachment filenames supplied by the API.
+
+Slack ticket delivery runs in the notification application and is disabled by default.
+Configure `SLACK_ENABLED`, `SLACK_BOT_TOKEN`, and
+`SLACK_INCIDENT_CHANNEL_ID` in `apps/notification/.env`. Optional
+`SLACK_SERVICE_CHANNELS`, `SLACK_SERVICE_OWNERS`, and `SLACK_TEAM_CHANNELS`
+JSON maps route service first, then owning team, then the default incident channel.
+See `apps/notification/.env.example` for the complete set.
+
 Enabled components describe capabilities registered in this process, not the
 availability of other apps or future infrastructure.
 
@@ -437,9 +465,10 @@ Queue handlers acknowledge by resolving and request retry by rejecting.
 
 ## Verification and boundaries
 
-`npm test` builds and runs config, health, logger and telemetry validation tests,
-plus checks for independent app startup, required-config failures, workspace imports
-and HTTP endpoints. `npm run typecheck` validates the project graph.
+`npm test` builds and runs config, health, logger, telemetry, reporting, exporter,
+analytics, and Slack integration tests, plus checks for independent app startup,
+required-config failures, workspace imports and HTTP endpoints. `npm run typecheck`
+validates the project graph.
 
 Build before production startup. Deploy the selected app output together with
 shared package outputs, workspace manifests and production node_modules.

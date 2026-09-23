@@ -31,6 +31,10 @@ export const applicationDefinitions = {
     port: 3003,
     components: ['configuration', 'logging', 'health', 'telemetry-storage'],
   },
+  notification: {
+    port: 3004,
+    components: ['configuration', 'logging', 'health', 'notification-policy', 'retell-communication'],
+  },
 } as const;
 
 export type ApplicationName = keyof typeof applicationDefinitions;
@@ -646,7 +650,7 @@ export function validateEnvironment(
   }
   if (result.data.NODE_ENV !== 'test') {
     const missing = [
-      ...((application === 'api' || application === 'processor') &&
+      ...((application === 'api' || application === 'processor' || application === 'notification') &&
       !result.data.DATABASE_URL
         ? ['DATABASE_URL']
         : []),
@@ -655,7 +659,8 @@ export function validateEnvironment(
         : []),
       ...((application === 'ingestion' ||
         application === 'processor' ||
-        application === 'storage') &&
+        application === 'storage' ||
+        application === 'notification') &&
       !result.data.BROKER_URL
         ? ['BROKER_URL']
         : []),
