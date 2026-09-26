@@ -69,6 +69,30 @@ test('setup generates database credentials instead of hardcoding them', () => {
   );
 });
 
+test('setup repairs PostgreSQL ports reserved by Windows', () => {
+  const {
+    parseExcludedPortRanges,
+    isPortExcluded,
+    chooseUnexcludedPort,
+  } = require('../scripts/onboarding/ports.cjs');
+  const ranges = parseExcludedPortRanges(`
+Start Port    End Port
+----------    --------
+     50000       50059     *
+     55423       55522
+`);
+  assert.deepEqual(ranges, [
+    { start: 50000, end: 50059 },
+    { start: 55423, end: 55522 },
+  ]);
+  assert.equal(isPortExcluded(55432, ranges), true);
+  assert.equal(chooseUnexcludedPort(55432, ranges), 5432);
+
+  const setup = read('scripts/setup.cjs');
+  assert.match(setup, /replacedPostgresPort/);
+  assert.match(setup, /PostgreSQL port repaired/);
+});
+
 test('combined development pipeline loads every application environment', () => {
   const pipeline = read('scripts/dev-pipeline.cjs');
   assert.match(pipeline, /\['api', 'ingestion', 'processor', 'storage'\]/);

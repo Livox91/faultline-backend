@@ -9,6 +9,11 @@ const {
   statePath,
   readFileSync,
 } = require('./onboarding/lib.cjs');
+const {
+  windowsExcludedTcpRanges,
+  isPortExcluded,
+  chooseUnexcludedPort,
+} = require('./onboarding/ports.cjs');
 
 if (Number(process.versions.node.split('.')[0]) < 22)
   throw new Error(`Node.js 22+ is required; found ${process.version}`);
@@ -48,6 +53,29 @@ for (const field of ['POSTGRES_PASSWORD', 'CLICKHOUSE_PASSWORD']) {
     infrastructureChanged = true;
   }
 }
+
+const configuredPostgresPort = Number(infrastructure.POSTGRES_PORT || 5432);
+if (
+  !Number.isInteger(configuredPostgresPort) ||
+  configuredPostgresPort < 1 ||
+  configuredPostgresPort > 65535
+)
+  throw new Error(
+    `.env.infrastructure contains an invalid POSTGRES_PORT: ${infrastructure.POSTGRES_PORT}`,
+  );
+
+const excludedTcpRanges = windowsExcludedTcpRanges();
+let replacedPostgresPort;
+if (isPortExcluded(configuredPostgresPort, excludedTcpRanges)) {
+  const replacement = chooseUnexcludedPort(5432, excludedTcpRanges);
+  if (!replacement)
+    throw new Error(
+      'Windows has reserved the configured PostgreSQL port and no safe fallback port was found.',
+    );
+  replacedPostgresPort = configuredPostgresPort;
+  infrastructure.POSTGRES_PORT = String(replacement);
+  infrastructureChanged = true;
+}
 if (infrastructureChanged) {
   writePrivate(
     infrastructurePath,
@@ -56,7 +84,7 @@ if (infrastructureChanged) {
       .join('\n') + '\n',
     true,
   );
-  created.push('.env.infrastructure (placeholder credentials replaced)');
+  created.push('.env.infrastructure (configuration repaired)');
 }
 
 for (const field of [
@@ -97,6 +125,30 @@ for (const [relative, content] of Object.entries(files)) {
     /replace-with|change-me|<generated/i.test(readFileSync(path, 'utf8'));
   if (writePrivate(path, content, force || replacePlaceholder))
     created.push(relative);
+}
+
+// If setup repaired a Windows-reserved infrastructure port, update only local
+// loopback PostgreSQL URLs. Other application settings and secrets stay intact.
+if (replacedPostgresPort !== undefined) {
+  for (const relative of [
+    'apps/api/.env',
+    'apps/processor/.env',
+    'apps/storage/.env',
+  ]) {
+    const path = resolve(root, relative);
+    if (!existsSync(path)) continue;
+    const current = readFileSync(path, 'utf8').replace(/\r+\n/g, '\n');
+    const updated = current.replaceAll(
+      `127.0.0.1:${replacedPostgresPort}/`,
+      `127.0.0.1:${infrastructure.POSTGRES_PORT}/`,
+    );
+    if (updated === current) continue;
+    writePrivate(path, updated, true);
+    created.push(`${relative} (PostgreSQL port repaired)`);
+  }
+  console.log(
+    `POSTGRES_PORT ${replacedPostgresPort} is reserved by Windows; using ${infrastructure.POSTGRES_PORT} instead.`,
+  );
 }
 
 // Keep older local configurations working as new required settings are added.
