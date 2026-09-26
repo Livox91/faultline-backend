@@ -81,6 +81,37 @@ function tcp(port) {
         )
           throw new Error(`${path} still contains a placeholder value`);
       }
+      const required = {
+        'apps/api/.env': ['AUTH_JWT_SECRET', 'DATABASE_URL', 'CLICKHOUSE_URL'],
+        'apps/ingestion/.env': ['FAULTLINE_DEV_AGENT_TOKEN', 'BROKER_URL'],
+        'apps/processor/.env': ['DATABASE_URL', 'REDIS_URL', 'BROKER_URL'],
+        'apps/storage/.env': ['DATABASE_URL', 'BROKER_URL', 'CLICKHOUSE_URL'],
+      };
+      for (const [path, fields] of Object.entries(required)) {
+        const values = parseEnv(resolve(root, path));
+        const missing = fields.filter((field) => !values[field]);
+        if (missing.length)
+          throw new Error(`${path} is missing ${missing.join(', ')}`);
+      }
+      const api = parseEnv(resolve(root, 'apps/api/.env'));
+      if ((api.AUTH_JWT_SECRET ?? '').length < 32)
+        throw new Error('apps/api/.env has an invalid AUTH_JWT_SECRET');
+      const bootstrapConfigured =
+        !!api.AUTH_BOOTSTRAP_ADMIN_EMAIL || !!api.AUTH_BOOTSTRAP_ADMIN_PASSWORD;
+      if (bootstrapConfigured) {
+        if (
+          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+            api.AUTH_BOOTSTRAP_ADMIN_EMAIL ?? '',
+          )
+        )
+          throw new Error(
+            'apps/api/.env has an invalid AUTH_BOOTSTRAP_ADMIN_EMAIL',
+          );
+        if ((api.AUTH_BOOTSTRAP_ADMIN_PASSWORD ?? '').length < 12)
+          throw new Error(
+            'apps/api/.env has an invalid AUTH_BOOTSTRAP_ADMIN_PASSWORD',
+          );
+      }
     },
     'Run npm run setup to generate safe local configuration.',
   );

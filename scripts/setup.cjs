@@ -79,13 +79,16 @@ const clickhousePort = infrastructure.CLICKHOUSE_HTTP_PORT || '8123';
 const databaseUrl = `postgresql://${encode(infrastructure.POSTGRES_USER)}:${encode(infrastructure.POSTGRES_PASSWORD)}@127.0.0.1:${postgresPort}/${encode(infrastructure.POSTGRES_DB)}`;
 const clickhouseUrl = `http://127.0.0.1:${clickhousePort}`;
 const token = secret();
+const authJwtSecret = secret();
+const bootstrapAdminEmail = 'admin@faultline.local';
+const bootstrapAdminPassword = secret();
 const common =
   'NODE_ENV=development\nAPP_VERSION=0.1.0\nHOST=0.0.0.0\nLOG_LEVEL=log\n';
 const files = {
-  'apps/api/.env': `${common}PORT=3000\nDATABASE_URL=${databaseUrl}\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\n`,
+  'apps/api/.env': `${common}PORT=3000\nDATABASE_URL=${databaseUrl}\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\nAUTH_JWT_SECRET=${authJwtSecret}\nAUTH_BOOTSTRAP_ADMIN_EMAIL=${bootstrapAdminEmail}\nAUTH_BOOTSTRAP_ADMIN_PASSWORD=${bootstrapAdminPassword}\n`,
   'apps/ingestion/.env': `${common}PORT=3001\nFAULTLINE_DEV_AGENT_TOKEN=${token}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\n`,
   'apps/processor/.env': `${common}PORT=3002\nDATABASE_URL=${databaseUrl}\nREDIS_URL=redis://127.0.0.1:${redisPort}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\nLOG_CLASSIFIER_ENABLED=true\n`,
-  'apps/storage/.env': `${common}PORT=3003\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\nTELEMETRY_STORAGE_CONSUMER_GROUP=faultline-telemetry-storage\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\n`,
+  'apps/storage/.env': `${common}PORT=3003\nDATABASE_URL=${databaseUrl}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\nTELEMETRY_STORAGE_CONSUMER_GROUP=faultline-telemetry-storage\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\n`,
 };
 for (const [relative, content] of Object.entries(files)) {
   const path = resolve(root, relative);
@@ -94,6 +97,63 @@ for (const [relative, content] of Object.entries(files)) {
     /replace-with|change-me|<generated/i.test(readFileSync(path, 'utf8'));
   if (writePrivate(path, content, force || replacePlaceholder))
     created.push(relative);
+}
+
+// Keep older local configurations working as new required settings are added.
+// Re-running setup must not rotate existing credentials or overwrite custom values.
+// Bootstrap credentials are special: after first sign-in operators are told to remove
+// both fields, so an intentional removal must stay removed. Repair them only when one
+// half is present (as in an older or partially edited local configuration).
+const existingApi = parseEnv(resolve(root, 'apps/api/.env'));
+const bootstrapConfigured =
+  !!existingApi.AUTH_BOOTSTRAP_ADMIN_EMAIL ||
+  !!existingApi.AUTH_BOOTSTRAP_ADMIN_PASSWORD;
+const requiredLocalFields = {
+  'apps/api/.env': {
+    AUTH_JWT_SECRET: {
+      value: authJwtSecret,
+      valid: (value) => typeof value === 'string' && value.length >= 32,
+    },
+    ...(bootstrapConfigured
+      ? {
+          AUTH_BOOTSTRAP_ADMIN_EMAIL: {
+            value: bootstrapAdminEmail,
+            valid: (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value ?? ''),
+          },
+          AUTH_BOOTSTRAP_ADMIN_PASSWORD: {
+            value: bootstrapAdminPassword,
+            valid: (value) => typeof value === 'string' && value.length >= 12,
+          },
+        }
+      : {}),
+  },
+  'apps/storage/.env': {
+    DATABASE_URL: { value: databaseUrl, valid: (value) => !!value },
+  },
+};
+for (const [relative, required] of Object.entries(requiredLocalFields)) {
+  const path = resolve(root, relative);
+  if (!existsSync(path)) continue;
+  // Normalize before writePrivate converts LF to the platform newline. Passing an
+  // existing CRLF file through unchanged would otherwise accumulate stray CR bytes.
+  const current = readFileSync(path, 'utf8').replace(/\r+\n/g, '\n');
+  const values = parseEnv(path);
+  const repairs = Object.entries(required).filter(
+    ([key, requirement]) => !requirement.valid(values[key]),
+  );
+  if (!repairs.length) continue;
+  let updated = current;
+  for (const [key, requirement] of repairs) {
+    const line = `${key}=${requirement.value}`;
+    const pattern = new RegExp(`^${key}=.*$`, 'm');
+    if (pattern.test(updated)) updated = updated.replace(pattern, line);
+    else {
+      const separator = updated.endsWith('\n') || updated.length === 0 ? '' : '\n';
+      updated = `${updated}${separator}${line}\n`;
+    }
+  }
+  writePrivate(path, updated, true);
+  created.push(`${relative} (invalid or missing required fields repaired)`);
 }
 
 const ingestion = parseEnv(resolve(root, 'apps/ingestion/.env'));

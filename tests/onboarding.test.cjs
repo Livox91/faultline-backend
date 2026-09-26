@@ -54,6 +54,14 @@ test('destructive development reset requires explicit confirmation', () => {
 test('setup generates database credentials instead of hardcoding them', () => {
   const setup = read('scripts/setup.cjs');
   assert.match(setup, /POSTGRES_PASSWORD:\s*secret\(\)/);
+  assert.match(setup, /AUTH_JWT_SECRET=\$\{authJwtSecret\}/);
+  assert.match(
+    setup,
+    /AUTH_BOOTSTRAP_ADMIN_PASSWORD=\$\{bootstrapAdminPassword\}/,
+  );
+  assert.match(setup, /value\.length >= 12/);
+  assert.match(setup, /'apps\/storage\/\.env':[^\n]*DATABASE_URL=\$\{databaseUrl\}/);
+  assert.match(setup, /requiredLocalFields/);
   assert.doesNotMatch(setup, /admin123|password123/i);
   assert.match(
     read('scripts/bootstrap-infrastructure.cjs'),
