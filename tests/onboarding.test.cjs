@@ -98,9 +98,30 @@ Start Port    End Port
 
 test('combined development pipeline loads every application environment', () => {
   const pipeline = read('scripts/dev-pipeline.cjs');
-  assert.match(pipeline, /\['api', 'ingestion', 'processor', 'storage'\]/);
+  assert.match(
+    pipeline,
+    /\['api', 'ingestion', 'processor', 'storage', 'notification'\]/,
+  );
+  assert.match(pipeline, /notification: '3004'/);
   assert.match(pipeline, /parseEnv/);
   assert.match(pipeline, /key !== 'PORT'/);
+});
+
+test('notification participates in setup, readiness, and the shared lifecycle', () => {
+  const setup = read('scripts/setup.cjs');
+  const preflight = read('scripts/preflight.cjs');
+  const start = read('scripts/faultline-start.cjs');
+  const pipeline = read('scripts/dev-pipeline.cjs');
+
+  assert.match(setup, /'apps\/notification\/\.env'/);
+  assert.match(setup, /PORT=3004/);
+  assert.match(setup, /SLACK_TOKEN_ENCRYPTION_KEY=\$\{slackTokenEncryptionKey\}/);
+  assert.match(preflight, /'Faultline notification': 3004/);
+  assert.match(start, /\[3000, 3001, 3002, 3003, 3004\]/);
+  assert.match(
+    pipeline,
+    /\['processor', 'storage', 'notification', 'ingestion', 'api'\]/,
+  );
 });
 
 test('setup provides a project-local Stripe CLI and clear next commands', () => {

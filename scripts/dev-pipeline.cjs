@@ -17,7 +17,7 @@ let stopWebhooks = () => {};
 // applications' local configuration. Nest's dotenv loading only happens once in a
 // shared process, so relying on each AppModule to load its own file drops settings
 // required by modules started later (for example ClickHouse credentials).
-for (const name of ['api', 'ingestion', 'processor', 'storage']) {
+for (const name of ['api', 'ingestion', 'processor', 'storage', 'notification']) {
   const values = parseEnv(resolve(__dirname, `../apps/${name}/.env`));
   for (const [key, value] of Object.entries(values))
     if (key !== 'PORT' && process.env[key] === undefined)
@@ -40,6 +40,7 @@ async function shutdown() {
     ingestion: '3001',
     processor: '3002',
     storage: '3003',
+    notification: '3004',
   };
   /**
    * Webhook forwarding, before the API is loaded.
@@ -53,7 +54,7 @@ async function shutdown() {
     port: Number(process.env.API_PORT || defaultPorts.api),
   });
 
-  for (const name of ['processor', 'storage', 'ingestion', 'api']) {
+  for (const name of ['processor', 'storage', 'notification', 'ingestion', 'api']) {
     process.env.PORT =
       process.env[name.toUpperCase() + '_PORT'] || defaultPorts[name];
     const { AppModule } = require(`../apps/${name}/dist/app.module.js`);
@@ -63,7 +64,7 @@ async function shutdown() {
       // Mirrors `apps/api/src/main.ts`. Payment webhooks are verified against the exact
       // bytes the provider signed, and without the raw body every delivery is refused
       // with a 401 - which looks like a wrong signing secret and is not.
-      ...(name === 'api' ? { rawBody: true } : {}),
+      ...(name === 'api' || name === 'notification' ? { rawBody: true } : {}),
     });
     if (name === 'ingestion')
       require('../apps/ingestion/dist/otlp/http').configureIngestionHttp(app);

@@ -91,7 +91,7 @@ writeFileSync(pidPath, String(child.pid), 'utf8');
     let services;
     try {
       services = await Promise.all(
-        [3000, 3001, 3002, 3003].map((port) =>
+        [3000, 3001, 3002, 3003, 3004].map((port) =>
           requestJson(`http://127.0.0.1:${port}/health/ready`, {
             timeout: 2_000,
           }),
@@ -111,7 +111,7 @@ writeFileSync(pidPath, String(child.pid), 'utf8');
           );
       }
       console.log(
-        'Faultline API, ingestion, processor, and storage are ready.',
+        'Faultline API, ingestion, processor, storage, and notification are ready.',
       );
       if (billingEnabled) console.log('Stripe webhook forwarding is active.');
       console.log(`Runtime log: ${logPath}`);

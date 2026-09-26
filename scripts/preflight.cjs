@@ -67,6 +67,7 @@ function tcp(port) {
     'apps/ingestion/.env',
     'apps/processor/.env',
     'apps/storage/.env',
+    'apps/notification/.env',
   ];
   check(
     'Faultline configuration',
@@ -87,6 +88,11 @@ function tcp(port) {
         'apps/ingestion/.env': ['FAULTLINE_DEV_AGENT_TOKEN', 'BROKER_URL'],
         'apps/processor/.env': ['DATABASE_URL', 'REDIS_URL', 'BROKER_URL'],
         'apps/storage/.env': ['DATABASE_URL', 'BROKER_URL', 'CLICKHOUSE_URL'],
+        'apps/notification/.env': [
+          'DATABASE_URL',
+          'BROKER_URL',
+          'SLACK_TOKEN_ENCRYPTION_KEY',
+        ],
       };
       for (const [path, fields] of Object.entries(required)) {
         const values = parseEnv(resolve(root, path));
@@ -97,6 +103,15 @@ function tcp(port) {
       const api = parseEnv(resolve(root, 'apps/api/.env'));
       if ((api.AUTH_JWT_SECRET ?? '').length < 32)
         throw new Error('apps/api/.env has an invalid AUTH_JWT_SECRET');
+      const notification = parseEnv(resolve(root, 'apps/notification/.env'));
+      if (
+        (api.SLACK_TOKEN_ENCRYPTION_KEY ?? '').length < 32 ||
+        api.SLACK_TOKEN_ENCRYPTION_KEY !==
+          notification.SLACK_TOKEN_ENCRYPTION_KEY
+      )
+        throw new Error(
+          'API and notification must share a valid SLACK_TOKEN_ENCRYPTION_KEY',
+        );
       const bootstrapConfigured =
         !!api.AUTH_BOOTSTRAP_ADMIN_EMAIL || !!api.AUTH_BOOTSTRAP_ADMIN_PASSWORD;
       if (bootstrapConfigured) {
@@ -160,6 +175,7 @@ function tcp(port) {
     'Faultline ingestion': 3001,
     'Faultline processor': 3002,
     'Faultline storage': 3003,
+    'Faultline notification': 3004,
   };
   const infrastructureServices = {
     PostgreSQL: 'postgres',
@@ -216,6 +232,7 @@ function tcp(port) {
     ['ingestion', 3001],
     ['processor', 3002],
     ['storage', 3003],
+    ['notification', 3004],
   ]) {
     try {
       await requestJson(`http://127.0.0.1:${port}/health/ready`, {

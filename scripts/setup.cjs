@@ -149,15 +149,34 @@ const databaseUrl = `postgresql://${encode(infrastructure.POSTGRES_USER)}:${enco
 const clickhouseUrl = `http://127.0.0.1:${clickhousePort}`;
 const token = secret();
 const authJwtSecret = secret();
+const existingApiConfiguration = parseEnv(resolve(root, 'apps/api/.env'));
+const existingNotificationConfiguration = parseEnv(
+  resolve(root, 'apps/notification/.env'),
+);
+const usableSharedSecret = (value) =>
+  typeof value === 'string' &&
+  value.length >= 32 &&
+  !/replace-with|change-me|<generated/i.test(value);
+const slackTokenEncryptionKey =
+  (usableSharedSecret(existingApiConfiguration.SLACK_TOKEN_ENCRYPTION_KEY)
+    ? existingApiConfiguration.SLACK_TOKEN_ENCRYPTION_KEY
+    : undefined) ||
+  (usableSharedSecret(
+    existingNotificationConfiguration.SLACK_TOKEN_ENCRYPTION_KEY,
+  )
+    ? existingNotificationConfiguration.SLACK_TOKEN_ENCRYPTION_KEY
+    : undefined) ||
+  secret();
 const bootstrapAdminEmail = 'admin@faultline.local';
 const bootstrapAdminPassword = secret();
 const common =
   'NODE_ENV=development\nAPP_VERSION=0.1.0\nHOST=0.0.0.0\nLOG_LEVEL=log\n';
 const files = {
-  'apps/api/.env': `${common}PORT=3000\nDATABASE_URL=${databaseUrl}\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\nAUTH_JWT_SECRET=${authJwtSecret}\nAUTH_BOOTSTRAP_ADMIN_EMAIL=${bootstrapAdminEmail}\nAUTH_BOOTSTRAP_ADMIN_PASSWORD=${bootstrapAdminPassword}\n`,
+  'apps/api/.env': `${common}PORT=3000\nDATABASE_URL=${databaseUrl}\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\nAUTH_JWT_SECRET=${authJwtSecret}\nSLACK_TOKEN_ENCRYPTION_KEY=${slackTokenEncryptionKey}\nAUTH_BOOTSTRAP_ADMIN_EMAIL=${bootstrapAdminEmail}\nAUTH_BOOTSTRAP_ADMIN_PASSWORD=${bootstrapAdminPassword}\n`,
   'apps/ingestion/.env': `${common}PORT=3001\nFAULTLINE_DEV_AGENT_TOKEN=${token}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\n`,
   'apps/processor/.env': `${common}PORT=3002\nDATABASE_URL=${databaseUrl}\nREDIS_URL=redis://127.0.0.1:${redisPort}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\nLOG_CLASSIFIER_ENABLED=true\n`,
   'apps/storage/.env': `${common}PORT=3003\nDATABASE_URL=${databaseUrl}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\nTELEMETRY_STORAGE_CONSUMER_GROUP=faultline-telemetry-storage\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\n`,
+  'apps/notification/.env': `${common}PORT=3004\nDATABASE_URL=${databaseUrl}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nNOTIFICATION_CONSUMER_GROUP=faultline-notifications\nNOTIFICATION_ORGANIZATION_ID=default\nNOTIFICATION_HIGH_ESCALATION_ENABLED=false\nNOTIFICATION_SCHEDULER_POLL_MS=5000\nNOTIFICATION_SCHEDULER_LEASE_MS=30000\nNOTIFICATION_STALE_ATTEMPT_MS=300000\nNOTIFICATION_ATTEMPT_RETENTION_DAYS=90\nNOTIFICATION_AUDIT_RETENTION_DAYS=365\nSLACK_TOKEN_ENCRYPTION_KEY=${slackTokenEncryptionKey}\nSLACK_ENABLED=false\nSLACK_SERVICE_CHANNELS={}\nSLACK_SERVICE_OWNERS={}\nSLACK_TEAM_CHANNELS={}\n`,
 };
 for (const [relative, content] of Object.entries(files)) {
   const path = resolve(root, relative);
@@ -175,6 +194,7 @@ if (replacedPostgresPort !== undefined) {
     'apps/api/.env',
     'apps/processor/.env',
     'apps/storage/.env',
+    'apps/notification/.env',
   ]) {
     const path = resolve(root, relative);
     if (!existsSync(path)) continue;
@@ -207,6 +227,11 @@ const requiredLocalFields = {
       value: authJwtSecret,
       valid: (value) => typeof value === 'string' && value.length >= 32,
     },
+    SLACK_TOKEN_ENCRYPTION_KEY: {
+      value: slackTokenEncryptionKey,
+      valid: (value) =>
+        usableSharedSecret(value) && value === slackTokenEncryptionKey,
+    },
     ...(bootstrapConfigured
       ? {
           AUTH_BOOTSTRAP_ADMIN_EMAIL: {
@@ -222,6 +247,18 @@ const requiredLocalFields = {
   },
   'apps/storage/.env': {
     DATABASE_URL: { value: databaseUrl, valid: (value) => !!value },
+  },
+  'apps/notification/.env': {
+    DATABASE_URL: { value: databaseUrl, valid: (value) => !!value },
+    BROKER_URL: {
+      value: `nats://127.0.0.1:${natsPort}`,
+      valid: (value) => !!value,
+    },
+    SLACK_TOKEN_ENCRYPTION_KEY: {
+      value: slackTokenEncryptionKey,
+      valid: (value) =>
+        usableSharedSecret(value) && value === slackTokenEncryptionKey,
+    },
   },
 };
 for (const [relative, required] of Object.entries(requiredLocalFields)) {
