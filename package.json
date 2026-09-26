@@ -72,6 +72,7 @@
     "redis": "^6.2.1"
   },
   "devDependencies": {
+    "@stripe/cli": "^1.52.0",
     "@types/node": "^22.0.0",
     "@types/pdfkit": "^0.17.6",
     "concurrently": "^9.2.1",

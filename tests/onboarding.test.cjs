@@ -60,7 +60,10 @@ test('setup generates database credentials instead of hardcoding them', () => {
     /AUTH_BOOTSTRAP_ADMIN_PASSWORD=\$\{bootstrapAdminPassword\}/,
   );
   assert.match(setup, /value\.length >= 12/);
-  assert.match(setup, /'apps\/storage\/\.env':[^\n]*DATABASE_URL=\$\{databaseUrl\}/);
+  assert.match(
+    setup,
+    /'apps\/storage\/\.env':[^\n]*DATABASE_URL=\$\{databaseUrl\}/,
+  );
   assert.match(setup, /requiredLocalFields/);
   assert.doesNotMatch(setup, /admin123|password123/i);
   assert.match(
@@ -98,6 +101,36 @@ test('combined development pipeline loads every application environment', () => 
   assert.match(pipeline, /\['api', 'ingestion', 'processor', 'storage'\]/);
   assert.match(pipeline, /parseEnv/);
   assert.match(pipeline, /key !== 'PORT'/);
+});
+
+test('setup provides a project-local Stripe CLI and clear next commands', () => {
+  const packageJson = require('../package.json');
+  assert.equal(typeof packageJson.devDependencies['@stripe/cli'], 'string');
+  const setup = read('scripts/setup.cjs');
+  assert.match(setup, /node_modules\/@stripe\/cli\/bin\/shim\.js/);
+  assert.match(setup, /--include=optional/);
+  assert.match(setup, /npm exec -- stripe login/);
+  assert.match(setup, /npm run preflight/);
+  assert.match(setup, /npm run faultline:start/);
+  assert.match(setup, /npm run cluster:onboard/);
+
+  const webhooks = read('scripts/stripe-webhooks.cjs');
+  assert.match(webhooks, /LOCAL_STRIPE_BIN/);
+  assert.match(webhooks, /cli-\$\{process\.platform\}-\$\{process\.arch\}/);
+
+  const preflight = read('scripts/preflight.cjs');
+  assert.match(preflight, /Stripe CLI/);
+  assert.match(preflight, /stripeAvailable/);
+});
+
+test('startup preserves an actionable Stripe forwarding failure', () => {
+  const start = read('scripts/faultline-start.cjs');
+  assert.match(
+    start,
+    /Applications are healthy, but Stripe webhook forwarding did not start/,
+  );
+  assert.match(start, /npm exec -- stripe login/);
+  assert.match(start, /services\?\.every/);
 });
 
 test('cluster registration is persisted before local onboarding state', () => {

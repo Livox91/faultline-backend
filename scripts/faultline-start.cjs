@@ -88,35 +88,35 @@ writeFileSync(pidPath, String(child.pid), 'utf8');
 (async () => {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
+    let services;
     try {
-      const services = await Promise.all(
+      services = await Promise.all(
         [3000, 3001, 3002, 3003].map((port) =>
           requestJson(`http://127.0.0.1:${port}/health/ready`, {
             timeout: 2_000,
           }),
         ),
       );
-      if (services.every((item) => ['ok', 'degraded'].includes(item.status))) {
-        const billingEnabled =
-          parseEnv(resolve(root, 'apps/api/.env')).BILLING_ENABLED === 'true';
-        if (billingEnabled) {
-          const launchOutput = readFileSync(logPath)
-            .subarray(logStart)
-            .toString('utf8');
-          if (!launchOutput.includes('"event":"stripe_webhooks_forwarding"'))
-            throw new Error(
-              `Applications are healthy, but Stripe webhook forwarding did not start. Inspect ${logPath}`,
-            );
-        }
-        console.log(
-          'Faultline API, ingestion, processor, and storage are ready.',
-        );
-        if (billingEnabled)
-          console.log('Stripe webhook forwarding is active.');
-        console.log(`Runtime log: ${logPath}`);
-        return;
-      }
     } catch {}
+    if (services?.every((item) => ['ok', 'degraded'].includes(item.status))) {
+      const billingEnabled =
+        parseEnv(resolve(root, 'apps/api/.env')).BILLING_ENABLED === 'true';
+      if (billingEnabled) {
+        const launchOutput = readFileSync(logPath)
+          .subarray(logStart)
+          .toString('utf8');
+        if (!launchOutput.includes('"event":"stripe_webhooks_forwarding"'))
+          throw new Error(
+            `Applications are healthy, but Stripe webhook forwarding did not start. Run "npm exec -- stripe login" and retry. Details: ${logPath}`,
+          );
+      }
+      console.log(
+        'Faultline API, ingestion, processor, and storage are ready.',
+      );
+      if (billingEnabled) console.log('Stripe webhook forwarding is active.');
+      console.log(`Runtime log: ${logPath}`);
+      return;
+    }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
   }
   throw new Error(

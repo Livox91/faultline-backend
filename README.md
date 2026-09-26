@@ -16,6 +16,10 @@ npm run faultline:start
 npm run cluster:onboard
 ```
 
+The Stripe CLI is a project-local development dependency. Setup verifies the install
+and prints `npm exec -- stripe login` when local billing webhooks require authentication,
+followed by the exact preflight, startup, and cluster-onboarding commands.
+
 The final command verifies a real Kubernetes stdout log in ClickHouse. Its disposable
 probe namespace is excluded from operational classification and incident creation.
 

@@ -97,6 +97,8 @@ spec:
             - name: pod-logs
               mountPath: /var/log/pods
               readOnly: true
+            - name: checkpoints
+              mountPath: /var/lib/faultline-collector
       volumes:
         - name: config
           configMap:
@@ -105,3 +107,7 @@ spec:
           hostPath:
             path: /var/log/pods
             type: Directory
+        - name: checkpoints
+          hostPath:
+            path: /var/lib/faultline-collector
+            type: DirectoryOrCreate

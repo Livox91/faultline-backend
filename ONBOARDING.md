@@ -44,6 +44,18 @@ npm install
 npm run setup
 ```
 
+`npm install` includes the project-local Stripe CLI. `npm run setup` verifies it is
+present and repairs an `--omit=dev` installation automatically. No global install or
+administrator access is required. Run Stripe commands through npm so every platform
+uses the checked-in version:
+
+```powershell
+npm exec -- stripe --version
+npm exec -- stripe login  # only needed when billing is enabled without an API key
+```
+
+At the end, setup prints the commands that should be run next.
+
 ## Advanced prerequisites and troubleshooting
 
 - Node.js 22 or newer and npm (the repository uses npm workspaces and `package-lock.json`)
@@ -72,6 +84,10 @@ npm run preflight
 - `apps/processor/.env`
 - `apps/storage/.env`
 - `.local/onboarding.json`
+
+It also verifies the project-local Stripe CLI and prints the remaining commands in
+order. When `BILLING_ENABLED=true` and no Stripe API key is configured, it explicitly
+includes `npm exec -- stripe login` before startup.
 
 Existing non-placeholder configuration is preserved. Generated files are ignored by
 Git. PostgreSQL and ClickHouse passwords and the development agent token are random.

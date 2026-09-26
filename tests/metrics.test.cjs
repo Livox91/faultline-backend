@@ -26,6 +26,7 @@ const {
 const {
   OtlpController,
 } = require('../apps/ingestion/dist/otlp/otlp.controller');
+const { OtlpDiagnostics } = require('../apps/ingestion/dist/otlp/diagnostics');
 const {
   TelemetryController,
   CLUSTER_AUTHENTICATOR,
@@ -320,6 +321,7 @@ test('authenticated gzip metric batches reach processor state; REST batches vali
     controllers: [OtlpController, TelemetryController],
     providers: [
       { provide: QUEUE, useValue: queue },
+      OtlpDiagnostics,
       { provide: ApplicationLogger, useValue: logger },
       {
         provide: APPLICATION_CONFIG,
@@ -380,7 +382,7 @@ test('authenticated gzip metric batches reach processor state; REST batches vali
     assert.deepEqual(await partial.json(), {
       partialSuccess: {
         rejectedDataPoints: '1',
-        errorMessage: 'Malformed telemetry records rejected',
+        errorMessage: 'Telemetry records rejected: invalid_payload',
       },
     });
     const rest = {

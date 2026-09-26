@@ -7,6 +7,7 @@ const {
   run,
   requestJson,
 } = require('./onboarding/lib.cjs');
+const { stripeAvailable } = require('./stripe-webhooks.cjs');
 
 const passed = [];
 const warnings = [];
@@ -115,6 +116,16 @@ function tcp(port) {
     },
     'Run npm run setup to generate safe local configuration.',
   );
+
+  const apiConfiguration = parseEnv(resolve(root, 'apps/api/.env'));
+  if (apiConfiguration.BILLING_ENABLED === 'true')
+    check(
+      'Stripe CLI',
+      () => {
+        if (!stripeAvailable()) throw new Error('not runnable');
+      },
+      'Run npm run setup. If installation remains incomplete, run npm install --include=dev --include=optional.',
+    );
 
   const infrastructure = parseEnv(resolve(root, '.env.infrastructure'));
   let composeServices = new Set();

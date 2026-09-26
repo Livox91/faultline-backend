@@ -8,6 +8,7 @@ const {
   saveState,
   statePath,
   readFileSync,
+  run,
 } = require('./onboarding/lib.cjs');
 const {
   windowsExcludedTcpRanges,
@@ -17,6 +18,46 @@ const {
 
 if (Number(process.versions.node.split('.')[0]) < 22)
   throw new Error(`Node.js 22+ is required; found ${process.version}`);
+
+const stripeShim = resolve(root, 'node_modules/@stripe/cli/bin/shim.js');
+const stripeReady = () => {
+  if (!existsSync(stripeShim)) return false;
+  try {
+    run(process.execPath, [stripeShim, '--version'], { timeout: 10_000 });
+    return true;
+  } catch {
+    return false;
+  }
+};
+if (!stripeReady()) {
+  console.log('Installing the project-local Stripe CLI...');
+  try {
+    // @stripe/cli is a devDependency. This also repairs a checkout installed with
+    // `npm install --omit=dev`, without modifying global tools or requiring admin rights.
+    run(
+      'npm',
+      [
+        'install',
+        '--include=dev',
+        '--include=optional',
+        '--no-audit',
+        '--no-fund',
+      ],
+      {
+        inherit: true,
+        timeout: 180_000,
+      },
+    );
+  } catch (error) {
+    throw new Error(
+      `Stripe CLI installation failed. Run "npm install", then rerun "npm run setup".\n${error.message}`,
+    );
+  }
+}
+if (!stripeReady())
+  throw new Error(
+    'Stripe CLI installation is incomplete. Run "npm install --include=dev --include=optional" and retry.',
+  );
 
 const secret = () => randomBytes(32).toString('base64url');
 const force = process.argv.includes('--force');
@@ -200,7 +241,8 @@ for (const [relative, required] of Object.entries(requiredLocalFields)) {
     const pattern = new RegExp(`^${key}=.*$`, 'm');
     if (pattern.test(updated)) updated = updated.replace(pattern, line);
     else {
-      const separator = updated.endsWith('\n') || updated.length === 0 ? '' : '\n';
+      const separator =
+        updated.endsWith('\n') || updated.length === 0 ? '' : '\n';
       updated = `${updated}${separator}${line}\n`;
     }
   }
@@ -242,3 +284,19 @@ console.log(
 console.log(
   'Development credentials were stored locally and were not printed.',
 );
+console.log(
+  'Stripe CLI is installed locally; use it through npm exec -- stripe.',
+);
+const api = parseEnv(resolve(root, 'apps/api/.env'));
+console.log('\nNext commands:');
+if (
+  api.BILLING_ENABLED === 'true' &&
+  !api.STRIPE_SECRET_KEY &&
+  !process.env.STRIPE_API_KEY
+)
+  console.log(
+    '  npm exec -- stripe login   # required for local billing webhooks',
+  );
+console.log('  npm run preflight');
+console.log('  npm run faultline:start');
+console.log('  npm run cluster:onboard');

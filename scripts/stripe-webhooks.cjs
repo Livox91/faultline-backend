@@ -98,8 +98,18 @@ const NPM_STRIPE_EXE =
         'stripe.exe',
       )
     : undefined;
+const LOCAL_STRIPE_BIN = resolve(
+  __dirname,
+  '..',
+  'node_modules',
+  '@stripe',
+  `cli-${process.platform}-${process.arch}`,
+  'bin',
+  process.platform === 'win32' ? 'stripe.exe' : 'stripe',
+);
 const STRIPE_BIN =
   process.env.STRIPE_CLI ||
+  (existsSync(LOCAL_STRIPE_BIN) ? LOCAL_STRIPE_BIN : undefined) ||
   (NPM_STRIPE_EXE && existsSync(NPM_STRIPE_EXE) ? NPM_STRIPE_EXE : 'stripe');
 const NEEDS_SHELL = process.platform === 'win32' && !/\.exe$/i.test(STRIPE_BIN);
 
@@ -136,9 +146,7 @@ function stripeEnvironment() {
     process.env.STRIPE_API_KEY ||
     process.env.STRIPE_SECRET_KEY ||
     readEnvFile(API_ENV).STRIPE_SECRET_KEY;
-  return apiKey
-    ? { ...process.env, STRIPE_API_KEY: apiKey }
-    : process.env;
+  return apiKey ? { ...process.env, STRIPE_API_KEY: apiKey } : process.env;
 }
 
 function stripeAvailable() {
@@ -174,8 +182,7 @@ function printSecret() {
  */
 function ensureWebhookSecret() {
   const env = readEnvFile(API_ENV);
-  if (env.BILLING_ENABLED !== 'true')
-    return { skipped: 'billing_disabled' };
+  if (env.BILLING_ENABLED !== 'true') return { skipped: 'billing_disabled' };
   if (!stripeAvailable()) return { skipped: 'stripe_cli_not_installed' };
 
   const { secret, error } = printSecret();
@@ -246,8 +253,8 @@ function startWebhookForwarding({ port = 3000 } = {}) {
           'test purchases will complete at Stripe but provision no account',
         remedy:
           outcome.skipped === 'stripe_cli_not_installed'
-            ? 'install the Stripe CLI: https://stripe.com/docs/stripe-cli'
-            : 'run: stripe login',
+            ? 'run: npm install, then npm run setup'
+            : 'run: npm exec -- stripe login',
       });
     return () => {};
   }
@@ -272,6 +279,7 @@ module.exports = {
   ensureWebhookSecret,
   startForwarder,
   startWebhookForwarding,
+  stripeAvailable,
   FORWARDED_EVENTS,
 };
 
