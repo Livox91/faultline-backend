@@ -80,7 +80,27 @@ function setEnvValue(path, key, value) {
  * though the command works perfectly in a terminal. `STRIPE_CLI` overrides the whole
  * question for anyone with it installed somewhere unusual.
  */
-const STRIPE_BIN = process.env.STRIPE_CLI || 'stripe';
+// The npm-installed Windows launcher is a `.cmd` file whose Node shim waits on the
+// native CLI. When Faultline's startup console closes, that process chain receives
+// CTRL_CLOSE_EVENT and the listener exits with 0xC000013A. Prefer the bundled native
+// executable so the detached backend owns the actual long-running listener directly.
+const NPM_STRIPE_EXE =
+  process.platform === 'win32' && process.env.APPDATA
+    ? resolve(
+        process.env.APPDATA,
+        'npm',
+        'node_modules',
+        '@stripe',
+        'cli',
+        'node_modules',
+        `@stripe/cli-win32-${process.arch}`,
+        'bin',
+        'stripe.exe',
+      )
+    : undefined;
+const STRIPE_BIN =
+  process.env.STRIPE_CLI ||
+  (NPM_STRIPE_EXE && existsSync(NPM_STRIPE_EXE) ? NPM_STRIPE_EXE : 'stripe');
 const NEEDS_SHELL = process.platform === 'win32' && !/\.exe$/i.test(STRIPE_BIN);
 
 /**
@@ -96,9 +116,30 @@ const stripeSync = (args, options = {}) =>
     ? spawnSync([STRIPE_BIN, ...args].join(' '), {
         encoding: 'utf8',
         shell: true,
+        env: stripeEnvironment(),
         ...options,
       })
-    : spawnSync(STRIPE_BIN, args, { encoding: 'utf8', ...options });
+    : spawnSync(STRIPE_BIN, args, {
+        encoding: 'utf8',
+        env: stripeEnvironment(),
+        ...options,
+      });
+
+/**
+ * Lets the CLI reuse the API's local test key without putting it in the process list.
+ * An explicitly exported STRIPE_API_KEY still wins, which supports developers who use
+ * a different restricted key for CLI operations. Interactive `stripe login` remains a
+ * valid fallback when neither key is configured.
+ */
+function stripeEnvironment() {
+  const apiKey =
+    process.env.STRIPE_API_KEY ||
+    process.env.STRIPE_SECRET_KEY ||
+    readEnvFile(API_ENV).STRIPE_SECRET_KEY;
+  return apiKey
+    ? { ...process.env, STRIPE_API_KEY: apiKey }
+    : process.env;
+}
 
 function stripeAvailable() {
   const probe = stripeSync(['--version']);
@@ -159,8 +200,12 @@ function startForwarder({ port = 3000, events = FORWARDED_EVENTS } = {}) {
     ? spawn([STRIPE_BIN, ...args].join(' '), {
         stdio: ['ignore', 'inherit', 'inherit'],
         shell: true,
+        env: stripeEnvironment(),
       })
-    : spawn(STRIPE_BIN, args, { stdio: ['ignore', 'inherit', 'inherit'] });
+    : spawn(STRIPE_BIN, args, {
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: stripeEnvironment(),
+      });
 
   child.on('error', (error) =>
     log('stripe_listener_failed', { reason: error.message }),

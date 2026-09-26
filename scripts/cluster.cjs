@@ -277,8 +277,31 @@ async function clickhouseQuery(config, query, parameters = {}) {
   });
   const body = await response.text();
   if (!response.ok)
-    throw new Error(`ClickHouse cleanup failed with HTTP ${response.status}`);
+    throw new Error(`ClickHouse query failed with HTTP ${response.status}`);
   return body;
+}
+
+async function findOnboardingLog(clusterId) {
+  const config = clickhouseConfig();
+  const rows = await clickhouseQuery(
+    config,
+    `SELECT event_timestamp, pod, message
+       FROM ${config.database}.telemetry_logs
+      WHERE cluster_id = {cluster:String}
+        AND namespace = {namespace:String}
+        AND event_timestamp >= now() - INTERVAL 10 MINUTE
+        AND position(message, {marker:String}) > 0
+      ORDER BY event_timestamp DESC
+      LIMIT 1
+      FORMAT JSONEachRow`,
+    {
+      cluster: clusterId,
+      namespace: onboardingNamespace,
+      marker: 'FAULTLINE_ONBOARDING_TEST',
+    },
+  );
+  const first = rows.split(/\r?\n/).find(Boolean);
+  return first ? JSON.parse(first) : undefined;
 }
 
 async function onboardingEventIds(clusterId) {
@@ -831,24 +854,12 @@ async function verify(state = loadState(), options = {}) {
   const deadline = Date.now() + 120_000;
   let received;
   while (Date.now() < deadline && !received) {
-    const startTime = new Date(Date.now() - 10 * 60_000).toISOString();
-    const endTime = new Date(Date.now() + 60_000).toISOString();
-    const query = new URLSearchParams({
-      clusterId: state.clusterId,
-      namespace: 'faultline-onboarding',
-      search: 'FAULTLINE_ONBOARDING_TEST',
-      startTime,
-      endTime,
-      limit: '20',
-    });
     try {
-      const logs = await requestJson(
-        `http://127.0.0.1:3000/telemetry/logs?${query}`,
-        { timeout: 5_000 },
-      );
-      received = logs.items?.find((item) =>
-        item.message.includes('FAULTLINE_ONBOARDING_TEST'),
-      );
+      // The telemetry API is intentionally authenticated. Onboarding is a local
+      // operator command with ClickHouse credentials already configured, so verify
+      // persistence directly instead of turning an expected API 401 into a false
+      // "log did not reach ClickHouse" timeout.
+      received = await findOnboardingLog(state.clusterId);
     } catch {}
     if (!received)
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 3_000));
@@ -926,6 +937,7 @@ async function cleanup() {
       timeout: 300_000,
     });
   }
+  cleanupTestWorkload(state);
   console.log(
     'Removed temporary onboarding test resources and persisted data.',
   );

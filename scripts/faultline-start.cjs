@@ -1,4 +1,4 @@
-const { openSync, closeSync, unlinkSync } = require('node:fs');
+const { openSync, closeSync, unlinkSync, statSync } = require('node:fs');
 const {
   root,
   localDirectory,
@@ -6,6 +6,7 @@ const {
   existsSync,
   readFileSync,
   writeFileSync,
+  parseEnv,
   run,
   spawn,
   requestJson,
@@ -69,6 +70,9 @@ try {
 }
 
 require('node:fs').mkdirSync(localDirectory, { recursive: true });
+// Only inspect output from this launch when deciding whether billing webhooks started.
+// The log is append-only and may contain successful (or failed) attempts from days ago.
+const logStart = existsSync(logPath) ? statSync(logPath).size : 0;
 const output = openSync(logPath, 'a');
 const child = spawn(process.execPath, ['scripts/dev-pipeline.cjs'], {
   cwd: root,
@@ -93,9 +97,22 @@ writeFileSync(pidPath, String(child.pid), 'utf8');
         ),
       );
       if (services.every((item) => ['ok', 'degraded'].includes(item.status))) {
+        const billingEnabled =
+          parseEnv(resolve(root, 'apps/api/.env')).BILLING_ENABLED === 'true';
+        if (billingEnabled) {
+          const launchOutput = readFileSync(logPath)
+            .subarray(logStart)
+            .toString('utf8');
+          if (!launchOutput.includes('"event":"stripe_webhooks_forwarding"'))
+            throw new Error(
+              `Applications are healthy, but Stripe webhook forwarding did not start. Inspect ${logPath}`,
+            );
+        }
         console.log(
           'Faultline API, ingestion, processor, and storage are ready.',
         );
+        if (billingEnabled)
+          console.log('Stripe webhook forwarding is active.');
         console.log(`Runtime log: ${logPath}`);
         return;
       }
