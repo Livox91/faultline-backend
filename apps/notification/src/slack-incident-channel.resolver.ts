@@ -1,28 +1,30 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { Incident } from '@faultline/incidents';
-import {
-  NOTIFICATION_CONFIG,
-  type NotificationWorkerConfig,
-} from './config';
+import type { SlackIntegration } from '@faultline/notifications';
+import type { NotificationWorkerConfig } from './config';
 
 @Injectable()
 export class SlackIncidentChannelResolver {
-  constructor(
-    @Inject(NOTIFICATION_CONFIG)
-    private readonly config: NotificationWorkerConfig,
-  ) {}
-
-  resolve(incident: Incident): string | undefined {
-    const slack = this.config.slack;
+  constructor(private readonly legacyConfig?: NotificationWorkerConfig) {}
+  resolve(incident: Incident, slack?: SlackIntegration): string | undefined {
+    const settings = slack ?? (this.legacyConfig ? {
+      organizationId: 'test',
+      enabled: this.legacyConfig.slack.enabled,
+      botToken: this.legacyConfig.slack.botToken,
+      incidentChannelId: this.legacyConfig.slack.incidentChannelId,
+      serviceChannels: this.legacyConfig.slack.serviceChannels,
+      createdAt: '', updatedAt: '',
+    } : undefined);
+    if (!settings) return undefined;
     const service = selectedService(incident);
-    if (!service) return slack.incidentChannelId;
+    if (!service) return settings.incidentChannelId;
 
-    const serviceChannel = slack.serviceChannels[service];
+    const serviceChannel = settings.serviceChannels[service];
     if (serviceChannel) return serviceChannel;
 
-    const team = slack.serviceOwners[service];
-    const teamChannel = team ? slack.teamChannels[team.toLowerCase()] : undefined;
-    return teamChannel ?? slack.incidentChannelId;
+    const legacyTeam = this.legacyConfig?.slack.serviceOwners[service];
+    return (legacyTeam ? this.legacyConfig?.slack.teamChannels[legacyTeam.toLowerCase()] : undefined)
+      ?? settings.incidentChannelId;
   }
 }
 

@@ -340,3 +340,4 @@ export * from './reporting';
 export * from './rbac';
 export * from './projects';
 export * from './billing';
+export * from './slack-integrations';

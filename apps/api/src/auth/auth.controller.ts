@@ -198,6 +198,7 @@ export class AuthController {
     const assignments = await this.assignments.listForUser(user.id);
     const authenticated: AuthenticatedUser = {
       id: user.id,
+      organizationId: user.organizationId,
       email: user.email,
       username: user.username,
       name: user.name,

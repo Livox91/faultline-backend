@@ -30,6 +30,7 @@ import {
   PostgresExternalTicketRepository,
   PostgresProjectAssignmentRepository,
   PostgresUserRepository,
+  PostgresSlackIntegrationRepository,
 } from '@faultline/database';
 import {
   CONTACT_REPOSITORY, ESCALATION_EXECUTION_REPOSITORY, ESCALATION_POLICY_REPOSITORY,
@@ -40,6 +41,7 @@ import {
   NOTIFICATION_AUDIT_REPOSITORY, NOTIFICATION_GROUP_REPOSITORY,
   ON_CALL_SCHEDULE_REPOSITORY,ON_CALL_SHIFT_REPOSITORY,AVAILABILITY_OVERRIDE_REPOSITORY,InMemoryOnCallScheduleRepository,InMemoryOnCallShiftRepository,InMemoryAvailabilityOverrideRepository,
   EXTERNAL_TICKET_REPOSITORY,InMemoryExternalTicketRepository,
+  SLACK_INTEGRATION_REPOSITORY,InMemorySlackIntegrationRepository,
 } from '@faultline/notifications';
 import {
   AUDIT_LOG_REPOSITORY,
@@ -136,6 +138,7 @@ import { SubscriptionProvisioningService } from './billing/provisioning.service'
 import { PAYMENT_GATEWAY, StripeGateway } from './billing/stripe.gateway';
 import { AdminUsersController } from './auth/users.controller';
 import { AdminAuditController } from './auth/audit.controller';
+import { SlackIntegrationController, SlackIntegrationService } from './slack-integration.controller';
 
 export const CLICKHOUSE_CONNECTION = Symbol('faultline.clickhouse-connection');
 
@@ -180,6 +183,7 @@ const infrastructureProviders: Provider[] =
         { provide: ON_CALL_SHIFT_REPOSITORY, useClass: InMemoryOnCallShiftRepository },
         { provide: AVAILABILITY_OVERRIDE_REPOSITORY, useClass: InMemoryAvailabilityOverrideRepository },
         { provide: EXTERNAL_TICKET_REPOSITORY, useClass: InMemoryExternalTicketRepository },
+        { provide: SLACK_INTEGRATION_REPOSITORY, useClass: InMemorySlackIntegrationRepository },
         { provide: USER_REPOSITORY, useFactory: getDevelopmentUserRepository },
         {
           provide: PROJECT_ASSIGNMENT_REPOSITORY,
@@ -250,6 +254,7 @@ const infrastructureProviders: Provider[] =
         { provide: ON_CALL_SHIFT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresOnCallShiftRepository(database) },
         { provide: AVAILABILITY_OVERRIDE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresAvailabilityOverrideRepository(database) },
         { provide: EXTERNAL_TICKET_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresExternalTicketRepository(database) },
+        { provide: SLACK_INTEGRATION_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresSlackIntegrationRepository(database, readEnvFlag('SLACK_TOKEN_ENCRYPTION_KEY')) },
         {
           provide: USER_REPOSITORY,
           inject: [DATABASE],
@@ -445,6 +450,7 @@ const billingProviders: Provider[] = billingEnabled
     IncidentAnalyticsController,
     SystemSummaryController,
     OnCallController,
+    SlackIntegrationController,
   ],
   providers: [
     ...infrastructureProviders,
@@ -454,6 +460,7 @@ const billingProviders: Provider[] = billingEnabled
     PlanEntitlements,
     LoginThrottle,
     AdminBootstrap,
+    SlackIntegrationService,
     {
       provide: TELEMETRY_SCOPE_RESOLVER,
       useClass: UserTelemetryScopeResolver,

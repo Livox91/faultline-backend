@@ -1,8 +1,5 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import {
-  NOTIFICATION_CONFIG,
-  type NotificationWorkerConfig,
-} from './config';
+import type { NotificationWorkerConfig } from './config';
 
 export interface SlackPostMessageInput {
   channel: string;
@@ -24,9 +21,9 @@ export interface SlackThreadReplyInput extends SlackPostMessageInput {
 }
 
 export interface SlackClient {
-  postMessage(input: SlackPostMessageInput): Promise<SlackPostedMessage>;
-  updateMessage(input: SlackUpdateMessageInput): Promise<SlackPostedMessage>;
-  postThreadReply(input: SlackThreadReplyInput): Promise<SlackPostedMessage>;
+  postMessage(input: SlackPostMessageInput, botToken?: string): Promise<SlackPostedMessage>;
+  updateMessage(input: SlackUpdateMessageInput, botToken?: string): Promise<SlackPostedMessage>;
+  postThreadReply(input: SlackThreadReplyInput, botToken?: string): Promise<SlackPostedMessage>;
 }
 
 export const SLACK_CLIENT = Symbol('faultline.slack-client');
@@ -50,37 +47,44 @@ export class SlackApiError extends Error {
 @Injectable()
 export class HttpSlackClient implements SlackClient {
   private readonly fetcher: Fetcher;
+  private readonly legacyToken?: string;
   constructor(
-    @Inject(NOTIFICATION_CONFIG)
-    private readonly config: NotificationWorkerConfig,
-    @Optional() @Inject(SLACK_FETCH) fetcher?: Fetcher,
+    @Optional() @Inject(SLACK_FETCH)
+    configOrFetcher?: NotificationWorkerConfig | Fetcher,
+    fetcher?: Fetcher,
   ) {
-    this.fetcher = fetcher ?? fetch;
+    this.fetcher =
+      fetcher ?? (typeof configOrFetcher === 'function' ? configOrFetcher : undefined) ?? fetch;
+    this.legacyToken =
+      typeof configOrFetcher === 'object'
+        ? configOrFetcher.slack.botToken
+        : undefined;
   }
 
-  async postMessage(input: SlackPostMessageInput): Promise<SlackPostedMessage> {
-    return this.request('chat.postMessage', input);
+  async postMessage(input: SlackPostMessageInput, botToken?: string): Promise<SlackPostedMessage> {
+    return this.request('chat.postMessage', input, botToken);
   }
 
-  async updateMessage(input: SlackUpdateMessageInput): Promise<SlackPostedMessage> {
+  async updateMessage(input: SlackUpdateMessageInput, botToken?: string): Promise<SlackPostedMessage> {
     const { timestamp, ...message } = input;
-    return this.request('chat.update', { ...message, ts: timestamp });
+    return this.request('chat.update', { ...message, ts: timestamp }, botToken);
   }
 
-  async postThreadReply(input: SlackThreadReplyInput): Promise<SlackPostedMessage> {
+  async postThreadReply(input: SlackThreadReplyInput, botToken?: string): Promise<SlackPostedMessage> {
     const { threadTimestamp, ...message } = input;
     return this.request('chat.postMessage', {
       ...message,
       thread_ts: threadTimestamp,
-    });
+    }, botToken);
   }
 
   private async request(
     method: 'chat.postMessage' | 'chat.update',
     input: object,
+    token?: string,
   ): Promise<SlackPostedMessage> {
-    const token = this.config.slack.botToken;
-    if (!this.config.slack.enabled || !token)
+    token ??= this.legacyToken;
+    if (!token)
       throw new Error('Slack integration is not configured');
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
