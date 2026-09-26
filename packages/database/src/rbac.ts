@@ -20,6 +20,7 @@ import type { PostgresConnection } from './index';
 
 interface UserRow {
   id: string;
+  organization_id: string;
   email: string;
   username: string | null;
   name: string;
@@ -35,6 +36,7 @@ interface UserRow {
 
 const toUser = (row: UserRow): UserRecord => ({
   id: row.id,
+  organizationId: row.organization_id,
   email: row.email,
   username: row.username,
   name: row.name,
@@ -48,7 +50,7 @@ const toUser = (row: UserRow): UserRecord => ({
   updatedAt: row.updated_at.toISOString(),
 });
 
-const columns = `id, email, username, name, role, password_hash, external_subject, status, mfa_enabled, must_change_password, created_at, updated_at`;
+const columns = `id, organization_id, email, username, name, role, password_hash, external_subject, status, mfa_enabled, must_change_password, created_at, updated_at`;
 
 /** Raised distinctly so the API can answer 409 rather than 500. */
 const isUniqueViolation = (error: unknown): boolean =>
@@ -112,12 +114,19 @@ export class PostgresUserRepository implements UserRepository {
       ? await hashPassword(user.password)
       : null;
     try {
+      const organizationId = user.organizationId ?? 'default';
+      await this.connection.pool.query(
+        `INSERT INTO organizations (id, name) VALUES ($1, $2)
+         ON CONFLICT (id) DO NOTHING`,
+        [organizationId, organizationId === 'default' ? 'Default organization' : user.name.trim()],
+      );
       const result = await this.connection.pool.query<UserRow>(
-        `INSERT INTO users (id, email, username, name, role, password_hash, external_subject, status, mfa_enabled, must_change_password)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `INSERT INTO users (id, organization_id, email, username, name, role, password_hash, external_subject, status, mfa_enabled, must_change_password)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING ${columns}`,
         [
           randomUUID(),
+          organizationId,
           user.email.trim().toLowerCase(),
           user.username ?? null,
           user.name.trim(),

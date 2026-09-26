@@ -10,6 +10,8 @@ import {
   type IncidentTicketPublisher,
   type IncidentTicketUpdatePayload,
   type IncidentLifecycleEvent,
+  SLACK_INTEGRATION_REPOSITORY,
+  type SlackIntegrationRepository,
 } from '@faultline/notifications';
 import { ApplicationLogger } from '@faultline/platform';
 import {
@@ -40,6 +42,8 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
     private readonly channels: SlackIncidentChannelResolver,
     private readonly timeline: SlackIncidentTimelineMapper = new SlackIncidentTimelineMapper(),
     @Optional() private readonly logger?: ApplicationLogger,
+    @Optional() @Inject(SLACK_INTEGRATION_REPOSITORY)
+    private readonly integrations?: SlackIntegrationRepository,
   ) {}
 
   async createIncidentTicket(
@@ -56,13 +60,12 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
   private async create(
     payload: IncidentTicketPayload,
   ): Promise<ExternalTicket | undefined> {
-    const slack = this.config.slack;
-    if (!slack.enabled) return undefined;
-
     // Always publish the durable aggregate, never a broker payload or raw telemetry.
     const incident = await this.incidents.getIncident(payload.incidentId);
     if (!incident || !incident.classification) return undefined;
-    const channel = this.channels.resolve(incident);
+    const slack = await this.integrationForIncident(incident.id);
+    if (!slack?.enabled || !slack.botToken) return undefined;
+    const channel = this.channels.resolve(incident, slack);
     if (!channel) return undefined;
 
     const existing = await this.tickets.findByIncidentAndProvider(
@@ -79,12 +82,12 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
     try {
       const message = this.messages.buildIncidentCreatedMessage(
         incident,
-        slack.dashboardUrl,
+        this.config.slack.dashboardUrl,
       );
       posted = await this.slack.postMessage({
         channel,
         ...message,
-      });
+      }, slack.botToken);
     } catch (error) {
       await this.idempotency.release(key).catch(() => undefined);
       this.failure('slack.ticket.create_failed', incident.id, error, {
@@ -115,11 +118,12 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
   async updateIncidentTicket(
     payload: IncidentTicketUpdatePayload,
   ): Promise<ExternalTicket | undefined> {
-    if (!this.config.slack.enabled) return undefined;
     let ticket: ExternalTicket | undefined;
     try {
       const incident = await this.incidents.getIncident(payload.incidentId);
       if (!incident) return undefined;
+      const slack = await this.integrationForIncident(incident.id);
+      if (!slack?.enabled || !slack.botToken) return undefined;
       ticket = await this.tickets.findByIncidentAndProvider(
         incident.id,
         'slack',
@@ -134,7 +138,7 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
         channel: ticket.channelId,
         timestamp: ticket.externalMessageId,
         ...message,
-      });
+      }, slack.botToken);
       const updated = (await this.tickets.markUpdated(ticket.id, new Date().toISOString())) ?? ticket;
       this.success('slack.ticket.updated', incident.id, updated);
       return updated;
@@ -150,9 +154,12 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
   }
 
   async publishTimelineUpdates(event: IncidentLifecycleEvent): Promise<void> {
-    if (!this.config.slack.enabled) return;
     let ticket: ExternalTicket | undefined;
+    let botToken: string | undefined;
     try {
+      const slack = await this.integrationForIncident(event.incident.id);
+      if (!slack?.enabled || !slack.botToken) return;
+      botToken = slack.botToken;
       ticket = await this.tickets.findByIncidentAndProvider(event.incident.id, 'slack');
     } catch (error) {
       this.failure('slack.thread.publish_failed', event.incident.id, error, {
@@ -179,7 +186,7 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
           channel: ticket.channelId,
           threadTimestamp: ticket.externalMessageId,
           ...this.messages.buildTimelineUpdate(update),
-        });
+        }, botToken);
         this.logger?.log({
           event: 'slack.thread.published',
           incidentId: event.incident.id,
@@ -205,6 +212,21 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
       channelId:ticket.channelId,
       externalMessageId:ticket.externalMessageId,
     });
+  }
+
+  private async integrationForIncident(incidentId: string) {
+    if (this.integrations)
+      return this.integrations.findForIncident(incidentId);
+    const slack = this.config.slack;
+    return {
+      organizationId: 'legacy-test',
+      enabled: slack.enabled,
+      ...(slack.botToken ? { botToken: slack.botToken } : {}),
+      ...(slack.incidentChannelId ? { incidentChannelId: slack.incidentChannelId } : {}),
+      serviceChannels: slack.serviceChannels,
+      createdAt: '',
+      updatedAt: '',
+    };
   }
 
   private failure(

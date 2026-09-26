@@ -99,15 +99,22 @@ APP_VERSION=0.1.0
 PORT=3004
 DATABASE_URL=postgresql://faultline:<password>@127.0.0.1:5432/faultline
 BROKER_URL=nats://127.0.0.1:4222
-RETELL_API_KEY=<retell-api-key>
-RETELL_FROM_NUMBER=+15551234567
-RETELL_VOICE_AGENT_ID=<voice-agent-id>
-RETELL_SMS_AGENT_ID=<optional-chat-agent-id>
+# Leave these blank for a Slack-only deployment. Configure the first three together
+# to enable voice, then add the SMS agent ID if SMS is also required.
+RETELL_API_KEY=
+RETELL_FROM_NUMBER=
+RETELL_VOICE_AGENT_ID=
+RETELL_SMS_AGENT_ID=
 NOTIFICATION_ORGANIZATION_ID=default
 NOTIFICATION_HIGH_ESCALATION_ENABLED=false
 ```
 
-Phone numbers must use E.164 format, such as `+15551234567`. `RETELL_SMS_AGENT_ID` is optional unless a policy contains an SMS channel. Keep high-severity calling disabled until the critical-only path is working.
+Retell is optional for a Slack-only notification worker. Once any Retell value is set,
+`RETELL_API_KEY`, `RETELL_FROM_NUMBER`, and `RETELL_VOICE_AGENT_ID` must be configured
+together; partial configuration fails closed. Phone numbers must use E.164 format, such
+as `+15551234567`. `RETELL_SMS_AGENT_ID` is additionally required when a policy contains
+an SMS channel. Keep high-severity calling disabled until the critical-only path is
+working.
 
 The notification app also needs the same PostgreSQL and NATS configuration used by the API and processor. Apply all migrations before starting it:
 
@@ -127,12 +134,30 @@ Invoke-RestMethod http://localhost:3004/health
 Invoke-RestMethod http://localhost:3004/health/ready
 ```
 
+The current `npm run faultline:start` development composition starts API, ingestion,
+processor, and storage, but not the notification application. Run notification as a
+separate supervised process in production (or as its own Kubernetes workload); otherwise
+voice, SMS, and Slack configuration can be correct while no notification consumer is
+running.
+
 ## 3. Configure recipients and escalation
+
+The contact, group, on-call, and escalation-policy endpoints are authenticated management
+endpoints. Sign in as an Admin and include its access token in these examples:
+
+```powershell
+$headers = @{ Authorization = 'Bearer <admin-access-token>' }
+```
+
+Operationally these writes should be Admin-only. The current controllers require an
+authenticated account but do not yet carry an explicit Admin-role decorator, so strict
+Admin-only enforcement is an implementation gap to close before exposing the management
+API to untrusted users.
 
 Use the API on port `3000` to create a test contact. Use a phone number you control:
 
 ```powershell
-$contact = Invoke-RestMethod http://localhost:3000/contacts -Method Post -ContentType 'application/json' -Body (@{
+$contact = Invoke-RestMethod http://localhost:3000/contacts -Method Post -Headers $headers -ContentType 'application/json' -Body (@{
   organizationId = 'default'
   name = 'Calling Agent Test'
   role = 'ENGINEER'
@@ -161,7 +186,7 @@ $policyBody = @{
     waitBeforeNextStepMs = 0
   })
 }
-Invoke-RestMethod http://localhost:3000/escalation-policies -Method Post -ContentType 'application/json' -Body ($policyBody | ConvertTo-Json -Depth 8)
+Invoke-RestMethod http://localhost:3000/escalation-policies -Method Post -Headers $headers -ContentType 'application/json' -Body ($policyBody | ConvertTo-Json -Depth 8)
 ```
 
 An escalation step may instead target an on-call schedule:
@@ -172,7 +197,207 @@ An escalation step may instead target an on-call schedule:
 
 Faultline resolves the active engineer when each attempt begins, validates contact/channel availability, and stores the concrete contact on the attempt.
 
-## 4. Test without making a real call
+### Production model: assign an onsite engineer to a service
+
+There are two distinct identities to configure. They should normally represent the same
+person, but they serve different security boundaries and are not linked automatically:
+
+1. A Faultline `onsiteengineer` **user account** controls sign-in and which projects the
+   engineer may inspect. Create it in the Admin users screen or with `npm run user:create`,
+   then assign the projects that contain the service.
+2. A notification **contact** with role `ENGINEER` or `SENIOR_ENGINEER` stores the E.164
+   phone number and whether voice and SMS delivery are permitted. Put this contact in a
+   group or an on-call schedule, and target it from a service-specific escalation policy.
+
+`npm run cluster:onboard` currently registers the Kubernetes cluster and installs the
+collectors only. It does **not** discover a service owner, create a user/contact, or attach
+an escalation policy. The initial plan—collect service ownership while onboarding a
+container—therefore needs to be implemented as an Admin UI/service-onboarding workflow.
+Until that workflow exists, an Admin performs the following steps after a workload is
+onboarded:
+
+1. Identify the service value Faultline records for incidents. Escalation-policy
+   `match.services` currently matches `incident.primaryResource.workload` exactly, so use
+   the Kubernetes workload name and preserve its spelling/case.
+2. Create or invite the `onsiteengineer` user and assign the relevant Faultline project.
+   Project assignment controls data access; it does not configure calls or SMS.
+3. Create the engineer's notification contact with an E.164 number and the required
+   channel flags.
+4. For a single permanent owner, target the contact directly. For a team, create a
+   notification group. For rotations, create an on-call schedule, add dated shifts and
+   overrides, and target `ON_CALL_SCHEDULE` from the escalation step.
+5. Create one enabled escalation policy whose `match.services` contains that workload.
+   Put the primary engineer/on-call schedule first and senior or team contacts in later
+   steps.
+6. Verify the current rotation with
+   `GET /on-call/schedules/:id/current`, then run one controlled incident test.
+
+For example, a service-specific match and an on-call target have this shape:
+
+```json
+{
+  "organizationId": "default",
+  "name": "Payments production escalation",
+  "enabled": true,
+  "sendResolution": true,
+  "match": {
+    "severities": ["CRITICAL"],
+    "services": ["payments-api"]
+  },
+  "steps": [
+    {
+      "order": 1,
+      "target": { "type": "ON_CALL_SCHEDULE", "id": "<payments-schedule-id>" },
+      "channels": ["VOICE", "SMS"],
+      "maximumAttempts": 2,
+      "retryDelayMs": 60000,
+      "waitBeforeNextStepMs": 120000
+    }
+  ]
+}
+```
+
+The current Contacts & On-call and Escalation pages display backend configuration, but
+do not yet provide the complete create/edit workflow. In a deployed product, these
+operations should be exposed as an Admin-only setup wizard rather than requiring direct
+API calls.
+
+### Production model: configure end customers for SMS
+
+End customers are notification recipients, not Faultline login users. Create a contact
+with role `END_USER`, enable SMS, disable voice unless it is explicitly required, and add
+the contact to a group for the affected service or customer tenant:
+
+```powershell
+$customer = Invoke-RestMethod http://localhost:3000/contacts -Method Post -Headers $headers -ContentType 'application/json' -Body (@{
+  organizationId = 'default'
+  name = 'Acme Operations'
+  role = 'END_USER'
+  phoneNumber = '+15551234567'
+  smsEnabled = $true
+  voiceEnabled = $false
+  enabled = $true
+} | ConvertTo-Json)
+
+$customerGroup = Invoke-RestMethod http://localhost:3000/notification-groups -Method Post -Headers $headers -ContentType 'application/json' -Body (@{
+  organizationId = 'default'
+  name = 'Payments customers'
+  contactIds = @($customer.id)
+  enabled = $true
+} | ConvertTo-Json)
+```
+
+Add an `END_USER` communication rule to the service's escalation policy. These rules are
+separate from engineering escalation steps: the latter find an incident owner, while
+communication rules send audience-safe lifecycle updates.
+
+```json
+{
+  "audience": "END_USER",
+  "target": { "type": "GROUP", "id": "<payments-customers-group-id>" },
+  "channels": ["SMS"],
+  "subscriptions": ["INITIAL", "STATUS_UPDATES", "RESOLUTION"],
+  "services": ["payments"],
+  "minimumIntervalMs": 900000
+}
+```
+
+For communication rules, `services` currently matches `incident.logicalService`
+exactly. This may differ from the Kubernetes workload used by `match.services`; for
+example, the policy could match workload `payments-api` while public updates use logical
+service `payments`. Confirm both values from a real incident before enabling customer
+delivery. `minimumIntervalMs` suppresses repeated updates inside the interval, and the
+message builder deliberately omits cluster, namespace, container, evidence, and root
+cause details from end-user messages.
+
+Retell must have an SMS/chat agent in `RETELL_SMS_AGENT_ID`, and
+`RETELL_FROM_NUMBER` must be capable of sending SMS to the destination country. Faultline
+calls Retell's SMS chat API with the generated safe message and the recipient's E.164
+number.
+
+Production note: the current contact model records delivery eligibility but does not yet
+store consent evidence, locale, quiet hours, tenant ownership, opt-out state, or STOP
+handling. Those controls and applicable telecom/privacy requirements must be implemented
+before importing real customer lists. Until then, add only controlled recipients who
+have explicitly opted in.
+
+## 4. Configure Slack incident delivery
+
+Slack delivery is independent of Retell voice/SMS. The notification application creates
+one Slack incident ticket for a newly created classified incident, updates the top-level
+message as the incident changes, and posts significant lifecycle events as thread
+replies. Delivery is idempotent, and Slack failures are contained so they do not stop
+incident processing.
+
+### Create and install the Slack app
+
+1. Create a Slack app for the customer's workspace and add a bot user.
+2. Grant the bot the `chat:write` OAuth scope. If the bot will not be invited to public
+   channels, Slack may also require `chat:write.public`; inviting the bot explicitly is
+   the safer default. Private channels always require the bot to be invited.
+3. Install or reinstall the app to the workspace after changing scopes.
+4. Copy the Bot User OAuth Token (`xoxb-...`). Store it only in
+   `apps/notification/.env`; never put it in frontend code or commit it.
+5. Invite the bot to every default, service, and team channel it may use.
+6. Record channel IDs such as `C0123456789`, not display names such as
+   `#payments-incidents`. Slack exposes the ID in channel details and copied channel
+   links.
+
+Slack documents `chat:write` and `chat:write.public` in its official
+[OAuth scope reference](https://docs.slack.dev/reference/scopes/chat.write) and
+[public-channel scope reference](https://docs.slack.dev/reference/scopes/chat.write.public/).
+
+Configure `apps/notification/.env`:
+
+```dotenv
+SLACK_ENABLED=true
+SLACK_BOT_TOKEN=xoxb-<bot-token>
+SLACK_INCIDENT_CHANNEL_ID=C0123456789
+SLACK_DASHBOARD_URL=https://faultline.example.com/
+
+# Direct service -> channel routing. Keys are normalized to lowercase.
+SLACK_SERVICE_CHANNELS={"payments":"C1111111111","checkout":"C2222222222"}
+
+# Optional two-stage service -> owning team -> channel routing.
+SLACK_SERVICE_OWNERS={"catalog":"commerce","search":"discovery"}
+SLACK_TEAM_CHANNELS={"commerce":"C3333333333","discovery":"C4444444444"}
+```
+
+`SLACK_ENABLED=true` alone is insufficient: the integration becomes active only when
+both `SLACK_BOT_TOKEN` and `SLACK_INCIDENT_CHANNEL_ID` are present. Restart the
+notification application after changing the file:
+
+```powershell
+npm run build
+npm run start:notification
+```
+
+Channel selection follows this order:
+
+1. `SLACK_SERVICE_CHANNELS[service]`;
+2. `SLACK_SERVICE_OWNERS[service]` followed by `SLACK_TEAM_CHANNELS[team]`;
+3. `SLACK_INCIDENT_CHANNEL_ID` as the default.
+
+The selected service is the incident's logical service, then its primary workload, then
+the alphabetically first affected workload. Mapping keys are trimmed and lowercased.
+The dashboard URL is optional; when present, Slack messages link to
+`/incidents/:incidentId`.
+
+Test with a controlled classified incident and check the notification application's
+logs for `slack.ticket.created`, `slack.ticket.updated`, or a safe
+`slack.ticket.*_failed` event. An authenticated Faultline user can inspect the persisted
+ticket metadata with:
+
+```powershell
+Invoke-RestMethod http://localhost:3000/incidents/<incident-id>/external-tickets/slack -Headers $headers
+```
+
+If the response contains `{"ticket":null}`, check that Slack is fully enabled, the
+incident has a classification, the bot is a member of the resolved channel, the channel
+ID is correct, and the notification application—not only the API/processor/storage
+pipeline—is running.
+
+## 5. Test without making a real call
 
 Run the focused notification tests:
 
@@ -198,7 +423,7 @@ Invoke-WebRequest http://localhost:3004/v1/voice/actions -Method Post -ContentTy
 
 Both requests should return `401 Unauthorized`. Do not use a fabricated signature as a substitute for a real Retell end-to-end test.
 
-## 5. Perform one controlled real-call test
+## 6. Perform one controlled real-call test
 
 1. Confirm the policy has one step, one attempt, voice only, and your test contact.
 2. Confirm the notification app's readiness endpoint is healthy.
@@ -226,7 +451,7 @@ For a decline test, say that you cannot take the incident and verify the next co
 
 | Symptom | Check |
 | --- | --- |
-| Notification app fails at startup | Required Retell, database, application, and broker variables are present and valid |
+| Notification app fails at startup | Database, application, and broker variables are valid; if Retell is partially configured, supply all three core Retell values or leave all Retell values blank for Slack-only mode |
 | Retell API returns 401/403 | API key and agent ownership; do not log the key |
 | No call arrives | E.164 numbers, enabled contact, `voiceEnabled`, active policy match, active on-call shift, and Retell number outbound capability |
 | Voice action returns 401 | Retell signature header and the exact raw request body reached Faultline unchanged |
@@ -234,5 +459,8 @@ For a decline test, say that you cannot take the incident and verify the next co
 | Call succeeds but escalation continues | The agent submitted `ACKNOWLEDGE_INCIDENT`, not free-form text, and used the current call/attempt/contact IDs |
 | SMS fails | `RETELL_SMS_AGENT_ID` is configured and the contact is SMS-enabled |
 | Retry contacts the wrong engineer | Inspect the on-call schedule's active shift/override and `GET /on-call/schedules/:id/current` |
+| No customer SMS is sent | Contact role is `END_USER`, SMS is enabled, the communication rule targets that contact/group, its subscriptions include the lifecycle event, and its service exactly matches `incident.logicalService` |
+| No Slack ticket is created | Notification app is running; all three required Slack settings are present; incident is classified; bot belongs to the resolved channel; channel IDs and JSON maps are valid |
+| Slack uses the wrong channel | Check direct service mapping first, then service-owner/team mapping, then the default; keys are lowercase after parsing |
 
 Faultline intentionally refuses unsigned actions and mismatched incident, attempt, recipient, or provider-call relationships. Those failures protect incident state and should be fixed at the Retell mapping rather than bypassed.

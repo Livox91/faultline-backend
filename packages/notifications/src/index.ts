@@ -230,6 +230,62 @@ export interface IncidentTicketPayload {
   incidentId: string;
 }
 
+export interface SlackIntegration {
+  organizationId: string;
+  enabled: boolean;
+  botToken?: string;
+  incidentChannelId?: string;
+  serviceChannels: Readonly<Record<string, string>>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SlackIntegrationChanges {
+  enabled?: boolean;
+  botToken?: string | null;
+  incidentChannelId?: string | null;
+  serviceChannels?: Readonly<Record<string, string>>;
+}
+
+export interface SlackIntegrationRepository {
+  get(organizationId: string): Promise<SlackIntegration | undefined>;
+  findForIncident(incidentId: string): Promise<SlackIntegration | undefined>;
+  upsert(
+    organizationId: string,
+    changes: SlackIntegrationChanges,
+  ): Promise<SlackIntegration>;
+}
+
+export class InMemorySlackIntegrationRepository
+  implements SlackIntegrationRepository
+{
+  private readonly values = new Map<string, SlackIntegration>();
+  async get(organizationId: string) {
+    const value = this.values.get(organizationId);
+    return value ? structuredClone(value) : undefined;
+  }
+  async findForIncident() { return undefined; }
+  async upsert(organizationId: string, changes: SlackIntegrationChanges) {
+    const now = new Date().toISOString();
+    const current = this.values.get(organizationId);
+    const value: SlackIntegration = {
+      organizationId,
+      enabled: changes.enabled ?? current?.enabled ?? false,
+      ...(changes.botToken !== undefined
+        ? changes.botToken ? { botToken: changes.botToken } : {}
+        : current?.botToken ? { botToken: current.botToken } : {}),
+      ...(changes.incidentChannelId !== undefined
+        ? changes.incidentChannelId ? { incidentChannelId: changes.incidentChannelId } : {}
+        : current?.incidentChannelId ? { incidentChannelId: current.incidentChannelId } : {}),
+      serviceChannels: changes.serviceChannels ?? current?.serviceChannels ?? {},
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.values.set(organizationId, value);
+    return structuredClone(value);
+  }
+}
+
 export interface ExternalTicket {
   id: string;
   provider: 'slack';
@@ -311,6 +367,9 @@ export const INCIDENT_TICKET_PUBLISHER = Symbol(
 );
 export const EXTERNAL_TICKET_REPOSITORY = Symbol(
   'faultline.external-ticket-repository',
+);
+export const SLACK_INTEGRATION_REPOSITORY = Symbol(
+  'faultline.slack-integration-repository',
 );
 export const CONTACT_REPOSITORY = Symbol('faultline.contact-repository');
 export const NOTIFICATION_GROUP_REPOSITORY = Symbol('faultline.notification-group-repository');

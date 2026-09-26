@@ -12,6 +12,7 @@ import type {
 /** A stored user. `passwordHash` never leaves the repository layer. */
 export interface UserRecord {
   readonly id: string;
+  readonly organizationId: string;
   readonly email: string;
   readonly username: string | null;
   readonly name: string;
@@ -29,6 +30,7 @@ export interface UserRecord {
 }
 
 export interface NewUser {
+  organizationId?: string;
   email: string;
   name: string;
   role: Role;
@@ -146,6 +148,7 @@ export class InMemoryUserRepository implements UserRepository {
     const now = new Date().toISOString();
     const record: UserRecord = {
       id: randomUUID(),
+      organizationId: user.organizationId ?? 'default',
       email,
       username: user.username ?? null,
       name: user.name,

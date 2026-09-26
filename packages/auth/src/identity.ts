@@ -31,6 +31,7 @@ export interface ProjectAssignment {
  */
 export interface AuthenticatedUser {
   readonly id: string;
+  readonly organizationId: string;
   readonly email: string;
   /** Unique login handle. Null for accounts created before usernames existed. */
   readonly username: string | null;
@@ -152,6 +153,7 @@ export function assertPermission(
 export function presentUser(user: AuthenticatedUser) {
   return {
     id: user.id,
+    organizationId: user.organizationId,
     email: user.email,
     username: user.username,
     name: user.name,

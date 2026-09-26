@@ -103,7 +103,10 @@ export class ClustersController {
   @RequirePermission(PERMISSIONS.PROJECT_VIEW)
   @Header('Cache-Control', 'no-store')
   async list(@CurrentUser() user: AuthenticatedUser) {
-    const projects = await this.clusters.list(assignedProjectIds(user));
+    const projects = await this.clusters.list(
+      assignedProjectIds(user),
+      user.organizationId,
+    );
     return projects.map((project) => present(project, user));
   }
 
@@ -124,7 +127,7 @@ export class ClustersController {
   ) {
     if (!hasProjectAccess(user, id))
       throw new ForbiddenException('You do not have access to this project');
-    const project = await this.clusters.get(id);
+    const project = await this.clusters.get(id, user.organizationId);
     if (!project) throw new NotFoundException('Project not found');
     return present(project, user);
   }
@@ -144,6 +147,7 @@ export class ClustersController {
       const created = await this.clusters.create({
         id,
         name,
+        organizationId: actor.organizationId,
         ...(optionalText(body?.environment, 'environment')
           ? { environment: optionalText(body?.environment, 'environment')! }
           : {}),

@@ -133,6 +133,7 @@ export class AdminUsersController {
     let created: UserRecord;
     try {
       created = await this.users.create({
+        organizationId: actor.organizationId,
         email,
         name,
         role,
