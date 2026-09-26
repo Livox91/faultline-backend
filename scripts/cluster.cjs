@@ -6,6 +6,7 @@ const {
   parseEnv,
   loadState,
   saveState,
+  clearState,
   requestJson,
   publicEndpoint,
   kubeArgs,
@@ -75,6 +76,24 @@ function validateEndpoint(value) {
   return endpoint.toString().replace(/\/$/, '');
 }
 
+function controlPlaneServer(value) {
+  if (!value) return undefined;
+  const address = value.trim();
+  const host =
+    address.includes(':') && !address.includes('.') && !address.startsWith('[')
+      ? `[${address}]`
+      : address;
+  try {
+    const server = new URL(`https://${host}`);
+    if (server.pathname !== '/' || server.search || server.hash) throw new Error();
+    return server.origin;
+  } catch {
+    throw new Error(
+      'The Kubernetes control plane must be an IP address with an optional port, for example 127.0.0.1:6443.',
+    );
+  }
+}
+
 function detectKubernetes(execute = run) {
   try {
     execute('kubectl', ['version', '--client'], {
@@ -104,11 +123,18 @@ function detectKubernetes(execute = run) {
       'No Kubernetes cluster is selected. Configure kubectl for your cluster, then run this command again.',
     );
   let nodes;
+  const selectedControlPlane = controlPlaneServer(args['control-plane']);
   try {
     nodes = JSON.parse(
       execute(
         'kubectl',
-        kubeArgs({ context: current }, 'get', 'nodes', '-o', 'json'),
+        kubeArgs(
+          { context: current, controlPlaneServer: selectedControlPlane },
+          'get',
+          'nodes',
+          '-o',
+          'json',
+        ),
         {
           timeout: 15_000,
           message: `Kubernetes context ${current} is unreachable.`,
@@ -134,6 +160,9 @@ function detectKubernetes(execute = run) {
     nodes: nodes.length,
     ready,
     environment: environmentFor(current),
+    ...(selectedControlPlane
+      ? { controlPlaneServer: selectedControlPlane }
+      : {}),
   };
 }
 
@@ -218,6 +247,7 @@ async function persistCluster(state) {
   });
   try {
     await client.connect();
+    await client.query('BEGIN');
     await client.query(
       `INSERT INTO clusters
          (id, name, kubernetes_context, workload_namespace, workload_selector)
@@ -236,7 +266,16 @@ async function persistCluster(state) {
         state.workloadLabel,
       ],
     );
+    if (args['owner-user-id'])
+      await client.query(
+        `INSERT INTO project_users (user_id, project_id, assigned_by)
+         VALUES ($1, $2, $1)
+         ON CONFLICT (user_id, project_id) DO NOTHING`,
+        [args['owner-user-id'], state.clusterId],
+      );
+    await client.query('COMMIT');
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     const failure = new Error(
       `Faultline could not register cluster ${state.clusterId}. Make sure Faultline is running, then try again.`,
     );
@@ -498,6 +537,12 @@ async function register(options = {}) {
     clusterId: args.id || defaults.clusterId,
     clusterName,
     context: current,
+    ...(detected.controlPlaneServer || prior.controlPlaneServer
+      ? {
+          controlPlaneServer:
+            detected.controlPlaneServer || prior.controlPlaneServer,
+        }
+      : {}),
     ingestionEndpoint:
       args.endpoint || defaults.ingestionEndpoint || inferredEndpoint(current),
     token,
@@ -943,8 +988,70 @@ async function cleanup() {
   );
 }
 
-function uninstall() {
+async function removeClusterRegistration(clusterId) {
+  const api = parseEnv(resolve(root, 'apps/api/.env'));
+  if (!api.DATABASE_URL)
+    throw new Error('Missing DATABASE_URL. Run: npm run setup');
+  const client = new Client({
+    connectionString: api.DATABASE_URL,
+    connectionTimeoutMillis: 5_000,
+  });
+  try {
+    await client.connect();
+    await client.query('BEGIN');
+    const incidents = await client.query(
+      'SELECT id::text FROM incidents WHERE cluster_id = $1',
+      [clusterId],
+    );
+    const incidentIds = incidents.rows.map((row) => row.id);
+    if (incidentIds.length) {
+      for (const table of [
+        'notification_attempts',
+        'escalation_executions',
+        'incident_acknowledgements',
+        'notification_audit_events',
+        'incident_communications',
+      ])
+        await client.query(
+          `DELETE FROM ${table} WHERE incident_id = ANY($1::text[])`,
+          [incidentIds],
+        );
+    }
+    // Incident evidence, timelines, affected resources and external tickets cascade
+    // from incidents. Project assignments cascade from the cluster row.
+    await client.query('DELETE FROM incidents WHERE cluster_id = $1', [clusterId]);
+    await client.query('DELETE FROM metric_baselines WHERE cluster_id = $1', [
+      clusterId,
+    ]);
+    await client.query('DELETE FROM log_pattern_aggregates WHERE cluster_id = $1', [
+      clusterId,
+    ]);
+    const removed = await client.query('DELETE FROM clusters WHERE id = $1', [
+      clusterId,
+    ]);
+    await client.query('COMMIT');
+    return (removed.rowCount ?? 0) > 0;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    const failure = new Error(
+      `Faultline resources were removed from Kubernetes, but cluster ${clusterId} could not be removed from the database.`,
+    );
+    failure.detail = error.message;
+    throw failure;
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+async function uninstall() {
   const state = loadState();
+  if (args.id && args.id !== state.clusterId)
+    throw new Error(
+      `Requested cluster ${args.id} does not match the locally onboarded cluster ${state.clusterId}.`,
+    );
+  // The test workload is not part of the collector kustomization. Delete its whole
+  // namespace so an interrupted verification cannot leave faultline-log-test behind.
+  cleanupTestWorkload(state);
   kubectl(
     state,
     ['delete', '-k', 'deploy/kubernetes', '--ignore-not-found=true'],
@@ -952,8 +1059,10 @@ function uninstall() {
       timeout: 120_000,
     },
   );
+  const removed = await removeClusterRegistration(state.clusterId);
+  clearState();
   console.log(
-    'Faultline collector resources and the exclusively-owned faultline-system namespace were removed. BookNest was not changed.',
+    `Faultline collectors, onboarding test resources and ${removed ? 'the cluster registration' : 'any existing cluster registration'} were removed. BookNest was not changed.`,
   );
 }
 
@@ -1088,7 +1197,7 @@ async function main() {
   } else if (command === 'onboard') {
     await guidedOnboard();
   } else if (command === 'cleanup') await cleanup();
-  else if (command === 'uninstall') uninstall();
+  else if (command === 'uninstall') await uninstall();
   else
     throw new Error(
       'Usage: cluster.cjs <add|install|verify|onboard|cleanup|uninstall>',
@@ -1111,6 +1220,7 @@ module.exports = {
   inferredEndpoint,
   inferredClusterId,
   validateEndpoint,
+  controlPlaneServer,
   detectKubernetes,
   registrationDefaults,
   podFailureReason,

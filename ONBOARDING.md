@@ -249,15 +249,16 @@ Remove any interrupted temporary verification namespace:
 npm run onboarding:test:cleanup
 ```
 
-Uninstall collectors explicitly. This removes `faultline-system`; it does not change
-BookNest or delete the separate `faultline-onboarding` namespace:
+Uninstall the cluster explicitly. This removes `faultline-system`, the temporary
+`faultline-onboarding` namespace, its cluster registration, and the cluster's related
+PostgreSQL control-plane records. It does not change BookNest:
 
 ```powershell
 npm run cluster:uninstall
 ```
 
-Normal stop and collector uninstall retain PostgreSQL/ClickHouse data. To deliberately
-delete all local Faultline infrastructure volumes:
+Normal stop retains all data. Cluster uninstall retains ClickHouse telemetry; to
+deliberately delete all local Faultline infrastructure volumes:
 
 ```powershell
 npm run dev:reset -- --confirm-destroy-data

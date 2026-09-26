@@ -10,7 +10,6 @@ import {
 import { clusterScope, type TelemetryScope } from '@faultline/telemetry';
 import {
   assignedProjectIds,
-  isAdmin,
   type AuthenticatedUser,
 } from '@faultline/auth';
 
@@ -31,8 +30,7 @@ export const TELEMETRY_SCOPE_RESOLVER = Symbol(
  * Two limits compose, and both must allow a cluster:
  *   - the deployment's configured scope (TELEMETRY_QUERY_CLUSTER_SCOPE), which bounds
  *     what this installation may ever read;
- *   - the caller's own reach: every project for an Admin, the assigned projects for an
- *     Onsite Engineer.
+ *   - the caller's own reach: only projects explicitly assigned to that user.
  */
 export interface TelemetryScopeResolver {
   resolve(user: AuthenticatedUser): Promise<TelemetryScope>;
@@ -46,10 +44,8 @@ export class UserTelemetryScopeResolver implements TelemetryScopeResolver {
 
   async resolve(user: AuthenticatedUser): Promise<TelemetryScope> {
     const deployment = this.deploymentScope();
-    if (isAdmin(user)) return deployment;
-
     const assigned = assignedProjectIds(user);
-    // An engineer with no assignments gets the empty scope, not the wide one. The
+    // A user with no assignments gets the empty scope, not the wide one. The
     // difference between "no restriction recorded" and "restricted to nothing" is the
     // entire check, so it is spelled out rather than left to a falsy test.
     if (deployment.mode === 'all-development-clusters')

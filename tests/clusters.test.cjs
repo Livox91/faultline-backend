@@ -8,7 +8,12 @@ const {
   ClustersController,
 } = require('../apps/api/dist/clusters.controller');
 const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
-const { AUDIT_LOG_REPOSITORY, InMemoryAuditLogRepository } = require('@faultline/auth');
+const {
+  AUDIT_LOG_REPOSITORY,
+  PROJECT_ASSIGNMENT_REPOSITORY,
+  InMemoryAuditLogRepository,
+  InMemoryProjectAssignmentRepository,
+} = require('@faultline/auth');
 const { ApplicationLogger } = require('@faultline/platform');
 const { actingAs, admin, silentLogger } = require('./auth-harness.cjs');
 
@@ -39,10 +44,13 @@ test('cluster API returns registration metadata without deriving namespaces from
           remove: async () => true,
         },
       },
-      // Reads are scoped by the caller; an Admin sees every project.
-      actingAs(admin()),
+      actingAs(admin({ assignments: [{ projectId: registered.id }] })),
       AuditTrail,
       { provide: AUDIT_LOG_REPOSITORY, useValue: new InMemoryAuditLogRepository() },
+      {
+        provide: PROJECT_ASSIGNMENT_REPOSITORY,
+        useValue: new InMemoryProjectAssignmentRepository(),
+      },
       { provide: ApplicationLogger, useValue: silentLogger },
     ],
   })(ClusterApiModule);

@@ -136,6 +136,8 @@ import { SubscriptionProvisioningService } from './billing/provisioning.service'
 import { PAYMENT_GATEWAY, StripeGateway } from './billing/stripe.gateway';
 import { AdminUsersController } from './auth/users.controller';
 import { AdminAuditController } from './auth/audit.controller';
+import { ClusterOnboardingController } from './cluster-onboarding.controller';
+import { ClusterOnboardingService } from './cluster-onboarding.service';
 
 export const CLICKHOUSE_CONNECTION = Symbol('faultline.clickhouse-connection');
 
@@ -435,6 +437,7 @@ const billingProviders: Provider[] = billingEnabled
     ResourceTimelineController,
     BaselinesController,
     ClustersController,
+    ClusterOnboardingController,
     ContactsController,
     NotificationGroupsController,
     EscalationPoliciesController,
@@ -454,6 +457,7 @@ const billingProviders: Provider[] = billingEnabled
     PlanEntitlements,
     LoginThrottle,
     AdminBootstrap,
+    ClusterOnboardingService,
     {
       provide: TELEMETRY_SCOPE_RESOLVER,
       useClass: UserTelemetryScopeResolver,

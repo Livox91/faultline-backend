@@ -19,7 +19,6 @@ import {
 } from '@faultline/incidents';
 import {
   hasProjectAccess,
-  isAdmin,
   type AuthenticatedUser,
 } from '@faultline/auth';
 import { scopeAllowsCluster } from '@faultline/telemetry';
@@ -126,7 +125,7 @@ export class IncidentsController {
   async get(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     const incident = await this.incidents.getIncident(id);
     if (!incident) throw new NotFoundException('Incident not found');
-    if (!isAdmin(user) && !hasProjectAccess(user, incident.clusterId))
+    if (!hasProjectAccess(user, incident.clusterId))
       throw new NotFoundException('Incident not found');
     return incident;
   }

@@ -24,6 +24,7 @@ import {
   USER_REPOSITORY,
   parseRole,
   permissionsFor,
+  hasProjectAccess,
   type AuthenticatedUser,
   type ProjectAssignmentRepository,
   type UserChanges,
@@ -50,9 +51,7 @@ const present = (user: UserRecord, projectIds: readonly string[]) => ({
   status: user.status,
   mfaEnabled: user.mfaEnabled,
   permissions: permissionsFor(user.role),
-  // An Admin reaches every project, so listing projects against one would misrepresent
-  // their access as a finite set. Null says "not scoped by assignment".
-  projectIds: user.role === ROLES.ADMIN ? null : projectIds,
+  projectIds,
   external: !!user.externalSubject,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
@@ -96,16 +95,19 @@ export class AdminUsersController {
   @Get()
   @RequirePermission(PERMISSIONS.USER_VIEW)
   @Header('Cache-Control', 'no-store')
-  async list() {
+  async list(@CurrentUser() actor: AuthenticatedUser) {
     const users = await this.users.list();
     const assignments = await this.assignments.listForUsers(
       users.map((user) => user.id),
     );
+    const visibleProjects = new Set(actor.assignments.map((a) => a.projectId));
     return {
       items: users.map((user) =>
         present(
           user,
-          (assignments.get(user.id) ?? []).map((a) => a.projectId),
+          (assignments.get(user.id) ?? [])
+            .map((a) => a.projectId)
+            .filter((id) => visibleProjects.has(id)),
         ),
       ),
       count: users.length,
@@ -226,7 +228,10 @@ export class AdminUsersController {
         metadata: { from: existing.role, to: role },
       });
 
-    const assignments = await this.assignments.listForUser(id);
+    const visibleProjects = new Set(actor.assignments.map((a) => a.projectId));
+    const assignments = (await this.assignments.listForUser(id)).filter((a) =>
+      visibleProjects.has(a.projectId),
+    );
     return present(
       updated,
       assignments.map((a) => a.projectId),
@@ -245,6 +250,8 @@ export class AdminUsersController {
   ) {
     const user = await this.users.findById(id);
     if (!user) throw new NotFoundException('User not found');
+    if (!hasProjectAccess(actor, projectId))
+      throw new NotFoundException('Project not found');
     if (!(await this.projects.get(projectId)))
       throw new NotFoundException('Project not found');
 
@@ -281,6 +288,8 @@ export class AdminUsersController {
     @CurrentUser() actor: AuthenticatedUser,
     @Req() request: RequestWithUser,
   ): Promise<void> {
+    if (!hasProjectAccess(actor, projectId))
+      throw new NotFoundException('Assignment not found');
     const removed = await this.assignments.remove(id, projectId);
     if (!removed) throw new NotFoundException('Assignment not found');
     await this.audit.record({
@@ -305,6 +314,8 @@ export class AdminUsersController {
     );
     const assigned: string[] = [];
     for (const projectId of ids) {
+      if (!hasProjectAccess(actor, projectId))
+        throw new NotFoundException(`Project not found: ${projectId}`);
       if (!(await this.projects.get(projectId)))
         throw new NotFoundException(`Project not found: ${projectId}`);
       await this.assignments.assign(userId, projectId, actor.id, []);

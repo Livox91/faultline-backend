@@ -18,11 +18,13 @@ import {
 import {
   AUDIT_ACTIONS,
   PERMISSIONS,
+  PROJECT_ASSIGNMENT_REPOSITORY,
   ROLES,
   assignedProjectIds,
   hasProjectAccess,
   isAdmin,
   type AuthenticatedUser,
+  type ProjectAssignmentRepository,
 } from '@faultline/auth';
 import {
   isForeignKeyViolation,
@@ -92,6 +94,8 @@ function optionalText(value: unknown, field: string): string | undefined {
 export class ClustersController {
   constructor(
     @Inject(CLUSTER_DIRECTORY) private readonly clusters: ClusterDirectory,
+    @Inject(PROJECT_ASSIGNMENT_REPOSITORY)
+    private readonly assignments: ProjectAssignmentRepository,
     private readonly audit: AuditTrail,
   ) {}
 
@@ -99,9 +103,7 @@ export class ClustersController {
   @RequirePermission(PERMISSIONS.PROJECT_VIEW)
   @Header('Cache-Control', 'no-store')
   async list(@CurrentUser() user: AuthenticatedUser) {
-    const projects = await this.clusters.list(
-      isAdmin(user) ? undefined : assignedProjectIds(user),
-    );
+    const projects = await this.clusters.list(assignedProjectIds(user));
     return projects.map((project) => present(project, user));
   }
 
@@ -149,6 +151,7 @@ export class ClustersController {
         workloadNamespace: optionalText(body?.workloadNamespace, 'workloadNamespace') ?? null,
         workloadSelector: optionalText(body?.workloadSelector, 'workloadSelector') ?? null,
       });
+      await this.assignments.assign(actor.id, id, actor.id, []);
       await this.audit.record({
         user: actor,
         action: AUDIT_ACTIONS.PROJECT_CREATED,

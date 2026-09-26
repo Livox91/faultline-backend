@@ -10,6 +10,7 @@ const {
   environmentFor,
   inferredEndpoint,
   validateEndpoint,
+  controlPlaneServer,
   registrationDefaults,
   podFailureReason,
 } = require('../scripts/cluster.cjs');
@@ -105,6 +106,17 @@ test('invalid and localhost Faultline endpoints are rejected', () => {
   );
 });
 
+test('control-plane addresses accept the API server port used by local clusters', () => {
+  assert.equal(
+    controlPlaneServer('127.0.0.1:36443'),
+    'https://127.0.0.1:36443',
+  );
+  assert.equal(
+    controlPlaneServer('[2001:db8::1]:6443'),
+    'https://[2001:db8::1]:6443',
+  );
+});
+
 test('collector startup failure surfaces the Kubernetes waiting reason', () => {
   assert.equal(
     podFailureReason([
@@ -136,4 +148,26 @@ test('rerunning onboarding repairs resources with apply and database upsert', ()
   assert.match(source, /\['apply', '-k', 'deploy\/kubernetes'\]/);
   assert.match(source, /ON CONFLICT \(id\) DO UPDATE/);
   assert.doesNotMatch(source, /cluster-admin/);
+});
+
+test('web onboarding assigns the registered cluster to its authenticated owner', () => {
+  assert.match(source, /args\['owner-user-id'\]/);
+  assert.match(
+    source,
+    /INSERT INTO project_users \(user_id, project_id, assigned_by\)[\s\S]*ON CONFLICT \(user_id, project_id\) DO NOTHING/,
+  );
+});
+
+test('uninstall removes the test namespace and cluster registration', () => {
+  assert.match(
+    source,
+    /async function uninstall\(\)[\s\S]*cleanupTestWorkload\(state\)[\s\S]*\['delete', '-k', 'deploy\/kubernetes'/,
+  );
+  assert.match(source, /DELETE FROM incidents WHERE cluster_id = \$1/);
+  assert.match(source, /DELETE FROM metric_baselines WHERE cluster_id = \$1/);
+  assert.match(source, /DELETE FROM log_pattern_aggregates WHERE cluster_id = \$1/);
+  assert.match(source, /DELETE FROM clusters WHERE id = \$1/);
+  assert.match(source, /clearState\(\)/);
+  assert.match(source, /args\.id && args\.id !== state\.clusterId/);
+  assert.match(source, /command === 'uninstall'\) await uninstall\(\)/);
 });

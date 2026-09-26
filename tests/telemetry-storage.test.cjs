@@ -57,9 +57,7 @@ const {
   iso,
 } = require('./telemetry-store-contract.cjs');
 
-// Every API read now resolves its cluster scope from the caller. An Admin is used here
-// so these tests keep asserting what they were written to assert - query bounds and
-// pagination - while project-level isolation is covered in authorization.test.cjs.
+// API reads resolve their cluster scope from explicit user assignments.
 const adminUser = {
   id: '00000000-0000-4000-8000-000000000001',
   email: 'admin@faultline.test',
@@ -67,7 +65,10 @@ const adminUser = {
   role: 'admin',
   status: 'active',
   mfaEnabled: false,
-  assignments: [],
+  assignments: [
+    { projectId: 'api-cluster' },
+    { projectId: 'scenario-cluster' },
+  ],
 };
 
 const silentLogger = {
@@ -759,7 +760,8 @@ test('an unscoped API deployment fails closed in production', async () => {
     telemetryStorage: { queryLimits: defaultQueryLimits },
   });
   assert.deepEqual(await development.resolve(adminUser), {
-    mode: 'all-development-clusters',
+    mode: 'clusters',
+    clusterIds: ['api-cluster', 'scenario-cluster'],
   });
 });
 

@@ -68,7 +68,7 @@ export function hasPermission(
   return !!user && permissionsFor(user.role).includes(permission);
 }
 
-/** The projects a non-admin may name. Admins are not enumerated: they see everything. */
+/** The projects this user may name. Every role is scoped by explicit assignment. */
 export function assignedProjectIds(
   user: Pick<AuthenticatedUser, 'assignments'>,
 ): readonly string[] {
@@ -78,16 +78,14 @@ export function assignedProjectIds(
 /**
  * The single question every project-scoped read and write asks.
  *
- * An Admin passes for any project. Anyone else passes only for a project they hold an
- * assignment to, which makes the assignment table the one source of truth for engineer
- * access - there is no second place to grant it.
+ * Every user passes only for a project they hold an assignment to. Role controls what
+ * actions are available; assignment controls which tenant's data those actions reach.
  */
 export function hasProjectAccess(
   user: AuthenticatedUser | null | undefined,
   projectId: string | null | undefined,
 ): boolean {
   if (!user || user.status !== 'active') return false;
-  if (isAdmin(user)) return true;
   if (!projectId) return false;
   return user.assignments.some(
     (assignment) => assignment.projectId === projectId,
@@ -107,7 +105,7 @@ export function hasEnvironmentAccess(
   environment?: string,
 ): boolean {
   if (!hasProjectAccess(user, projectId)) return false;
-  if (!environment || isAdmin(user!)) return true;
+  if (!environment) return true;
   const assignment = user!.assignments.find(
     (candidate) => candidate.projectId === projectId,
   );
@@ -164,9 +162,7 @@ export function presentUser(user: AuthenticatedUser) {
     // a hint for routing only - the API enforces the same confinement itself.
     mustChangePassword: user.mustChangePassword,
     permissions: permissionsFor(user.role),
-    // Admins are not listed against projects: their access is not enumerable, and a
-    // client that received a list would wrongly treat it as the limit of their reach.
-    projectIds: isAdmin(user) ? null : assignedProjectIds(user),
+    projectIds: assignedProjectIds(user),
   };
 }
 

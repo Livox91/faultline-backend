@@ -3,8 +3,8 @@
 Faultline has two roles, and one rule that matters:
 
 ```
-Admin            → every project, plus user management and the audit trail
-Onsite Engineer  → only the projects an Admin has assigned to them
+Admin            → assigned projects, plus user management and the audit trail
+Onsite Engineer  → assigned projects, with a smaller action set
 ```
 
 **A project is a cluster.** The control plane already keys incidents, baselines and
@@ -55,9 +55,9 @@ frontend mirrors it for display only.
 
 | Permission | Admin | Onsite Engineer |
 |---|:--:|:--:|
-| `project:view` | ✅ | ✅ *(assigned only)* |
-| `incident:view` | ✅ | ✅ *(assigned only)* |
-| `remediation:act` | ✅ | ✅ *(assigned only)* |
+| `project:view` | ✅ *(assigned only)* | ✅ *(assigned only)* |
+| `incident:view` | ✅ *(assigned only)* | ✅ *(assigned only)* |
+| `remediation:act` | ✅ *(assigned only)* | ✅ *(assigned only)* |
 | `project:create` / `edit` / `delete` | ✅ | ❌ |
 | `project:assign` | ✅ | ❌ |
 | `user:view` / `user:manage` | ✅ | ❌ |
@@ -78,7 +78,7 @@ users ──┬─< project_users >── clusters      (project_users is the ma
 - `users` — `role` is constrained to `admin` / `onsiteengineer`. `password_hash` is
   nullable, because a user whose identity comes from an external IdP has none.
   `external_subject` is the seam for that IdP.
-- `project_users` — **the single source of truth** for engineer access. There is no
+- `project_users` — **the single source of truth** for every user's cluster access. There is no
   second place to grant it: no per-user flag, no per-project override. Its
   `environments text[]` column is the seam for environment-level access; empty means
   "every environment", so today's rows keep working when it starts being enforced.
@@ -106,7 +106,7 @@ users ──┬─< project_users >── clusters      (project_users is the ma
 |---|---|---|
 | `GET` | `/auth/me` | own identity |
 | `POST` | `/auth/logout` | records the event |
-| `GET` | `/projects`, `/clusters` | assigned projects (all, for an Admin) |
+| `GET` | `/projects`, `/clusters` | assigned projects for every role |
 | `GET` | `/projects/:id` | `403` unless assigned |
 | `GET` | `/incidents` | bounded by assignment, whatever filter is sent |
 | `GET` | `/incidents/:id` | `404` when outside your projects |

@@ -45,9 +45,7 @@ const { InMemoryIncidentRepository } = require('@faultline/incidents');
 const { InMemoryQueue } = require('@faultline/queue');
 const { defaultQueryLimits } = require('@faultline/telemetry');
 
-// Baseline reads resolve their cluster scope from the caller; an Admin keeps these
-// assertions about scoping-by-configuration rather than scoping-by-assignment, which
-// authorization.test.cjs covers separately.
+// Baseline reads resolve their cluster scope from explicit user assignments.
 const adminUser = {
   id: '00000000-0000-4000-8000-000000000001',
   email: 'admin@faultline.test',
@@ -55,7 +53,7 @@ const adminUser = {
   role: 'admin',
   status: 'active',
   mfaEnabled: false,
-  assignments: [],
+  assignments: [{ projectId: 'production-eu' }],
 };
 
 const silentLogger = { log() {}, warn() {}, error() {}, debug() {}, verbose() {} };
