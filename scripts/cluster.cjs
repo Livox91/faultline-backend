@@ -6,6 +6,7 @@ const {
   parseEnv,
   loadState,
   saveState,
+  clearState,
   requestJson,
   publicEndpoint,
   kubeArgs,
@@ -42,6 +43,20 @@ const kubectl = (state, values, options = {}) => {
 
 const success = (message) => console.log(`\u2713 ${message}`);
 
+function kubernetesUnavailable(error) {
+  const detail = [error?.message, error?.detail]
+    .filter(Boolean)
+    .join('\n');
+  return [
+    /unable to connect to the server/i,
+    /the connection to the server .* was refused/i,
+    /dial tcp .*?(?:connection refused|actively refused|i\/o timeout)/i,
+    /connectex:.*actively refused/i,
+    /no such host/i,
+    /context .* does not exist/i,
+  ].some((pattern) => pattern.test(detail));
+}
+
 function environmentFor(context) {
   if (context.startsWith('kind-')) return 'kind';
   if (context.startsWith('minikube')) return 'minikube';
@@ -75,6 +90,24 @@ function validateEndpoint(value) {
   return endpoint.toString().replace(/\/$/, '');
 }
 
+function controlPlaneServer(value) {
+  if (!value) return undefined;
+  const address = value.trim();
+  const host =
+    address.includes(':') && !address.includes('.') && !address.startsWith('[')
+      ? `[${address}]`
+      : address;
+  try {
+    const server = new URL(`https://${host}`);
+    if (server.pathname !== '/' || server.search || server.hash) throw new Error();
+    return server.origin;
+  } catch {
+    throw new Error(
+      'The Kubernetes control plane must be an IP address with an optional port, for example 127.0.0.1:6443.',
+    );
+  }
+}
+
 function detectKubernetes(execute = run) {
   try {
     execute('kubectl', ['version', '--client'], {
@@ -104,11 +137,18 @@ function detectKubernetes(execute = run) {
       'No Kubernetes cluster is selected. Configure kubectl for your cluster, then run this command again.',
     );
   let nodes;
+  const selectedControlPlane = controlPlaneServer(args['control-plane']);
   try {
     nodes = JSON.parse(
       execute(
         'kubectl',
-        kubeArgs({ context: current }, 'get', 'nodes', '-o', 'json'),
+        kubeArgs(
+          { context: current, controlPlaneServer: selectedControlPlane },
+          'get',
+          'nodes',
+          '-o',
+          'json',
+        ),
         {
           timeout: 15_000,
           message: `Kubernetes context ${current} is unreachable.`,
@@ -134,6 +174,9 @@ function detectKubernetes(execute = run) {
     nodes: nodes.length,
     ready,
     environment: environmentFor(current),
+    ...(selectedControlPlane
+      ? { controlPlaneServer: selectedControlPlane }
+      : {}),
   };
 }
 
@@ -218,6 +261,7 @@ async function persistCluster(state) {
   });
   try {
     await client.connect();
+    await client.query('BEGIN');
     await client.query(
       `INSERT INTO clusters
          (id, name, kubernetes_context, workload_namespace, workload_selector)
@@ -236,7 +280,16 @@ async function persistCluster(state) {
         state.workloadLabel,
       ],
     );
+    if (args['owner-user-id'])
+      await client.query(
+        `INSERT INTO project_users (user_id, project_id, assigned_by)
+         VALUES ($1, $2, $1)
+         ON CONFLICT (user_id, project_id) DO NOTHING`,
+        [args['owner-user-id'], state.clusterId],
+      );
+    await client.query('COMMIT');
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     const failure = new Error(
       `Faultline could not register cluster ${state.clusterId}. Make sure Faultline is running, then try again.`,
     );
@@ -277,8 +330,31 @@ async function clickhouseQuery(config, query, parameters = {}) {
   });
   const body = await response.text();
   if (!response.ok)
-    throw new Error(`ClickHouse cleanup failed with HTTP ${response.status}`);
+    throw new Error(`ClickHouse query failed with HTTP ${response.status}`);
   return body;
+}
+
+async function findOnboardingLog(clusterId) {
+  const config = clickhouseConfig();
+  const rows = await clickhouseQuery(
+    config,
+    `SELECT event_timestamp, pod, message
+       FROM ${config.database}.telemetry_logs
+      WHERE cluster_id = {cluster:String}
+        AND namespace = {namespace:String}
+        AND event_timestamp >= now() - INTERVAL 10 MINUTE
+        AND position(message, {marker:String}) > 0
+      ORDER BY event_timestamp DESC
+      LIMIT 1
+      FORMAT JSONEachRow`,
+    {
+      cluster: clusterId,
+      namespace: onboardingNamespace,
+      marker: 'FAULTLINE_ONBOARDING_TEST',
+    },
+  );
+  const first = rows.split(/\r?\n/).find(Boolean);
+  return first ? JSON.parse(first) : undefined;
 }
 
 async function onboardingEventIds(clusterId) {
@@ -475,6 +551,12 @@ async function register(options = {}) {
     clusterId: args.id || defaults.clusterId,
     clusterName,
     context: current,
+    ...(detected.controlPlaneServer || prior.controlPlaneServer
+      ? {
+          controlPlaneServer:
+            detected.controlPlaneServer || prior.controlPlaneServer,
+        }
+      : {}),
     ingestionEndpoint:
       args.endpoint || defaults.ingestionEndpoint || inferredEndpoint(current),
     token,
@@ -831,24 +913,12 @@ async function verify(state = loadState(), options = {}) {
   const deadline = Date.now() + 120_000;
   let received;
   while (Date.now() < deadline && !received) {
-    const startTime = new Date(Date.now() - 10 * 60_000).toISOString();
-    const endTime = new Date(Date.now() + 60_000).toISOString();
-    const query = new URLSearchParams({
-      clusterId: state.clusterId,
-      namespace: 'faultline-onboarding',
-      search: 'FAULTLINE_ONBOARDING_TEST',
-      startTime,
-      endTime,
-      limit: '20',
-    });
     try {
-      const logs = await requestJson(
-        `http://127.0.0.1:3000/telemetry/logs?${query}`,
-        { timeout: 5_000 },
-      );
-      received = logs.items?.find((item) =>
-        item.message.includes('FAULTLINE_ONBOARDING_TEST'),
-      );
+      // The telemetry API is intentionally authenticated. Onboarding is a local
+      // operator command with ClickHouse credentials already configured, so verify
+      // persistence directly instead of turning an expected API 401 into a false
+      // "log did not reach ClickHouse" timeout.
+      received = await findOnboardingLog(state.clusterId);
     } catch {}
     if (!received)
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 3_000));
@@ -926,23 +996,102 @@ async function cleanup() {
       timeout: 300_000,
     });
   }
+  cleanupTestWorkload(state);
   console.log(
     'Removed temporary onboarding test resources and persisted data.',
   );
 }
 
-function uninstall() {
+async function removeClusterRegistration(clusterId) {
+  const api = parseEnv(resolve(root, 'apps/api/.env'));
+  if (!api.DATABASE_URL)
+    throw new Error('Missing DATABASE_URL. Run: npm run setup');
+  const client = new Client({
+    connectionString: api.DATABASE_URL,
+    connectionTimeoutMillis: 5_000,
+  });
+  try {
+    await client.connect();
+    await client.query('BEGIN');
+    const incidents = await client.query(
+      'SELECT id::text FROM incidents WHERE cluster_id = $1',
+      [clusterId],
+    );
+    const incidentIds = incidents.rows.map((row) => row.id);
+    if (incidentIds.length) {
+      for (const table of [
+        'notification_attempts',
+        'escalation_executions',
+        'incident_acknowledgements',
+        'notification_audit_events',
+        'incident_communications',
+      ])
+        await client.query(
+          `DELETE FROM ${table} WHERE incident_id = ANY($1::text[])`,
+          [incidentIds],
+        );
+    }
+    // Incident evidence, timelines, affected resources and external tickets cascade
+    // from incidents. Project assignments cascade from the cluster row.
+    await client.query('DELETE FROM incidents WHERE cluster_id = $1', [clusterId]);
+    await client.query('DELETE FROM metric_baselines WHERE cluster_id = $1', [
+      clusterId,
+    ]);
+    await client.query('DELETE FROM log_pattern_aggregates WHERE cluster_id = $1', [
+      clusterId,
+    ]);
+    const removed = await client.query('DELETE FROM clusters WHERE id = $1', [
+      clusterId,
+    ]);
+    await client.query('COMMIT');
+    return (removed.rowCount ?? 0) > 0;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    const failure = new Error(
+      `Faultline resources were removed from Kubernetes, but cluster ${clusterId} could not be removed from the database.`,
+    );
+    failure.detail = error.message;
+    throw failure;
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+async function uninstall() {
   const state = loadState();
-  kubectl(
-    state,
-    ['delete', '-k', 'deploy/kubernetes', '--ignore-not-found=true'],
-    {
-      timeout: 120_000,
-    },
-  );
-  console.log(
-    'Faultline collector resources and the exclusively-owned faultline-system namespace were removed. BookNest was not changed.',
-  );
+  if (args.id && args.id !== state.clusterId)
+    throw new Error(
+      `Requested cluster ${args.id} does not match the locally onboarded cluster ${state.clusterId}.`,
+    );
+  // The test workload is not part of the collector kustomization. Delete its whole
+  // namespace so an interrupted verification cannot leave faultline-log-test behind.
+  let kubernetesResourcesRemoved = true;
+  try {
+    cleanupTestWorkload(state);
+    kubectl(
+      state,
+      ['delete', '-k', 'deploy/kubernetes', '--ignore-not-found=true'],
+      {
+        timeout: 120_000,
+      },
+    );
+  } catch (error) {
+    if (!kubernetesUnavailable(error)) throw error;
+    kubernetesResourcesRemoved = false;
+    console.warn(
+      'Kubernetes is unreachable; skipping in-cluster cleanup and removing the Faultline registration.',
+    );
+    if (verbose && error.detail)
+      console.warn(`Kubernetes details:\n${error.detail}`);
+  }
+  const removed = await removeClusterRegistration(state.clusterId);
+  clearState();
+  const registration = removed
+    ? 'the cluster registration'
+    : 'any existing cluster registration';
+  console.log(kubernetesResourcesRemoved
+    ? `Faultline collectors, onboarding test resources and ${registration} were removed. BookNest was not changed.`
+    : `The Kubernetes cluster could not be contacted. ${registration[0].toUpperCase()}${registration.slice(1)} and local onboarding state were removed; any remaining collectors are no longer authorized. BookNest was not changed.`);
 }
 
 async function chooseReachableEndpoint(state, rl) {
@@ -1076,7 +1225,7 @@ async function main() {
   } else if (command === 'onboard') {
     await guidedOnboard();
   } else if (command === 'cleanup') await cleanup();
-  else if (command === 'uninstall') uninstall();
+  else if (command === 'uninstall') await uninstall();
   else
     throw new Error(
       'Usage: cluster.cjs <add|install|verify|onboard|cleanup|uninstall>',
@@ -1099,7 +1248,9 @@ module.exports = {
   inferredEndpoint,
   inferredClusterId,
   validateEndpoint,
+  controlPlaneServer,
   detectKubernetes,
   registrationDefaults,
   podFailureReason,
+  kubernetesUnavailable,
 };

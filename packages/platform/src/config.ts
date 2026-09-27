@@ -31,6 +31,10 @@ export const applicationDefinitions = {
     port: 3003,
     components: ['configuration', 'logging', 'health', 'telemetry-storage'],
   },
+  notification: {
+    port: 3004,
+    components: ['configuration', 'logging', 'health', 'notification-policy', 'retell-communication'],
+  },
 } as const;
 
 export type ApplicationName = keyof typeof applicationDefinitions;
@@ -772,7 +776,13 @@ export function validateEnvironment(
       ...(application === 'api' && !result.data.AUTH_JWT_SECRET
         ? ['AUTH_JWT_SECRET']
         : []),
+<<<<<<< HEAD
       ...((application === 'api' || application === 'processor') &&
+=======
+      ...((application === 'api' ||
+        application === 'processor' ||
+        application === 'notification') &&
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       !result.data.DATABASE_URL
         ? ['DATABASE_URL']
         : []),
@@ -781,7 +791,8 @@ export function validateEnvironment(
         : []),
       ...((application === 'ingestion' ||
         application === 'processor' ||
-        application === 'storage') &&
+        application === 'storage' ||
+        application === 'notification') &&
       !result.data.BROKER_URL
         ? ['BROKER_URL']
         : []),

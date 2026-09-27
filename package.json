@@ -33,6 +33,8 @@
     "db:migration:create": "npm run build --workspace=@faultline/database && npm run migration:create --workspace=@faultline/database --",
     "test:integration": "npm run build && node --test tests/infrastructure.test.cjs tests/clickhouse.test.cjs",
     "start:storage": "npm run start --workspace=@faultline/storage",
+    "start:notification": "npm run start --workspace=@faultline/notification",
+    "dev:notification": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/notification/dist/main.js\"",
     "dev:storage": "npm run build && concurrently -k \"tsc -b --watch\" \"node --watch apps/storage/dist/main.js\"",
     "telemetry:schema": "npm run build --workspace=@faultline/clickhouse && npm run schema:apply --workspace=@faultline/clickhouse",
     "telemetry:retention": "npm run build --workspace=@faultline/clickhouse && node packages/clickhouse/dist/schema-cli.js retention",
@@ -70,7 +72,9 @@
     "redis": "^6.2.1"
   },
   "devDependencies": {
+    "@stripe/cli": "^1.52.0",
     "@types/node": "^22.0.0",
+    "@types/pdfkit": "^0.17.6",
     "concurrently": "^9.2.1",
     "prettier": "3.9.6",
     "typescript": "~5.9.3"

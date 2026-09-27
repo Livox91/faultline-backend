@@ -5,16 +5,27 @@ see [Metrics and workload state](METRICS.md). The same two Collector deployments
 export metrics and structured state snapshots as well as logs/events.
 
 Container stdout/stderr → Collector DaemonSet → OTLP/HTTP JSON → ingestion's
-isolated `/v1/otlp/logs` adapter → shared `TelemetryEvent` → `telemetry.raw` → processor.
-A single Collector Deployment watches Kubernetes Events and uses the same adapter.
-The existing `/v1/telemetry/*` endpoints still work.
+isolated `/v1/otlp/logs` adapter → shared `TelemetryEvent` → `telemetry.raw`. The broker
+fans each event out independently to the processor and the storage consumer; storage
+batches validated events into ClickHouse, and the API queries those tables without an
+implicit namespace, severity or infrastructure-only filter. A single Collector
+Deployment watches Kubernetes Events and uses the same adapter. The existing
+`/v1/telemetry/*` endpoints still work.
 
 Collector Contrib is pinned to **0.147.0**. The [container parser](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.147.0/pkg/stanza/docs/operators/container.md)
 handles CRI/containerd, CRI-O and Docker container log framing, including stdout/stderr
 and partial records. File paths supply pod UID, namespace, pod and container identity.
+Existing files are read from the beginning on first discovery, and node-local
+file-storage checkpoints retain offsets across collector pod restarts so early
+application failures are neither skipped nor replayed on every rollout.
 Only `/var/log/pods` is mounted, read-only, on Linux nodes. Clusters with custom log
 locations need matching mounts and include paths. The `faultline-system` namespace is
 excluded to avoid collecting the collectors' and local Faultline's own output.
+The `/var/log/pods/*/*/*.log` selection is otherwise namespace-, label-, workload- and
+framework-agnostic: it includes ordinary and init-container files, standalone Pods,
+controller-owned Pods and numbered files from restarted container instances. Kubernetes
+RBAC is used for metadata enrichment and kubelet metrics, not for reading log content;
+collector API or permission failures are emitted in its structured operational log.
 
 The [Kubernetes objects receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.147.0/receiver/k8sobjectsreceiver/README.md)
 uses a cluster-wide core/v1 Event watch. A separate single replica with `Recreate`
@@ -231,6 +242,12 @@ records continue. Invalid envelopes return 400, wrong media types 415, oversized
 [OTLP response/retry distinction](https://opentelemetry.io/docs/specs/otlp/).
 No request bodies, tokens or validation values are echoed into error logs.
 
+`GET /v1/otlp/diagnostics` exposes process-lifetime, payload-free counts for records
+received, normalized, rejected by stable reason, queued and failed during publish.
+The storage process exposes corresponding accepted/rejected/persisted counters and
+pending batch sizes at `GET /diagnostics/telemetry`. Collector-native receiver,
+processor and exporter counters remain available on port 8888 as described below.
+
 Processor logs include context, stream/severity and event reason. Message text remains
 off by default: the local manifest enables `FAULTLINE_LOG_DEMO_MESSAGES=true`, which only
 prints messages from `faultline-demo` while `NODE_ENV=development`. Do not place secrets
@@ -245,11 +262,12 @@ up to thirty seconds, for at most five minutes per batch. File reading retries d
 backpressure for up to one minute. Workloads only write their ordinary container logs;
 they do not contact or wait for Faultline.
 
-Buffers and file offsets are not persisted. Long outages, collector restarts, exhausted
-queues and rotated files can lose data. File collection starts at the end of existing
-files; records arriving before discovery of a new file may be missed. The receiver/parser
-limits log size to 16 KiB, so larger records may split. Exceptionally large metadata/batches
-can exceed the ingestion byte bound and be rejected. These are development limits.
+Export buffers are not persisted. Long outages, exhausted queues and already-deleted
+rotated files can still lose data. File offsets are persisted per node under
+`/var/lib/faultline-collector`; first discovery reads existing files from the beginning.
+The receiver/parser limits log size to 16 KiB, so larger records may split.
+Exceptionally large metadata/batches can exceed the ingestion byte bound and be
+rejected. These are development limits.
 Retry after a partially published batch can duplicate already accepted events, and
 IDs are regenerated on retry. There is no durable delivery or deduplication guarantee.
 

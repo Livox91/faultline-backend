@@ -40,7 +40,10 @@ import {
 import { CurrentUser } from './auth/context';
 import {
   hasProjectAccess,
+<<<<<<< HEAD
   isAdmin,
+=======
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   type AuthenticatedUser,
 } from '@faultline/auth';
 
@@ -85,7 +88,11 @@ export class IncidentEvidenceController {
     if (!incident) throw new NotFoundException('Incident not found');
     // Same answer as a missing incident: an incident in a project the caller has no
     // assignment to must not be distinguishable from one that does not exist.
+<<<<<<< HEAD
     if (!isAdmin(user) && !hasProjectAccess(user, incident.clusterId))
+=======
+    if (!hasProjectAccess(user, incident.clusterId))
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       throw new NotFoundException('Incident not found');
     const scope = await this.scopes.resolve(user);
     const lead = padding(leadValue, DEFAULT_LEAD_MS, 'leadMs');

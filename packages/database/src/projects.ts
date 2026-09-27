@@ -36,6 +36,10 @@ export interface ProjectChanges {
 export interface NewProject extends ProjectChanges {
   id: string;
   name: string;
+<<<<<<< HEAD
+=======
+  organizationId?: string;
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 }
 
 /**
@@ -46,8 +50,13 @@ export interface NewProject extends ProjectChanges {
  * leak a row. `undefined` means unrestricted and is only ever passed for an Admin.
  */
 export interface ClusterDirectory {
+<<<<<<< HEAD
   list(projectIds?: readonly string[]): Promise<readonly RegisteredCluster[]>;
   get(id: string): Promise<RegisteredCluster | undefined>;
+=======
+  list(projectIds?: readonly string[], organizationId?: string): Promise<readonly RegisteredCluster[]>;
+  get(id: string, organizationId?: string): Promise<RegisteredCluster | undefined>;
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   create(project: NewProject): Promise<RegisteredCluster>;
   update(
     id: string,
@@ -109,32 +118,61 @@ export class PostgresClusterDirectory implements ClusterDirectory {
 
   async list(
     projectIds?: readonly string[],
+<<<<<<< HEAD
+=======
+    organizationId?: string,
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   ): Promise<readonly RegisteredCluster[]> {
     // An engineer with no assignments is restricted to the empty set, never to
     // "unrestricted": the difference between [] and undefined is the whole check.
     if (projectIds && projectIds.length === 0) return [];
     const result = await this.connection.pool.query<ClusterRow>(
       `${selectClusters}
+<<<<<<< HEAD
         ${projectIds ? 'WHERE c.id = ANY($1::text[])' : ''}
         GROUP BY c.id
         ORDER BY COALESCE(c.name, c.id), c.id`,
       projectIds ? [[...projectIds]] : [],
+=======
+        ${projectIds || organizationId ? `WHERE ${[
+          projectIds ? 'c.id = ANY($1::text[])' : '',
+          organizationId ? `c.organization_id = $${projectIds ? 2 : 1}` : '',
+        ].filter(Boolean).join(' AND ')}` : ''}
+        GROUP BY c.id
+        ORDER BY COALESCE(c.name, c.id), c.id`,
+      [
+        ...(projectIds ? [[...projectIds]] : []),
+        ...(organizationId ? [organizationId] : []),
+      ],
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     );
     return result.rows.map(present);
   }
 
+<<<<<<< HEAD
   async get(id: string): Promise<RegisteredCluster | undefined> {
     const result = await this.connection.pool.query<ClusterRow>(
       `${selectClusters} WHERE c.id = $1 GROUP BY c.id`,
       [id],
+=======
+  async get(id: string, organizationId?: string): Promise<RegisteredCluster | undefined> {
+    const result = await this.connection.pool.query<ClusterRow>(
+      `${selectClusters} WHERE c.id = $1${organizationId ? ' AND c.organization_id=$2' : ''} GROUP BY c.id`,
+      organizationId ? [id, organizationId] : [id],
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     );
     return result.rows[0] ? present(result.rows[0]) : undefined;
   }
 
   async create(project: NewProject): Promise<RegisteredCluster> {
     await this.connection.pool.query(
+<<<<<<< HEAD
       `INSERT INTO clusters (id, name, environment, kubernetes_context, workload_namespace, workload_selector)
        VALUES ($1, $2, COALESCE($3, 'production'), $4, $5, $6)`,
+=======
+      `INSERT INTO clusters (id, name, environment, kubernetes_context, workload_namespace, workload_selector, organization_id)
+       VALUES ($1, $2, COALESCE($3, 'production'), $4, $5, $6, $7)`,
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       [
         project.id,
         project.name,
@@ -142,6 +180,10 @@ export class PostgresClusterDirectory implements ClusterDirectory {
         project.kubernetesContext ?? null,
         project.workloadNamespace ?? null,
         project.workloadSelector ?? null,
+<<<<<<< HEAD
+=======
+        project.organizationId ?? 'default',
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       ],
     );
     return (await this.get(project.id))!;

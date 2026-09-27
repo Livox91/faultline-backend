@@ -3,8 +3,13 @@
 Faultline has two roles, and one rule that matters:
 
 ```
+<<<<<<< HEAD
 Admin            → every project, plus user management and the audit trail
 Onsite Engineer  → only the projects an Admin has assigned to them
+=======
+Admin            → assigned projects, plus user management and the audit trail
+Onsite Engineer  → assigned projects, with a smaller action set
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 ```
 
 **A project is a cluster.** The control plane already keys incidents, baselines and
@@ -55,9 +60,15 @@ frontend mirrors it for display only.
 
 | Permission | Admin | Onsite Engineer |
 |---|:--:|:--:|
+<<<<<<< HEAD
 | `project:view` | ✅ | ✅ *(assigned only)* |
 | `incident:view` | ✅ | ✅ *(assigned only)* |
 | `remediation:act` | ✅ | ✅ *(assigned only)* |
+=======
+| `project:view` | ✅ *(assigned only)* | ✅ *(assigned only)* |
+| `incident:view` | ✅ *(assigned only)* | ✅ *(assigned only)* |
+| `remediation:act` | ✅ *(assigned only)* | ✅ *(assigned only)* |
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 | `project:create` / `edit` / `delete` | ✅ | ❌ |
 | `project:assign` | ✅ | ❌ |
 | `user:view` / `user:manage` | ✅ | ❌ |
@@ -68,7 +79,11 @@ A *permission* answers "may this role ever?"; an *assignment* answers "may this 
 here?". They are separate checks, which is why an engineer holds `project:view` and still
 sees only their own projects.
 
+<<<<<<< HEAD
 ## Schema (migration `0005_rbac_and_audit.sql`)
+=======
+## Schema (migration `0010_rbac_and_audit.sql`)
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 
 ```
 users ──┬─< project_users >── clusters      (project_users is the many-to-many)
@@ -78,7 +93,11 @@ users ──┬─< project_users >── clusters      (project_users is the ma
 - `users` — `role` is constrained to `admin` / `onsiteengineer`. `password_hash` is
   nullable, because a user whose identity comes from an external IdP has none.
   `external_subject` is the seam for that IdP.
+<<<<<<< HEAD
 - `project_users` — **the single source of truth** for engineer access. There is no
+=======
+- `project_users` — **the single source of truth** for every user's cluster access. There is no
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   second place to grant it: no per-user flag, no per-project override. Its
   `environments text[]` column is the seam for environment-level access; empty means
   "every environment", so today's rows keep working when it starts being enforced.
@@ -106,7 +125,11 @@ users ──┬─< project_users >── clusters      (project_users is the ma
 |---|---|---|
 | `GET` | `/auth/me` | own identity |
 | `POST` | `/auth/logout` | records the event |
+<<<<<<< HEAD
 | `GET` | `/projects`, `/clusters` | assigned projects (all, for an Admin) |
+=======
+| `GET` | `/projects`, `/clusters` | assigned projects for every role |
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 | `GET` | `/projects/:id` | `403` unless assigned |
 | `GET` | `/incidents` | bounded by assignment, whatever filter is sent |
 | `GET` | `/incidents/:id` | `404` when outside your projects |
@@ -144,7 +167,11 @@ store.
 ## Getting in
 
 ```bash
+<<<<<<< HEAD
 npm run db:migrate                 # applies 0005_rbac_and_audit
+=======
+npm run db:migrate                 # applies 0010_rbac_and_audit
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 npm run faultline:start            # the bootstrap Admin is seeded on first start
 ```
 

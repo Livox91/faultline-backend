@@ -118,7 +118,11 @@ The current password is required even though the caller is authenticated: a toke
 is not proof of knowing the password, and without that check a stolen token becomes
 permanent ownership.
 
+<<<<<<< HEAD
 ## Schema (`0006_subscriptions_and_provisioning.sql`)
+=======
+## Schema (`0011_subscriptions_and_provisioning.sql`)
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 
 ```
 users  + username (unique, nullable)       -- provisioned admins sign in with either
@@ -128,7 +132,11 @@ subscriptions        -- one per purchase; user_id nullable until provisioned
 processed_payment_events  -- event_id PRIMARY KEY; the idempotency ledger
 ```
 
+<<<<<<< HEAD
 `0007_audit_log_user_reference.sql` drops `audit_log.user_id`'s foreign key. Migration
+=======
+`0012_audit_log_user_reference.sql` drops `audit_log.user_id`'s foreign key. Migration
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 0005 gave it `ON DELETE SET NULL` *and* made the table append-only; PostgreSQL implements
 SET NULL as an UPDATE, the append-only rule discards it, and deleting any user with audit
 history failed outright. The trail keeps `actor` precisely so it survives a user's

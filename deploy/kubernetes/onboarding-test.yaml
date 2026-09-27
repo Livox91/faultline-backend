@@ -29,8 +29,10 @@ spec:
           args:
             - |
               sleep 5
-              echo "FAULTLINE_ONBOARDING_TEST"
+              echo "INFO normal operation FAULTLINE_ONBOARDING_TEST"
+              echo "WARN degraded operation FAULTLINE_ONBOARDING_TEST"
               echo "database connection refused FAULTLINE_ONBOARDING_CLASSIFICATION_TEST" >&2
+              echo "ERROR database connection failed FAULTLINE_ONBOARDING_ERROR_TEST" >&2
               sleep 3600
           securityContext:
             allowPrivilegeEscalation: false

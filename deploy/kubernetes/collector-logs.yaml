@@ -9,7 +9,10 @@ receivers:
     include: [/var/log/pods/*/*/*.log]
     # Exclude collector and local Faultline output to prevent feedback loops.
     exclude: [/var/log/pods/faultline-system_*/*/*.log]
-    start_at: end
+    # A newly discovered application may already have emitted its only failure. Read
+    # existing content once, then use the durable checkpoint below on restarts.
+    start_at: beginning
+    storage: file_storage/filelog
     include_file_path: true
     max_log_size: 16KiB
     retry_on_failure:
@@ -64,6 +67,9 @@ processors:
       - key: faultline.cluster.id
         value: ${env:FAULTLINE_CLUSTER_ID}
         action: upsert
+      - key: faultline.source
+        value: kubernetes
+        action: upsert
       - key: k8s.node.name
         value: ${env:KUBE_NODE_NAME}
         action: insert
@@ -89,8 +95,17 @@ exporters:
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
+  # File offsets must outlive the collector pod. Without this, `start_at: beginning`
+  # would replay every file after a rollout; `start_at: end` instead lost application
+  # failures written before discovery. The node-local checkpoint avoids both outcomes.
+  file_storage/filelog:
+    directory: /var/lib/faultline-collector/filelog
+    create_directory: true
+    compaction:
+      directory: /var/lib/faultline-collector/filelog-compaction
+      on_start: true
 service:
-  extensions: [health_check]
+  extensions: [health_check, file_storage/filelog]
   telemetry:
     logs:
       level: info

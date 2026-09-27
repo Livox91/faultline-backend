@@ -16,14 +16,22 @@ const {
   InMemoryQueue,
   getDevelopmentQueue,
 } = require('@faultline/queue');
-const { normalizeLog } = require('@faultline/telemetry');
+const {
+  normalizeLog,
+  InMemoryTelemetryStore,
+  defaultPayloadLimits,
+} = require('@faultline/telemetry');
 const booknestAnsiError = require('./fixtures/booknest-ansi-error.json');
 const {
   TelemetryConsumer,
 } = require('../apps/processor/dist/telemetry.consumer');
 const {
+  TelemetryStorageConsumer,
+} = require('../apps/storage/dist/telemetry-storage.consumer');
+const {
   OtlpController,
 } = require('../apps/ingestion/dist/otlp/otlp.controller');
+const { OtlpDiagnostics } = require('../apps/ingestion/dist/otlp/diagnostics');
 const { configureIngestionHttp } = require('../apps/ingestion/dist/otlp/http');
 const { translateOtlpLogs } = require('../apps/ingestion/dist/otlp/translate');
 const {
@@ -45,6 +53,7 @@ function attributes(v) {
 }
 const resource = {
   'faultline.cluster.id': 'cluster-1',
+  'faultline.source': 'kubernetes',
   'k8s.cluster.name': 'friendly-name',
   'k8s.namespace.name': 'faultline-demo',
   'k8s.pod.name': 'demo-123',
@@ -137,6 +146,8 @@ test('OTLP log normalization preserves nanoseconds, raw message and enriched con
     assert.equal(event[field], expected);
   assert.equal(event.attributes['k8s.pod.uid'], 'pod-uid');
   assert.equal(event.attributes['container.id'], 'container-id');
+  assert.equal(event.attributes['faultline.source'], 'kubernetes');
+  assert.equal(event.attributes['k8s.workload.kind'], 'Deployment');
   const minimal = translateOtlpLogs(
     batch(
       [{ ...record, severityNumber: 0, severityText: '', attributes: [] }],
@@ -396,7 +407,6 @@ test('OTLP rejects invalid records independently, mismatched cluster identity an
     { ...record, body: { stringValue: 'a', intValue: '1' } },
     { ...record, attributes: attributes({ 'log.iostream': 'invalid' }) },
     { ...record, timeUnixNano: '18446744073709551616' },
-    { ...record, timeUnixNano: '0', observedTimeUnixNano: '0' },
   ];
   const result = translateOtlpLogs(batch([record, ...invalid]), 'cluster-1');
   assert.equal(result.events.length, 1);
@@ -414,8 +424,18 @@ test('OTLP rejects invalid records independently, mismatched cluster identity an
       batch([{ ...record, observedTimeUnixNano: 'bad' }]),
       'cluster-1',
     ).rejected,
-    1,
+    0,
+    'a malformed unused observed time cannot discard a valid event time',
   );
+  const missingTime = translateOtlpLogs(
+    batch([{ ...record, timeUnixNano: '0', observedTimeUnixNano: '0' }]),
+    'cluster-1',
+  ).events[0];
+  assert.equal(
+    missingTime.attributes['faultline.timestamp.source'],
+    'ingested_at',
+  );
+  assert.equal(missingTime.timestamp, missingTime.ingestedAt);
   assert.equal(
     translateOtlpLogs(eventBatch({ ...kubeEvent, count: -1 }), 'cluster-1')
       .rejected,
@@ -428,8 +448,56 @@ test('OTLP rejects invalid records independently, mismatched cluster identity an
   assert.throws(() => translateOtlpLogs({ resourceLogs: {} }, 'cluster-1'));
   assert.deepEqual(translateOtlpLogs({}, 'cluster-1'), {
     events: [],
+    received: 0,
     rejected: 0,
+    rejectionReasons: {},
   });
+});
+
+test('application formats normalize without infrastructure-only metadata or OTLP severity', () => {
+  const records = [
+    {
+      ...record,
+      severityNumber: 0,
+      severityText: '',
+      body: value('Error: database connection failed'),
+    },
+    {
+      ...record,
+      severityNumber: 0,
+      severityText: '',
+      body: value({ level: 'error', message: 'Payment processing failed' }),
+    },
+    {
+      ...record,
+      severityNumber: 0,
+      severityText: '',
+      body: value(
+        'Error: connection refused\n    at connect (...)\n    at process (...)',
+      ),
+    },
+  ];
+  const result = translateOtlpLogs(
+    batch(records, {
+      'k8s.namespace.name': 'default',
+      'k8s.pod.name': 'test-api-abcde',
+      'k8s.container.name': 'api',
+    }),
+    'generic-cluster',
+  );
+  assert.equal(result.received, 3);
+  assert.equal(result.rejected, 0);
+  assert.deepEqual(
+    result.events.map((event) => event.level),
+    ['error', 'error', 'error'],
+  );
+  for (const event of result.events) {
+    assert.equal(event.clusterId, 'generic-cluster');
+    assert.equal(event.namespace, 'default');
+    assert.equal(event.pod, 'test-api-abcde');
+    assert.equal(event.container, 'api');
+  }
+  assert.match(result.events[2].message, /at connect/);
 });
 
 test('OTLP structured bodies and attributes preserve JSON values and large integers', () => {
@@ -461,6 +529,22 @@ test('gzip OTLP HTTP batch reaches the real processor and responds using OTLP se
     error: (entry) => logs.push(entry),
   };
   const queue = new InMemoryQueue();
+  const store = new InMemoryTelemetryStore({
+    now: () => Date.parse('2026-09-08T10:02:00Z'),
+  });
+  const storage = new TelemetryStorageConsumer(
+    queue,
+    store,
+    {
+      telemetryStorage: {
+        consumerGroup: 'otlp-test-storage',
+        batchMaxSize: 8,
+        batchMaxAgeMs: 20,
+        payloadLimits: defaultPayloadLimits,
+      },
+    },
+    logger,
+  );
   const consumer = new TelemetryConsumer(
     queue,
     logger,
@@ -473,12 +557,14 @@ test('gzip OTLP HTTP batch reaches the real processor and responds using OTLP se
     return event;
   };
   await consumer.onModuleInit();
+  await storage.onModuleInit();
   class TestModule {}
   Module({
     controllers: [OtlpController],
     providers: [
       { provide: QUEUE, useValue: queue },
       { provide: ApplicationLogger, useValue: logger },
+      OtlpDiagnostics,
       {
         provide: APPLICATION_CONFIG,
         useValue: {
@@ -555,6 +641,26 @@ test('gzip OTLP HTTP batch reaches the real processor and responds using OTLP se
     );
     assert.equal(partial.status, 200);
     assert.equal((await partial.json()).partialSuccess.rejectedLogRecords, '1');
+    await storage.flush();
+    const persisted = await store.searchLogs(
+      { mode: 'clusters', clusterIds: ['cluster-1'] },
+      {
+        clusterId: 'cluster-1',
+        namespace: 'faultline-demo',
+        pod: 'demo-123',
+        startTime: '2026-09-08T09:59:00Z',
+        endTime: '2026-09-08T10:02:00Z',
+        limit: 10,
+      },
+    );
+    assert.equal(persisted.items.length, 2);
+    assert.ok(persisted.items.every((item) => item.container === 'demo'));
+    assert.ok(persisted.items.some((item) => item.stream === 'stderr'));
+    assert.ok(
+      persisted.items.some((item) => item.message === 'original message  '),
+    );
+    assert.equal(storage.diagnostics().ledger.persisted, 3);
+    await storage.onModuleDestroy();
     await consumer.onModuleDestroy();
     assert.equal((await post(batch())).status, 503);
     assert.ok(!JSON.stringify(logs).includes('private-token'));
@@ -570,6 +676,8 @@ test('gzip OTLP HTTP batch reaches the real processor and responds using OTLP se
   } finally {
     await app.close();
     await consumer.onModuleDestroy();
+    await storage.onModuleDestroy();
+    await store.close();
     await queue.close();
   }
 });

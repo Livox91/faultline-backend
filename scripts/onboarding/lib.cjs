@@ -3,6 +3,7 @@ const {
   existsSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } = require('node:fs');
 const { dirname, resolve } = require('node:path');
@@ -88,6 +89,10 @@ function saveState(state) {
   });
 }
 
+function clearState() {
+  if (existsSync(statePath)) unlinkSync(statePath);
+}
+
 function parseArgs(values) {
   const result = { _: [] };
   for (let index = 0; index < values.length; index++) {
@@ -126,7 +131,11 @@ function publicEndpoint(endpoint) {
 }
 
 function kubeArgs(state, ...args) {
-  return [...(state.context ? ['--context', state.context] : []), ...args];
+  return [
+    ...(state.context ? ['--context', state.context] : []),
+    ...(state.controlPlaneServer ? ['--server', state.controlPlaneServer] : []),
+    ...args,
+  ];
 }
 
 module.exports = {
@@ -139,6 +148,7 @@ module.exports = {
   writePrivate,
   loadState,
   saveState,
+  clearState,
   parseArgs,
   requestJson,
   publicEndpoint,

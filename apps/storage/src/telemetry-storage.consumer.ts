@@ -1,4 +1,7 @@
 import {
+  Controller,
+  Get,
+  Header,
   Inject,
   Injectable,
   OnModuleDestroy,
@@ -50,6 +53,15 @@ export class TelemetryStorageConsumer implements OnModuleInit, OnModuleDestroy {
   private readonly metrics: TelemetryBatcher<StoredMetricRecord>;
   private readonly kubernetesEvents: TelemetryBatcher<StoredKubernetesEventRecord>;
   private readonly payloadLimits: TelemetryPayloadLimits;
+  private readonly counters = {
+    received: 0,
+    accepted: 0,
+    rejected: 0,
+    persisted: 0,
+    persistenceFailures: 0,
+    rejectionReasons: {} as Record<string, number>,
+    lastPersistedAt: undefined as string | undefined,
+  };
 
   constructor(
     @Inject(QUEUE) private readonly queue: Queue,
@@ -130,14 +142,31 @@ export class TelemetryStorageConsumer implements OnModuleInit, OnModuleDestroy {
   }
 
   async process(message: QueueMessage): Promise<void> {
+    this.counters.received++;
     const parsed = ingestedTelemetryEventSchema.safeParse(message.payload);
     if (!parsed.success || parsed.data.id !== message.id) {
+      this.counters.rejected++;
+      const reason = !parsed.success
+        ? 'invalid_payload'
+        : 'message_id_mismatch';
+      this.counters.rejectionReasons[reason] =
+        (this.counters.rejectionReasons[reason] ?? 0) + 1;
       this.logger.warn({
         event: 'telemetry_storage_event_rejected',
         status: 'rejected',
+        message_id: message.id,
+        drop_reason: reason,
+        fields: !parsed.success
+          ? [
+              ...new Set(
+                parsed.error.issues.map((issue) => issue.path.join('.')),
+              ),
+            ]
+          : ['id'],
       });
       throw new Error('Malformed internal telemetry event');
     }
+    this.counters.accepted++;
     // Storage records when it persisted the event; the processor timestamps its own path.
     const event = { ...parsed.data, processedAt: new Date().toISOString() };
     switch (event.kind) {
@@ -170,6 +199,8 @@ export class TelemetryStorageConsumer implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     try {
       const { written } = await persist();
+      this.counters.persisted += written;
+      this.counters.lastPersistedAt = new Date().toISOString();
       this.logger.log({
         event: 'telemetry_batch_written',
         kind,
@@ -177,6 +208,7 @@ export class TelemetryStorageConsumer implements OnModuleInit, OnModuleDestroy {
         written,
       });
     } catch (error) {
+      this.counters.persistenceFailures++;
       // Rethrow so every message in the batch is negatively acknowledged and retried.
       this.logger.error({
         event: 'telemetry_batch_failed',
@@ -191,5 +223,29 @@ export class TelemetryStorageConsumer implements OnModuleInit, OnModuleDestroy {
   /** Exposed for readiness: reports whether the store is reachable. */
   get telemetryStore(): TelemetryStore {
     return this.store;
+  }
+
+  diagnostics() {
+    return {
+      status: 'healthy',
+      scope: 'process_lifetime',
+      ledger: structuredClone(this.counters),
+      pending: {
+        logs: this.logs.pending,
+        metrics: this.metrics.pending,
+        kubernetesEvents: this.kubernetesEvents.pending,
+      },
+    };
+  }
+}
+
+@Controller('diagnostics/telemetry')
+export class TelemetryStorageDiagnosticsController {
+  constructor(private readonly storage: TelemetryStorageConsumer) {}
+
+  @Get()
+  @Header('Cache-Control', 'no-store')
+  get() {
+    return this.storage.diagnostics();
   }
 }

@@ -31,6 +31,10 @@ export interface ProjectAssignment {
  */
 export interface AuthenticatedUser {
   readonly id: string;
+<<<<<<< HEAD
+=======
+  readonly organizationId: string;
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   readonly email: string;
   /** Unique login handle. Null for accounts created before usernames existed. */
   readonly username: string | null;
@@ -68,7 +72,11 @@ export function hasPermission(
   return !!user && permissionsFor(user.role).includes(permission);
 }
 
+<<<<<<< HEAD
 /** The projects a non-admin may name. Admins are not enumerated: they see everything. */
+=======
+/** The projects this user may name. Every role is scoped by explicit assignment. */
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 export function assignedProjectIds(
   user: Pick<AuthenticatedUser, 'assignments'>,
 ): readonly string[] {
@@ -78,16 +86,24 @@ export function assignedProjectIds(
 /**
  * The single question every project-scoped read and write asks.
  *
+<<<<<<< HEAD
  * An Admin passes for any project. Anyone else passes only for a project they hold an
  * assignment to, which makes the assignment table the one source of truth for engineer
  * access - there is no second place to grant it.
+=======
+ * Every user passes only for a project they hold an assignment to. Role controls what
+ * actions are available; assignment controls which tenant's data those actions reach.
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
  */
 export function hasProjectAccess(
   user: AuthenticatedUser | null | undefined,
   projectId: string | null | undefined,
 ): boolean {
   if (!user || user.status !== 'active') return false;
+<<<<<<< HEAD
   if (isAdmin(user)) return true;
+=======
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   if (!projectId) return false;
   return user.assignments.some(
     (assignment) => assignment.projectId === projectId,
@@ -107,7 +123,11 @@ export function hasEnvironmentAccess(
   environment?: string,
 ): boolean {
   if (!hasProjectAccess(user, projectId)) return false;
+<<<<<<< HEAD
   if (!environment || isAdmin(user!)) return true;
+=======
+  if (!environment) return true;
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   const assignment = user!.assignments.find(
     (candidate) => candidate.projectId === projectId,
   );
@@ -154,6 +174,10 @@ export function assertPermission(
 export function presentUser(user: AuthenticatedUser) {
   return {
     id: user.id,
+<<<<<<< HEAD
+=======
+    organizationId: user.organizationId,
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     email: user.email,
     username: user.username,
     name: user.name,
@@ -164,9 +188,13 @@ export function presentUser(user: AuthenticatedUser) {
     // a hint for routing only - the API enforces the same confinement itself.
     mustChangePassword: user.mustChangePassword,
     permissions: permissionsFor(user.role),
+<<<<<<< HEAD
     // Admins are not listed against projects: their access is not enumerable, and a
     // client that received a list would wrongly treat it as the limit of their reach.
     projectIds: isAdmin(user) ? null : assignedProjectIds(user),
+=======
+    projectIds: assignedProjectIds(user),
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   };
 }
 

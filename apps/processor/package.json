@@ -21,5 +21,6 @@
     "rxjs": "^7.8.2",
     "@faultline/baselines": "0.1.0",
     "@faultline/log-classification": "0.1.0"
+    ,"@faultline/notifications": "0.1.0"
   }
 }

@@ -18,6 +18,7 @@ import {
 } from '../telemetry.controller';
 import { translateOtlpLogs } from './translate';
 import { translateOtlpMetrics } from './metrics';
+import { OtlpDiagnostics } from './diagnostics';
 
 /** Collector-only OTLP/HTTP JSON bridge; existing Faultline REST endpoints are unchanged. */
 @Controller('v1/otlp')
@@ -26,6 +27,7 @@ export class OtlpController {
     @Inject(CLUSTER_AUTHENTICATOR) private readonly auth: ClusterAuthenticator,
     @Inject(QUEUE) private readonly queue: QueueProducer,
     private readonly logger: ApplicationLogger,
+    private readonly diagnostics: OtlpDiagnostics,
   ) {}
   @Post('logs')
   @HttpCode(200)
@@ -63,7 +65,9 @@ export class OtlpController {
     }
     if (contentType?.split(';')[0]?.trim().toLowerCase() !== 'application/json')
       throw new UnsupportedMediaTypeException('OTLP JSON is required');
-    let batch: ReturnType<typeof translateOtlpLogs>;
+    let batch:
+      | ReturnType<typeof translateOtlpLogs>
+      | ReturnType<typeof translateOtlpMetrics>;
     try {
       batch =
         signal === 'logs'
@@ -75,22 +79,54 @@ export class OtlpController {
         'Malformed OTLP JSON or batch exceeds 256 records',
       );
     }
+    const received =
+      'received' in batch
+        ? batch.received
+        : batch.events.length + batch.rejected;
+    const rejectionReasons =
+      'rejectionReasons' in batch
+        ? batch.rejectionReasons
+        : batch.rejected
+          ? { invalid_payload: batch.rejected }
+          : {};
+    this.diagnostics.translated(
+      signal,
+      received,
+      batch.events.length,
+      batch.rejected,
+      rejectionReasons,
+    );
+    let queued = 0;
     try {
-      for (const event of batch.events)
+      for (const event of batch.events) {
         await this.queue.publish(RAW_TELEMETRY_TOPIC, {
           id: event.id,
           payload: event,
         });
+        queued++;
+      }
+      this.diagnostics.published(signal, queued);
     } catch {
-      this.logger.error({ event: 'otlp_publish_failed' });
+      this.diagnostics.publishFailed(signal);
+      this.logger.error({
+        event: 'otlp_publish_failed',
+        signal,
+        records_queued: queued,
+        records_unsent: batch.events.length - queued,
+        drop_reason: 'queue_unavailable',
+      });
       throw new ServiceUnavailableException('Telemetry queue unavailable');
     }
     this.logger.log({
       event: 'otlp_batch_accepted',
       signal,
       cluster_id: clusterId,
+      received,
+      normalized: batch.events.length,
+      queued,
       accepted: batch.events.length,
       rejected: batch.rejected,
+      rejection_reasons: rejectionReasons,
     });
     // OTLP uses 200 with an ExportLogsServiceResponse, including permanent record rejections.
     return batch.rejected
@@ -98,7 +134,7 @@ export class OtlpController {
           partialSuccess: {
             [signal === 'logs' ? 'rejectedLogRecords' : 'rejectedDataPoints']:
               String(batch.rejected),
-            errorMessage: 'Malformed telemetry records rejected',
+            errorMessage: `Telemetry records rejected: ${Object.keys(rejectionReasons).join(', ')}`,
           },
         }
       : {};

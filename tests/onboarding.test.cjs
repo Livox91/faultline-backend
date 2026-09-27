@@ -54,6 +54,17 @@ test('destructive development reset requires explicit confirmation', () => {
 test('setup generates database credentials instead of hardcoding them', () => {
   const setup = read('scripts/setup.cjs');
   assert.match(setup, /POSTGRES_PASSWORD:\s*secret\(\)/);
+  assert.match(setup, /AUTH_JWT_SECRET=\$\{authJwtSecret\}/);
+  assert.match(
+    setup,
+    /AUTH_BOOTSTRAP_ADMIN_PASSWORD=\$\{bootstrapAdminPassword\}/,
+  );
+  assert.match(setup, /value\.length >= 12/);
+  assert.match(
+    setup,
+    /'apps\/storage\/\.env':[^\n]*DATABASE_URL=\$\{databaseUrl\}/,
+  );
+  assert.match(setup, /requiredLocalFields/);
   assert.doesNotMatch(setup, /admin123|password123/i);
   assert.match(
     read('scripts/bootstrap-infrastructure.cjs'),
@@ -61,11 +72,86 @@ test('setup generates database credentials instead of hardcoding them', () => {
   );
 });
 
+test('setup repairs PostgreSQL ports reserved by Windows', () => {
+  const {
+    parseExcludedPortRanges,
+    isPortExcluded,
+    chooseUnexcludedPort,
+  } = require('../scripts/onboarding/ports.cjs');
+  const ranges = parseExcludedPortRanges(`
+Start Port    End Port
+----------    --------
+     50000       50059     *
+     55423       55522
+`);
+  assert.deepEqual(ranges, [
+    { start: 50000, end: 50059 },
+    { start: 55423, end: 55522 },
+  ]);
+  assert.equal(isPortExcluded(55432, ranges), true);
+  assert.equal(chooseUnexcludedPort(55432, ranges), 5432);
+
+  const setup = read('scripts/setup.cjs');
+  assert.match(setup, /replacedPostgresPort/);
+  assert.match(setup, /PostgreSQL port repaired/);
+});
+
 test('combined development pipeline loads every application environment', () => {
   const pipeline = read('scripts/dev-pipeline.cjs');
-  assert.match(pipeline, /\['api', 'ingestion', 'processor', 'storage'\]/);
+  assert.match(
+    pipeline,
+    /\['api', 'ingestion', 'processor', 'storage', 'notification'\]/,
+  );
+  assert.match(pipeline, /notification: '3004'/);
   assert.match(pipeline, /parseEnv/);
   assert.match(pipeline, /key !== 'PORT'/);
+});
+
+test('notification participates in setup, readiness, and the shared lifecycle', () => {
+  const setup = read('scripts/setup.cjs');
+  const preflight = read('scripts/preflight.cjs');
+  const start = read('scripts/faultline-start.cjs');
+  const pipeline = read('scripts/dev-pipeline.cjs');
+
+  assert.match(setup, /'apps\/notification\/\.env'/);
+  assert.match(setup, /PORT=3004/);
+  assert.match(setup, /SLACK_TOKEN_ENCRYPTION_KEY=\$\{slackTokenEncryptionKey\}/);
+  assert.match(preflight, /'Faultline notification': 3004/);
+  assert.match(start, /\[3000, 3001, 3002, 3003, 3004\]/);
+  assert.match(
+    pipeline,
+    /\['processor', 'storage', 'notification', 'ingestion', 'api'\]/,
+  );
+});
+
+test('setup provides a project-local Stripe CLI and clear next commands', () => {
+  const packageJson = require('../package.json');
+  assert.equal(typeof packageJson.devDependencies['@stripe/cli'], 'string');
+  const setup = read('scripts/setup.cjs');
+  assert.match(setup, /node_modules\/@stripe\/cli\/bin\/shim\.js/);
+  assert.match(setup, /--include=optional/);
+  assert.match(setup, /npm exec -- stripe login/);
+  assert.match(setup, /npm run preflight/);
+  assert.match(setup, /npm run faultline:start/);
+  assert.match(setup, /npm run cluster:onboard/);
+
+  const webhooks = read('scripts/stripe-webhooks.cjs');
+  assert.match(webhooks, /LOCAL_STRIPE_BIN/);
+  assert.match(webhooks, /cli-\$\{process\.platform\}-\$\{process\.arch\}/);
+
+  const preflight = read('scripts/preflight.cjs');
+  assert.match(preflight, /Stripe CLI/);
+  assert.match(preflight, /stripeAvailable/);
+});
+
+test('startup preserves an actionable Stripe forwarding failure', () => {
+  const start = read('scripts/faultline-start.cjs');
+  assert.match(
+    start,
+    /Applications are healthy, but Stripe webhook forwarding did not start/,
+  );
+  assert.match(start, /npm exec -- stripe login/);
+  assert.match(start, /services\?\.every/);
 });
 
 test('cluster registration is persisted before local onboarding state', () => {

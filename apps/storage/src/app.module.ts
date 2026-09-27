@@ -35,7 +35,10 @@ import {
   getDevelopmentIncidentRepository,
 } from '@faultline/incidents';
 import { resolve } from 'node:path';
-import { TelemetryStorageConsumer } from './telemetry-storage.consumer';
+import {
+  TelemetryStorageConsumer,
+  TelemetryStorageDiagnosticsController,
+} from './telemetry-storage.consumer';
 import { BaselineRefreshService } from './baseline-refresh.service';
 
 export const CLICKHOUSE_CONNECTION = Symbol('faultline.clickhouse-connection');
@@ -156,6 +159,7 @@ if (testMode) {
 }
 
 @Module({
+  controllers: [TelemetryStorageDiagnosticsController],
   providers,
   imports: [PlatformModule.forRoot('storage', resolve(__dirname, '../.env'))],
 })

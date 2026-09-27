@@ -1,0 +1,25 @@
+import {randomUUID} from 'node:crypto';
+import {BadRequestException,Body,Controller,Get,Header,Inject,NotFoundException,Param,Patch,Post} from '@nestjs/common';
+import {z} from 'zod';
+import {AVAILABILITY_OVERRIDE_REPOSITORY,CONTACT_REPOSITORY,ON_CALL_SCHEDULE_REPOSITORY,ON_CALL_SHIFT_REPOSITORY,OnCallResolver,isValidTimezone,validateTimeRange,type AvailabilityOverrideRepository,type ContactRepository,type OnCallScheduleRepository,type OnCallShiftRepository} from '@faultline/notifications';
+const id=z.string().trim().min(1).max(128),instant=z.string().trim().min(1);
+const scheduleInput=z.object({organizationId:id,teamId:id,name:z.string().trim().min(1).max(200),timezone:z.string().trim().min(1),enabled:z.boolean().default(true)});
+const shiftInput=z.object({contactId:id,startsAt:instant,endsAt:instant});
+const overrideInput=z.object({replacementContactId:id,startsAt:instant,endsAt:instant,reason:z.string().trim().min(1).max(500)});
+function parse<T>(schema:z.ZodType<T>,body:unknown):T{const result=schema.safeParse(body);if(!result.success)throw new BadRequestException({message:'Invalid request',fields:result.error.issues.map(i=>i.path.join('.'))});return result.data;}
+@Controller('on-call/schedules')
+export class OnCallController{
+  private readonly resolver:OnCallResolver;
+  constructor(@Inject(ON_CALL_SCHEDULE_REPOSITORY)private readonly schedules:OnCallScheduleRepository,@Inject(ON_CALL_SHIFT_REPOSITORY)private readonly shifts:OnCallShiftRepository,@Inject(AVAILABILITY_OVERRIDE_REPOSITORY)private readonly overrides:AvailabilityOverrideRepository,@Inject(CONTACT_REPOSITORY)private readonly contacts:ContactRepository){this.resolver=new OnCallResolver(schedules,shifts,overrides);}
+  @Post()async create(@Body()body:unknown){const input=parse(scheduleInput,body);if(!isValidTimezone(input.timezone))throw new BadRequestException('Invalid IANA timezone');const now=new Date().toISOString();return this.schedules.create({id:randomUUID(),...input,createdAt:now,updatedAt:now});}
+  @Get()@Header('Cache-Control','no-store')list(){return this.schedules.list();}
+  @Get(':id')async get(@Param('id')id:string){return this.schedule(id);}
+  @Patch(':id')async update(@Param('id')id:string,@Body()body:unknown){const current=await this.schedule(id),input=parse(scheduleInput.partial(),body);if(input.timezone&&!isValidTimezone(input.timezone))throw new BadRequestException('Invalid IANA timezone');return this.schedules.update({...current,...input,updatedAt:new Date().toISOString()});}
+  @Post(':id/shifts')async addShift(@Param('id')scheduleId:string,@Body()body:unknown){await this.enabledSchedule(scheduleId);const input=parse(shiftInput,body),contact=await this.contacts.get(input.contactId);if(!contact)throw new BadRequestException('Unknown contact');let range;try{range=validateTimeRange(input.startsAt,input.endsAt);}catch(error){throw new BadRequestException((error as Error).message);}if(await this.shifts.hasOverlap(scheduleId,range.startsAt,range.endsAt))throw new BadRequestException('Shift overlaps an existing shift');const now=new Date().toISOString();return this.shifts.create({id:randomUUID(),scheduleId,contactId:input.contactId,...range,createdAt:now,updatedAt:now});}
+  @Get(':id/shifts')async listShifts(@Param('id')id:string){await this.schedule(id);return this.shifts.listForSchedule(id);}
+  @Post(':id/overrides')async addOverride(@Param('id')scheduleId:string,@Body()body:unknown){await this.enabledSchedule(scheduleId);const input=parse(overrideInput,body),contact=await this.contacts.get(input.replacementContactId);if(!contact)throw new BadRequestException('Unknown replacement contact');let range;try{range=validateTimeRange(input.startsAt,input.endsAt);}catch(error){throw new BadRequestException((error as Error).message);}if(await this.overrides.hasOverlap(scheduleId,range.startsAt,range.endsAt))throw new BadRequestException('Override overlaps an existing override');const now=new Date().toISOString();return this.overrides.create({id:randomUUID(),scheduleId,replacementContactId:input.replacementContactId,reason:input.reason,...range,createdAt:now,updatedAt:now});}
+  @Get(':id/overrides')async listOverrides(@Param('id')id:string){await this.schedule(id);return this.overrides.listForSchedule(id);}
+  @Get(':id/current')async current(@Param('id')id:string){await this.schedule(id);const assignment=await this.resolver.resolve(id);if(!assignment)return{contact:null,activeShift:null,activeOverride:null,validUntil:null};const contact=await this.contacts.get(assignment.contactId);return{contact:contact??null,activeShift:assignment.shift,activeOverride:assignment.override??null,validUntil:assignment.validUntil};}
+  private async schedule(id:string){const value=await this.schedules.get(id);if(!value)throw new NotFoundException('On-call schedule not found');return value;}
+  private async enabledSchedule(id:string){const value=await this.schedule(id);if(!value.enabled)throw new BadRequestException('On-call schedule is disabled');return value;}
+}

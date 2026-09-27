@@ -145,6 +145,21 @@ async function boot() {
     password: 'correct-horse-battery',
   });
   await context.assignments.assign(
+<<<<<<< HEAD
+=======
+    adminRecord.id,
+    PROJECT_A,
+    adminRecord.id,
+    [],
+  );
+  await context.assignments.assign(
+    adminRecord.id,
+    PROJECT_B,
+    adminRecord.id,
+    [],
+  );
+  await context.assignments.assign(
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     engineerRecord.id,
     PROJECT_A,
     adminRecord.id,
@@ -173,14 +188,28 @@ const call = (base, token, path, init = {}) =>
 
 /* -------------------------------------------------------------------- tests */
 
+<<<<<<< HEAD
 test('the rules themselves: an admin reaches every project, an engineer only assigned ones', () => {
   const admin = { role: ROLES.ADMIN, status: 'active', assignments: [] };
+=======
+test('the rules themselves: every role reaches only assigned projects', () => {
+  const admin = {
+    role: ROLES.ADMIN,
+    status: 'active',
+    assignments: [{ projectId: PROJECT_A }],
+  };
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   const engineer = {
     role: ROLES.ONSITE_ENGINEER,
     status: 'active',
     assignments: [{ projectId: PROJECT_A }],
   };
+<<<<<<< HEAD
   assert.equal(hasProjectAccess(admin, PROJECT_B), true);
+=======
+  assert.equal(hasProjectAccess(admin, PROJECT_A), true);
+  assert.equal(hasProjectAccess(admin, PROJECT_B), false);
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   assert.equal(hasProjectAccess(engineer, PROJECT_A), true);
   assert.equal(hasProjectAccess(engineer, PROJECT_B), false);
   // A disabled account reaches nothing, whatever it is assigned to.
@@ -301,6 +330,66 @@ test('an engineer sees only assigned projects, however the request is phrased', 
   }
 });
 
+<<<<<<< HEAD
+=======
+test('one admin cannot see clusters or incidents owned by another admin', async () => {
+  const context = await boot();
+  const { app, base, users, assignments, adminRecord } = context;
+  try {
+    const other = await users.create({
+      email: 'other-admin@faultline.test',
+      name: 'Other Administrator',
+      role: ROLES.ADMIN,
+      password: 'correct-horse-battery',
+    });
+    await assignments.assign(other.id, PROJECT_B, adminRecord.id, []);
+    const otherToken = tokenFor(other);
+
+    const listed = await call(base, otherToken, '/clusters');
+    assert.equal(listed.status, 200);
+    assert.deepEqual((await listed.json()).map((entry) => entry.id), [PROJECT_B]);
+    assert.equal((await call(base, otherToken, `/clusters/${PROJECT_A}`)).status, 403);
+
+    const incidents = await call(base, otherToken, '/incidents');
+    assert.equal(incidents.status, 200);
+    assert.deepEqual((await incidents.json()).map((entry) => entry.id), ['incident-b']);
+    assert.equal((await call(base, otherToken, '/incidents/incident-a')).status, 404);
+
+    const visibleUsers = await call(base, otherToken, '/admin/users');
+    assert.equal(visibleUsers.status, 200);
+    assert.ok(
+      (await visibleUsers.json()).items.every((user) =>
+        (user.projectIds ?? []).every((id) => id === PROJECT_B),
+      ),
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('a newly created cluster is assigned to its creating user', async () => {
+  const { app, base, adminToken, adminRecord, assignments } = await boot();
+  const id = 'project-owned-on-create';
+  try {
+    const created = await call(base, adminToken, '/projects', {
+      method: 'POST',
+      body: JSON.stringify({ id, name: 'Owned on create' }),
+    });
+    assert.equal(created.status, 201);
+    assert.ok(
+      (await assignments.listForUser(adminRecord.id)).some(
+        (assignment) => assignment.projectId === id,
+      ),
+    );
+    assert.equal((await call(base, adminToken, `/projects/${id}`)).status, 200);
+  } finally {
+    projects.delete(id);
+    await assignments.remove(adminRecord.id, id);
+    await app.close();
+  }
+});
+
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 test('incident reads are bounded by assignment, not by the filter the caller sends', async () => {
   const { app, base, engineerToken, adminToken } = await boot();
   try {
@@ -386,10 +475,16 @@ test('an admin manages users and assignments, and access follows immediately', a
     assert.deepEqual(ahmed.projectIds, [PROJECT_A]);
     assert.equal(ahmed.role, ROLES.ONSITE_ENGINEER);
     assert.equal(ahmed.passwordHash, undefined, 'no credential is ever returned');
+<<<<<<< HEAD
     // An admin is not enumerated against projects: their reach is not a finite list.
     assert.equal(
       users.find((user) => user.role === ROLES.ADMIN).projectIds,
       null,
+=======
+    assert.deepEqual(
+      users.find((user) => user.role === ROLES.ADMIN).projectIds.sort(),
+      [PROJECT_A, PROJECT_B],
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     );
 
     // Granting project B takes effect on the engineer's very next request, using the
@@ -516,7 +611,15 @@ test('the telemetry scope intersects the deployment scope with the caller assign
   const scoped = new UserTelemetryScopeResolver(
     apiConfig({ queryClusterScope: [PROJECT_A, PROJECT_B] }),
   );
+<<<<<<< HEAD
   const admin = { role: ROLES.ADMIN, status: 'active', assignments: [] };
+=======
+  const admin = {
+    role: ROLES.ADMIN,
+    status: 'active',
+    assignments: [{ projectId: PROJECT_A }, { projectId: PROJECT_B }],
+  };
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   const engineer = {
     role: ROLES.ONSITE_ENGINEER,
     status: 'active',
@@ -541,11 +644,19 @@ test('the telemetry scope intersects the deployment scope with the caller assign
     { mode: 'clusters', clusterIds: [] },
   );
 
+<<<<<<< HEAD
   // An engineer with no assignments gets the empty scope, never the wide one - even in
   // development, where an Admin would get "all clusters".
   const development = new UserTelemetryScopeResolver(apiConfig());
   assert.deepEqual(await development.resolve(admin), {
     mode: 'all-development-clusters',
+=======
+  // Any user with no assignments gets the empty scope, never the wide one.
+  const development = new UserTelemetryScopeResolver(apiConfig());
+  assert.deepEqual(await development.resolve(admin), {
+    mode: 'clusters',
+    clusterIds: [PROJECT_A, PROJECT_B],
+>>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   });
   assert.deepEqual(
     await development.resolve({ ...engineer, assignments: [] }),

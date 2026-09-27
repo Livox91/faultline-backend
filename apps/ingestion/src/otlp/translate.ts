@@ -94,6 +94,7 @@ function translate(
   scope: ObjectValue,
   clusterId: string,
 ): TelemetryEvent | TelemetryEvent[] {
+  const ingestedAt = new Date().toISOString();
   const record = object(recordValue);
   const attrs = attributes(record.attributes);
   if (
@@ -122,20 +123,34 @@ function translate(
       throw new Error('Invalid Kubernetes metadata');
   }
   const eventTime = nanos(record.timeUnixNano);
-  const observedTime = nanos(record.observedTimeUnixNano);
-  const timestamp = eventTime ?? observedTime;
-  if (!timestamp) throw new Error('Missing telemetry timestamp');
+  // An invalid secondary timestamp must not discard a record with a valid event time.
+  const observedTime = eventTime
+    ? undefined
+    : nanos(record.observedTimeUnixNano);
+  // OTLP timestamps are optional. Preserve a useful ordering boundary instead of
+  // dropping otherwise valid application output when an SDK omits both fields.
+  const timestamp = eventTime ?? observedTime ?? ingestedAt;
   if (
     record.severityText !== undefined &&
     typeof record.severityText !== 'string'
   )
     throw new Error('Invalid severity text');
   const body = anyValue(record.body ?? {});
+  const workloadKinds = [
+    ['k8s.deployment.name', 'Deployment'],
+    ['k8s.statefulset.name', 'StatefulSet'],
+    ['k8s.daemonset.name', 'DaemonSet'],
+    ['k8s.job.name', 'Job'],
+    ['k8s.replicaset.name', 'ReplicaSet'],
+  ] as const;
+  const workloadIdentity = workloadKinds
+    .map(([key, kind]) => ({ name: text(resource[key]), kind }))
+    .find(({ name }) => name !== undefined);
   const common = {
     id: randomUUID(),
     clusterId,
     timestamp,
-    ingestedAt: new Date().toISOString(),
+    ingestedAt,
     namespace: text(resource['k8s.namespace.name']),
     pod: text(resource['k8s.pod.name']),
     container: text(resource['k8s.container.name']),
@@ -143,23 +158,23 @@ function translate(
     service:
       text(resource['service.name']) ??
       text(resource['k8s.pod.label.app.kubernetes.io/name']),
-    workload: [
-      'k8s.deployment.name',
-      'k8s.statefulset.name',
-      'k8s.daemonset.name',
-      'k8s.job.name',
-      'k8s.replicaset.name',
-    ]
-      .map((key) => text(resource[key]))
-      .find(Boolean),
+    workload: workloadIdentity?.name,
     attributes: {
       ...resource,
       ...attrs,
+      ...(workloadIdentity
+        ? { 'k8s.workload.kind': workloadIdentity.kind }
+        : {}),
       'otel.scope': scope,
       'otel.severity_text': record.severityText ?? '',
       'otel.severity_number': record.severityNumber ?? 0,
       'otel.observed_time_unix_nano': record.observedTimeUnixNano ?? '0',
       'otel.time_unix_nano': record.timeUnixNano ?? '0',
+      'faultline.timestamp.source': eventTime
+        ? 'event_time'
+        : observedTime
+          ? 'observed_time'
+          : 'ingested_at',
     },
     raw: body,
   };
@@ -250,7 +265,12 @@ function translate(
 export function translateOtlpLogs(
   body: unknown,
   clusterId: string,
-): { events: TelemetryEvent[]; rejected: number } {
+): {
+  events: TelemetryEvent[];
+  received: number;
+  rejected: number;
+  rejectionReasons: Record<string, number>;
+} {
   const request = object(body);
   const resources = array(request.resourceLogs ?? []);
   const pending: {
@@ -273,6 +293,7 @@ export function translateOtlpLogs(
   }
   const events: TelemetryEvent[] = [];
   let rejected = 0;
+  const rejectionReasons: Record<string, number> = {};
   for (const item of pending) {
     try {
       const translated = translate(
@@ -282,11 +303,30 @@ export function translateOtlpLogs(
         clusterId,
       );
       events.push(...(Array.isArray(translated) ? translated : [translated]));
-    } catch {
+    } catch (error) {
       rejected++;
+      const reason = rejectionReason(error);
+      rejectionReasons[reason] = (rejectionReasons[reason] ?? 0) + 1;
     }
   }
   if (events.length > 4096)
     throw new Error('Expanded batch exceeds 4096 events');
-  return { events, rejected };
+  return {
+    events,
+    received: pending.length,
+    rejected,
+    rejectionReasons,
+  };
+}
+
+/** Stable, low-cardinality reasons for batch diagnostics; payload data is never logged. */
+function rejectionReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (message === 'Cluster mismatch') return 'cluster_mismatch';
+  if (message === 'Invalid Kubernetes metadata')
+    return 'invalid_resource_metadata';
+  if (message === 'Unsupported Kubernetes object') return 'unsupported_source';
+  if (message === 'Invalid timestamp') return 'invalid_timestamp';
+  if (message === 'Invalid severity') return 'invalid_severity';
+  return 'invalid_payload';
 }

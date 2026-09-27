@@ -21,6 +21,7 @@ export const EVENT_TOPICS = {
   anomaliesDetected: 'anomalies.detected',
   anomaliesResolved: 'anomalies.resolved',
   incidentsUpdated: 'incidents.updated',
+  incidentsLifecycle: 'incidents.lifecycle',
 } as const;
 export const DEAD_LETTER_PREFIX = 'deadletter';
 

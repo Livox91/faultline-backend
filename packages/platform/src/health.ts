@@ -75,7 +75,8 @@ export class HealthService {
   unregister(name: string): void {
     this.dependencies.delete(name);
   }
-  async getReadiness(): Promise<ReadinessReport> {
+  /** Returns observed readiness as data; reporting must not depend on HTTP exceptions. */
+  async getReadinessReport(): Promise<ReadinessReport> {
     if (!this.dependencies.size) return this.getStatus();
     const dependencies: Record<string, DependencyHealth> = {};
     const failed: string[] = [];
@@ -97,11 +98,17 @@ export class HealthService {
       ...(degraded.length ? { degraded, status: 'degraded' as const } : {}),
     };
     if (failed.length)
-      throw new ServiceUnavailableException({
+      return {
         ...status,
         status: 'unavailable',
-      });
+      };
     return status;
+  }
+  async getReadiness(): Promise<ReadinessReport> {
+    const report = await this.getReadinessReport();
+    if (report.status === 'unavailable')
+      throw new ServiceUnavailableException(report);
+    return report;
   }
 }
 

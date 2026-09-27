@@ -12,6 +12,7 @@ import {
 } from '@faultline/queue';
 import { resolve } from 'node:path';
 import { OtlpController } from './otlp/otlp.controller';
+import { OtlpDiagnostics, OtlpDiagnosticsController } from './otlp/diagnostics';
 import {
   TelemetryController,
   CLUSTER_AUTHENTICATOR,
@@ -41,9 +42,10 @@ const queueProvider =
       };
 
 @Module({
-  controllers: [TelemetryController, OtlpController],
+  controllers: [TelemetryController, OtlpController, OtlpDiagnosticsController],
   providers: [
     queueProvider,
+    OtlpDiagnostics,
     {
       provide: CLUSTER_AUTHENTICATOR,
       useClass: DevelopmentClusterAuthenticator,
