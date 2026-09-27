@@ -262,15 +262,26 @@ async function persistCluster(state) {
   try {
     await client.connect();
     await client.query('BEGIN');
+    let organizationId = 'default';
+    if (args['owner-user-id']) {
+      const owner = await client.query(
+        'SELECT organization_id FROM users WHERE id = $1',
+        [args['owner-user-id']],
+      );
+      if (!owner.rows[0])
+        throw new Error('The onboarding user no longer exists.');
+      organizationId = owner.rows[0].organization_id;
+    }
     await client.query(
       `INSERT INTO clusters
-         (id, name, kubernetes_context, workload_namespace, workload_selector)
-       VALUES ($1, $2, $3, $4, $5)
+         (id, name, kubernetes_context, workload_namespace, workload_selector, organization_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name,
          kubernetes_context=EXCLUDED.kubernetes_context,
          workload_namespace=EXCLUDED.workload_namespace,
          workload_selector=EXCLUDED.workload_selector,
+         organization_id=EXCLUDED.organization_id,
          updated_at=now()`,
       [
         state.clusterId,
@@ -278,6 +289,7 @@ async function persistCluster(state) {
         state.context,
         state.workloadNamespace,
         state.workloadLabel,
+        organizationId,
       ],
     );
     if (args['owner-user-id'])

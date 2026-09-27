@@ -155,6 +155,10 @@ test('web onboarding assigns the registered cluster to its authenticated owner',
   assert.match(source, /args\['owner-user-id'\]/);
   assert.match(
     source,
+    /SELECT organization_id FROM users WHERE id = \$1[\s\S]*organization_id=EXCLUDED\.organization_id/,
+  );
+  assert.match(
+    source,
     /INSERT INTO project_users \(user_id, project_id, assigned_by\)[\s\S]*ON CONFLICT \(user_id, project_id\) DO NOTHING/,
   );
 });
