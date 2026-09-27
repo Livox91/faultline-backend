@@ -13,6 +13,7 @@ const {
   controlPlaneServer,
   registrationDefaults,
   podFailureReason,
+  kubernetesUnavailable,
 } = require('../scripts/cluster.cjs');
 
 function kubectlMock({ context = 'kind-demo', nodes = 1, ready = 1 } = {}) {
@@ -170,4 +171,24 @@ test('uninstall removes the test namespace and cluster registration', () => {
   assert.match(source, /clearState\(\)/);
   assert.match(source, /args\.id && args\.id !== state\.clusterId/);
   assert.match(source, /command === 'uninstall'\) await uninstall\(\)/);
+});
+
+test('uninstall can finish registration cleanup when Kubernetes is unreachable', () => {
+  assert.equal(
+    kubernetesUnavailable(
+      new Error(
+        'Unable to connect to the server: dial tcp 127.0.0.1:52772: connectex: No connection could be made because the target machine actively refused it.',
+      ),
+    ),
+    true,
+  );
+  assert.equal(kubernetesUnavailable(new Error('Error from server (Forbidden)')), false);
+  assert.equal(
+    kubernetesUnavailable(new Error('x509: certificate signed by unknown authority')),
+    false,
+  );
+  assert.match(
+    source,
+    /if \(!kubernetesUnavailable\(error\)\) throw error;[\s\S]*removeClusterRegistration/,
+  );
 });

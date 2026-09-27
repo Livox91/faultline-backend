@@ -43,6 +43,20 @@ const kubectl = (state, values, options = {}) => {
 
 const success = (message) => console.log(`\u2713 ${message}`);
 
+function kubernetesUnavailable(error) {
+  const detail = [error?.message, error?.detail]
+    .filter(Boolean)
+    .join('\n');
+  return [
+    /unable to connect to the server/i,
+    /the connection to the server .* was refused/i,
+    /dial tcp .*?(?:connection refused|actively refused|i\/o timeout)/i,
+    /connectex:.*actively refused/i,
+    /no such host/i,
+    /context .* does not exist/i,
+  ].some((pattern) => pattern.test(detail));
+}
+
 function environmentFor(context) {
   if (context.startsWith('kind-')) return 'kind';
   if (context.startsWith('minikube')) return 'minikube';
@@ -1051,19 +1065,33 @@ async function uninstall() {
     );
   // The test workload is not part of the collector kustomization. Delete its whole
   // namespace so an interrupted verification cannot leave faultline-log-test behind.
-  cleanupTestWorkload(state);
-  kubectl(
-    state,
-    ['delete', '-k', 'deploy/kubernetes', '--ignore-not-found=true'],
-    {
-      timeout: 120_000,
-    },
-  );
+  let kubernetesResourcesRemoved = true;
+  try {
+    cleanupTestWorkload(state);
+    kubectl(
+      state,
+      ['delete', '-k', 'deploy/kubernetes', '--ignore-not-found=true'],
+      {
+        timeout: 120_000,
+      },
+    );
+  } catch (error) {
+    if (!kubernetesUnavailable(error)) throw error;
+    kubernetesResourcesRemoved = false;
+    console.warn(
+      'Kubernetes is unreachable; skipping in-cluster cleanup and removing the Faultline registration.',
+    );
+    if (verbose && error.detail)
+      console.warn(`Kubernetes details:\n${error.detail}`);
+  }
   const removed = await removeClusterRegistration(state.clusterId);
   clearState();
-  console.log(
-    `Faultline collectors, onboarding test resources and ${removed ? 'the cluster registration' : 'any existing cluster registration'} were removed. BookNest was not changed.`,
-  );
+  const registration = removed
+    ? 'the cluster registration'
+    : 'any existing cluster registration';
+  console.log(kubernetesResourcesRemoved
+    ? `Faultline collectors, onboarding test resources and ${registration} were removed. BookNest was not changed.`
+    : `The Kubernetes cluster could not be contacted. ${registration[0].toUpperCase()}${registration.slice(1)} and local onboarding state were removed; any remaining collectors are no longer authorized. BookNest was not changed.`);
 }
 
 async function chooseReachableEndpoint(state, rl) {
@@ -1224,4 +1252,5 @@ module.exports = {
   detectKubernetes,
   registrationDefaults,
   podFailureReason,
+  kubernetesUnavailable,
 };
