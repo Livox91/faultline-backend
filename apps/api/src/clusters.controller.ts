@@ -33,6 +33,7 @@ import {
   type RegisteredCluster,
 } from '@faultline/database';
 import { AuditTrail } from './auth/audit-trail';
+import { PlanEntitlements } from './billing/entitlements';
 import {
   CurrentUser,
   RequirePermission,
@@ -97,6 +98,7 @@ export class ClustersController {
     @Inject(PROJECT_ASSIGNMENT_REPOSITORY)
     private readonly assignments: ProjectAssignmentRepository,
     private readonly audit: AuditTrail,
+    private readonly entitlements: PlanEntitlements,
   ) {}
 
   @Get()
@@ -176,6 +178,9 @@ export class ClustersController {
       return updated;
     }
 
+    // Only a genuinely new cluster counts against the plan's allowance; the idempotent
+    // retry above never does.
+    await this.entitlements.assertClusterCapacity(actor, this.clusters);
     try {
       const created = await this.clusters.create(project);
       await this.assignments.assign(actor.id, id, actor.id, []);

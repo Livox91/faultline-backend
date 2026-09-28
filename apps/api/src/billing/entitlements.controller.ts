@@ -1,14 +1,13 @@
-import { Controller, Get, Header, Inject } from '@nestjs/common';
+import { Controller, Get, Header } from '@nestjs/common';
 import {
   FEATURE_LABELS,
   FEATURES,
   PLANS,
-  SUBSCRIPTION_REPOSITORY,
+  clusterLimitFor,
   entitledPlan,
   featuresFor,
   minimumPlanFor,
   type PlanFeature,
-  type SubscriptionRepository,
 } from '@faultline/billing';
 import type { AuthenticatedUser } from '@faultline/auth';
 import { CurrentUser } from '../auth/context';
@@ -34,18 +33,15 @@ const describe = (feature: PlanFeature) => ({
  */
 @Controller('billing')
 export class EntitlementsController {
-  constructor(
-    private readonly entitlements: PlanEntitlements,
-    @Inject(SUBSCRIPTION_REPOSITORY)
-    private readonly subscriptions: SubscriptionRepository,
-  ) {}
+  constructor(private readonly entitlements: PlanEntitlements) {}
 
   @Get('entitlements')
   @Header('Cache-Control', 'no-store')
   async mine(@CurrentUser() user: AuthenticatedUser) {
     const enforced = this.entitlements.enforced;
+    // The organization's subscription, so an engineer sees the tier their owner bought.
     const subscription = enforced
-      ? await this.subscriptions.findByUserId(user.id)
+      ? await this.entitlements.subscriptionFor(user)
       : undefined;
     const plan = enforced ? entitledPlan(subscription ?? null) : 'enterprise';
     const granted = new Set(featuresFor(plan));
@@ -58,6 +54,8 @@ export class EntitlementsController {
       // Never the provider's customer or subscription ids: this route answers "what may
       // I use", and the billing relationship is not part of that answer.
       subscriptionStatus: subscription?.status ?? null,
+      /** Allowances on included modules; `null` is unlimited. */
+      limits: { clusters: enforced ? clusterLimitFor(plan) : null },
       features: [...granted].map(describe),
       locked: ALL_FEATURES.filter((feature) => !granted.has(feature)).map(
         (feature) => {

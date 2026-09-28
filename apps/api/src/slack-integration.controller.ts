@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
 import { z } from 'zod';
 import { ROLES, type AuthenticatedUser } from '@faultline/auth';
 import {
@@ -17,7 +18,7 @@ import {
   type SlackIntegrationChanges,
   type SlackIntegrationRepository,
 } from '@faultline/notifications';
-import { CurrentUser, Roles } from './auth/context';
+import { CurrentUser, RequiresFeature, Roles } from './auth/context';
 
 const channelId = z.string().trim().regex(/^[CGD][A-Z0-9]{8,}$/);
 const serviceChannels = z.record(
@@ -90,6 +91,7 @@ export class SlackIntegrationService {
 
 @Controller('integrations/slack')
 @Roles(ROLES.ADMIN)
+@RequiresFeature(FEATURES.INTEGRATIONS)
 export class SlackIntegrationController {
   constructor(private readonly service: SlackIntegrationService) {}
 

@@ -1,5 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {BadRequestException,Body,Controller,Get,Header,Inject,NotFoundException,Param,Patch,Post} from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
+import { RequiresFeature } from './auth/context';
 import {z} from 'zod';
 import {AVAILABILITY_OVERRIDE_REPOSITORY,CONTACT_REPOSITORY,ON_CALL_SCHEDULE_REPOSITORY,ON_CALL_SHIFT_REPOSITORY,OnCallResolver,isValidTimezone,validateTimeRange,type AvailabilityOverrideRepository,type ContactRepository,type OnCallScheduleRepository,type OnCallShiftRepository} from '@faultline/notifications';
 const id=z.string().trim().min(1).max(128),instant=z.string().trim().min(1);
@@ -8,6 +10,7 @@ const shiftInput=z.object({contactId:id,startsAt:instant,endsAt:instant});
 const overrideInput=z.object({replacementContactId:id,startsAt:instant,endsAt:instant,reason:z.string().trim().min(1).max(500)});
 function parse<T>(schema:z.ZodType<T>,body:unknown):T{const result=schema.safeParse(body);if(!result.success)throw new BadRequestException({message:'Invalid request',fields:result.error.issues.map(i=>i.path.join('.'))});return result.data;}
 @Controller('on-call/schedules')
+@RequiresFeature(FEATURES.VOICE_AGENT)
 export class OnCallController{
   private readonly resolver:OnCallResolver;
   constructor(@Inject(ON_CALL_SCHEDULE_REPOSITORY)private readonly schedules:OnCallScheduleRepository,@Inject(ON_CALL_SHIFT_REPOSITORY)private readonly shifts:OnCallShiftRepository,@Inject(AVAILABILITY_OVERRIDE_REPOSITORY)private readonly overrides:AvailabilityOverrideRepository,@Inject(CONTACT_REPOSITORY)private readonly contacts:ContactRepository){this.resolver=new OnCallResolver(schedules,shifts,overrides);}

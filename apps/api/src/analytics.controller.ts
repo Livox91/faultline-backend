@@ -5,6 +5,8 @@ import {
   Header,
   Query,
 } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
+import { RequiresFeature } from './auth/context';
 import { timestampSchema } from '@faultline/telemetry';
 import {
   AnalyticsService,
@@ -16,6 +18,7 @@ import {
 } from '@faultline/reporting';
 
 @Controller('analytics/incidents')
+@RequiresFeature(FEATURES.REPORTING)
 export class IncidentAnalyticsController {
   constructor(private readonly analytics: AnalyticsService) {}
 
@@ -37,6 +40,7 @@ export class IncidentAnalyticsController {
 }
 
 @Controller('reports/system-summary')
+@RequiresFeature(FEATURES.REPORTING)
 export class SystemSummaryController {
   constructor(private readonly summaries: SystemSummaryService) {}
 

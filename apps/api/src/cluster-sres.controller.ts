@@ -12,6 +12,7 @@ import {
   Post,
   Req,
 } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
 import {
   AUDIT_ACTIONS,
   PERMISSIONS,
@@ -31,6 +32,7 @@ import { AuditTrail } from './auth/audit-trail';
 import {
   CurrentUser,
   RequirePermission,
+  RequiresFeature,
   Roles,
   type RequestWithUser,
 } from './auth/context';
@@ -39,6 +41,7 @@ import { CLUSTER_DIRECTORY } from './clusters.controller';
 @Controller('clusters/:id/sres')
 @Roles(ROLES.ADMIN)
 @RequirePermission(PERMISSIONS.PROJECT_ASSIGN)
+@RequiresFeature(FEATURES.VOICE_AGENT)
 export class ClusterSresController {
   constructor(
     @Inject(CLUSTER_DIRECTORY) private readonly clusters: ClusterDirectory,

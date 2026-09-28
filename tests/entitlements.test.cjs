@@ -8,15 +8,25 @@ const {
   FEATURE_LABELS,
   PLANS,
   planIds,
+  clusterLimitFor,
   entitledPlan,
   featuresFor,
+  featuresIntroducedBy,
   minimumPlanFor,
+  planAllowingClusters,
   planIncludes,
 } = require('@faultline/billing');
 const { RequiresFeature } = require('../apps/api/dist/auth/context');
 const {
   EntitlementsController,
 } = require('../apps/api/dist/billing/entitlements.controller');
+const {
+  ClusterOnboardingController,
+} = require('../apps/api/dist/cluster-onboarding.controller');
+const {
+  ClusterOnboardingService,
+} = require('../apps/api/dist/cluster-onboarding.service');
+const { CLUSTER_DIRECTORY } = require('../apps/api/dist/clusters.controller');
 const {
   apiConfig,
   bootWithRealGuards,
@@ -33,8 +43,8 @@ const {
  * care either way - that is the whole point of declaring the requirement on the route.
  */
 class ModulesController {
-  logs() {
-    return { module: FEATURES.LOG_AGGREGATOR };
+  ledger() {
+    return { module: FEATURES.INCIDENT_LEDGER };
   }
   voice() {
     return { module: FEATURES.VOICE_AGENT };
@@ -45,7 +55,7 @@ class ModulesController {
 }
 
 for (const [method, path, feature] of [
-  ['logs', 'logs', FEATURES.LOG_AGGREGATOR],
+  ['ledger', 'ledger', FEATURES.INCIDENT_LEDGER],
   ['voice', 'voice', FEATURES.VOICE_AGENT],
   ['remediate', 'remediate', FEATURES.AUTO_REMEDIATION],
 ]) {
@@ -101,21 +111,42 @@ async function boot({ plan, status = 'active', config = billingOn() } = {}) {
 /* ------------------------------------------------------- the catalog itself */
 
 test('a tier carries its own modules and everything below it', () => {
+  // Basic: connect a cluster and follow its incidents - nothing else.
   assert.deepEqual(featuresFor('basic'), [
-    FEATURES.LOG_AGGREGATOR,
+    FEATURES.CLUSTERS,
+    FEATURES.CLUSTER_ONBOARDING,
+    FEATURES.INCIDENTS,
+    FEATURES.ALERTS,
     FEATURES.INCIDENT_LEDGER,
   ]);
-  // Pro inherits the free modules rather than restating them, and Enterprise inherits
-  // both - a module added to Basic later cannot be withheld from the tiers above it.
-  assert.ok(planIncludes('pro', FEATURES.LOG_AGGREGATOR));
-  assert.ok(planIncludes('pro', FEATURES.VOICE_AGENT));
-  assert.ok(planIncludes('pro', FEATURES.REPORTING));
+  // Pro: every page in the console today, inheriting Basic rather than restating it.
+  assert.deepEqual(featuresIntroducedBy('pro'), [
+    FEATURES.TEAM_MANAGEMENT,
+    FEATURES.INTEGRATIONS,
+    FEATURES.LOG_AGGREGATOR,
+    FEATURES.REPORTING,
+    FEATURES.VOICE_AGENT,
+  ]);
+  for (const feature of featuresFor('basic')) assert.ok(planIncludes('pro', feature));
+  assert.ok(!planIncludes('basic', FEATURES.LOG_AGGREGATOR));
   assert.ok(!planIncludes('pro', FEATURES.AUTO_REMEDIATION));
+  // Enterprise: all of it, plus Remediation.
+  assert.deepEqual(featuresIntroducedBy('enterprise'), [FEATURES.AUTO_REMEDIATION]);
   assert.equal(featuresFor('enterprise').length, Object.keys(FEATURES).length);
 
   assert.equal(minimumPlanFor(FEATURES.INCIDENT_LEDGER), 'basic');
+  assert.equal(minimumPlanFor(FEATURES.TEAM_MANAGEMENT), 'pro');
   assert.equal(minimumPlanFor(FEATURES.REPORTING), 'pro');
   assert.equal(minimumPlanFor(FEATURES.AUTO_REMEDIATION), 'enterprise');
+});
+
+test('Basic may register one cluster and the paid tiers any number', () => {
+  assert.equal(clusterLimitFor('basic'), 1);
+  assert.equal(clusterLimitFor('pro'), null);
+  assert.equal(clusterLimitFor('enterprise'), null);
+  // The upgrade a refusal names is the cheapest tier with room for one more.
+  assert.equal(planAllowingClusters(0), 'basic');
+  assert.equal(planAllowingClusters(1), 'pro');
 });
 
 test('an account with no live subscription reads as the free tier, not as nothing', () => {
@@ -127,19 +158,17 @@ test('an account with no live subscription reads as the free tier, not as nothin
   assert.equal(entitledPlan({ plan: 'enterprise', status: 'active' }), 'enterprise');
 });
 
-test('the pricing copy names the modules its tier actually unlocks', () => {
-  // Cheap anti-drift check. The page is prose and the gate is ids; they are allowed to
-  // be worded differently, but a tier must not advertise a module it does not carry.
+test('the pricing copy names every module its tier introduces', () => {
+  // Anti-drift check. The page is prose and the gate is ids; they may be worded
+  // differently, but each tier's card must name each module it adds, by the label the
+  // console uses, and a higher tier must say it inherits the one below.
   for (const id of planIds) {
     const copy = PLANS[id].features.join(' | ');
-    for (const feature of featuresFor(id)) {
+    for (const feature of featuresIntroducedBy(id)) {
       const label = FEATURE_LABELS[feature];
-      const named =
-        copy.includes(label) ||
-        // ...or inherited explicitly, which is how the higher tiers say it.
-        copy.includes('Everything in');
-      assert.ok(named, `${id} does not mention ${label}`);
+      assert.ok(copy.includes(label), `${id} does not mention ${label}`);
     }
+    if (id !== 'basic') assert.match(copy, /Everything in /);
   }
 });
 
@@ -149,7 +178,7 @@ test('the free tier reaches its own modules and no others', async (t) => {
   const { app, base, token } = await boot({ plan: 'basic' });
   t.after(() => app.close());
 
-  assert.equal((await call(base, token, '/modules/logs')).status, 200);
+  assert.equal((await call(base, token, '/modules/ledger')).status, 200);
 
   const denied = await call(base, token, '/modules/voice');
   assert.equal(denied.status, 403);
@@ -159,7 +188,7 @@ test('the free tier reaches its own modules and no others', async (t) => {
   assert.equal(body.plan, 'basic');
   assert.equal(body.requiredPlan, 'pro');
   assert.equal(body.requiredPlanName, 'Pro');
-  assert.match(body.message, /Voice Call Agent/);
+  assert.match(body.message, /Voice Agent is not included in your Basic plan/);
 
   assert.equal((await call(base, token, '/modules/remediate')).status, 403);
 });
@@ -168,7 +197,7 @@ test('Pro adds its own modules and still stops short of Enterprise', async (t) =
   const { app, base, token } = await boot({ plan: 'pro' });
   t.after(() => app.close());
 
-  assert.equal((await call(base, token, '/modules/logs')).status, 200);
+  assert.equal((await call(base, token, '/modules/ledger')).status, 200);
   assert.equal((await call(base, token, '/modules/voice')).status, 200);
 
   const denied = await call(base, token, '/modules/remediate');
@@ -180,7 +209,7 @@ test('Enterprise reaches every module', async (t) => {
   const { app, base, token } = await boot({ plan: 'enterprise' });
   t.after(() => app.close());
 
-  for (const path of ['/modules/logs', '/modules/voice', '/modules/remediate'])
+  for (const path of ['/modules/ledger', '/modules/voice', '/modules/remediate'])
     assert.equal((await call(base, token, path)).status, 200, path);
 });
 
@@ -188,7 +217,7 @@ test('an account with no subscription at all gets the free tier', async (t) => {
   const { app, base, token } = await boot();
   t.after(() => app.close());
 
-  assert.equal((await call(base, token, '/modules/logs')).status, 200);
+  assert.equal((await call(base, token, '/modules/ledger')).status, 200);
   assert.equal((await call(base, token, '/modules/voice')).status, 403);
 });
 
@@ -196,7 +225,7 @@ test('a cancelled Pro subscription loses the paid modules, not the free ones', a
   const { app, base, token } = await boot({ plan: 'pro', status: 'canceled' });
   t.after(() => app.close());
 
-  assert.equal((await call(base, token, '/modules/logs')).status, 200);
+  assert.equal((await call(base, token, '/modules/ledger')).status, 200);
   assert.equal((await call(base, token, '/modules/voice')).status, 403);
 });
 
@@ -257,6 +286,7 @@ test('the entitlements endpoint reports what the guard enforces', async (t) => {
   assert.equal(body.planName, 'Pro');
   assert.equal(body.enforced, true);
   assert.equal(body.subscriptionStatus, 'active');
+  assert.deepEqual(body.limits, { clusters: null });
   assert.deepEqual(
     body.features.map((entry) => entry.id).sort(),
     [...featuresFor('pro')].sort(),
@@ -264,7 +294,7 @@ test('the entitlements endpoint reports what the guard enforces', async (t) => {
   assert.deepEqual(body.locked, [
     {
       id: FEATURES.AUTO_REMEDIATION,
-      label: 'Auto Remediation',
+      label: 'Remediation',
       requiredPlan: 'enterprise',
       requiredPlanName: 'Enterprise',
     },
@@ -283,6 +313,7 @@ test('the entitlements endpoint says so when tiers are not enforced', async (t) 
   assert.equal(body.enforced, false);
   assert.equal(body.locked.length, 0);
   assert.equal(body.features.length, Object.keys(FEATURES).length);
+  assert.deepEqual(body.limits, { clusters: null });
 });
 
 test('entitlements are not readable without a token', async (t) => {
@@ -290,4 +321,141 @@ test('entitlements are not readable without a token', async (t) => {
   t.after(() => app.close());
 
   assert.equal((await call(base, null, '/billing/entitlements')).status, 401);
+});
+
+test('the free tier is told its cluster allowance and which pages are locked', async (t) => {
+  const { app, base, token } = await boot({ plan: 'basic' });
+  t.after(() => app.close());
+
+  const body = await (await call(base, token, '/billing/entitlements')).json();
+  assert.equal(body.plan, 'basic');
+  assert.deepEqual(body.limits, { clusters: 1 });
+  assert.deepEqual(
+    body.locked.filter((entry) => entry.requiredPlan === 'pro').map((entry) => entry.label),
+    ['Team & Roles', 'Integrations', 'Runtime', 'Reports', 'Voice Agent'],
+  );
+});
+
+/* -------------------------------------- the plan belongs to the organization */
+
+/** An engineer created by an Admin: no subscription of their own. */
+async function engineerIn(context, organizationId) {
+  const engineer = await context.users.create({
+    email: `engineer-${organizationId}@faultline.test`,
+    name: 'Engineer',
+    role: ROLES.ONSITE_ENGINEER,
+    password: 'correct-horse-battery',
+    organizationId,
+  });
+  return tokenFor(engineer);
+}
+
+test('an engineer works under the plan their organization owner bought', async (t) => {
+  const context = await boot({ plan: 'pro' });
+  t.after(() => context.app.close());
+
+  const token = await engineerIn(context, context.user.organizationId);
+  assert.equal((await call(context.base, token, '/modules/voice')).status, 200);
+  const body = await (await call(context.base, token, '/billing/entitlements')).json();
+  assert.equal(body.plan, 'pro');
+  assert.equal(body.subscriptionStatus, 'active');
+});
+
+test('another organization\'s subscription buys an engineer nothing', async (t) => {
+  const context = await boot({ plan: 'enterprise' });
+  t.after(() => context.app.close());
+
+  const token = await engineerIn(context, 'another-organization');
+  const denied = await call(context.base, token, '/modules/voice');
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).plan, 'basic');
+});
+
+/* ------------------------------------------------------- the cluster allowance */
+
+/** Onboarding over real HTTP, with the organization already holding `existing` clusters. */
+async function bootOnboarding({ plan, existing, config = billingOn() }) {
+  const started = [];
+  const context = await bootWithRealGuards({
+    controllers: [ClusterOnboardingController],
+    providers: [
+      {
+        provide: ClusterOnboardingService,
+        useValue: {
+          start: (...args) => {
+            started.push(args);
+            return { id: 'job-1', status: 'running' };
+          },
+        },
+      },
+      {
+        provide: CLUSTER_DIRECTORY,
+        useValue: {
+          list: async (projectIds, organizationId) =>
+            Array.from({ length: existing }, (_, index) => ({ id: `cluster-${index}`, organizationId })),
+        },
+      },
+    ],
+    config,
+  });
+  const owner = await context.users.create({
+    email: 'owner@faultline.test',
+    name: 'Owner',
+    role: ROLES.ADMIN,
+    password: 'correct-horse-battery',
+  });
+  if (plan) {
+    const subscription = await context.subscriptions.createForCheckout({
+      email: owner.email,
+      paymentProvider: 'stripe',
+      checkoutSessionId: `cs_${plan}_onboarding`,
+      plan,
+      status: 'active',
+    });
+    await context.subscriptions.update(subscription.id, { userId: owner.id });
+  }
+  const onboard = () =>
+    fetch(`${context.base}/cluster-onboarding`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tokenFor(owner)}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clusterName: 'Production', controlPlaneIp: '10.0.0.8' }),
+    });
+  return { ...context, started, onboard };
+}
+
+test('Basic onboards its first cluster', async (t) => {
+  const { app, onboard, started } = await bootOnboarding({ plan: 'basic', existing: 0 });
+  t.after(() => app.close());
+
+  assert.equal((await onboard()).status, 202);
+  assert.equal(started.length, 1);
+});
+
+test('Basic is refused a second cluster before anything is installed', async (t) => {
+  const { app, onboard, started } = await bootOnboarding({ plan: 'basic', existing: 1 });
+  t.after(() => app.close());
+
+  const refused = await onboard();
+  assert.equal(refused.status, 403);
+  const body = await refused.json();
+  assert.equal(body.plan, 'basic');
+  assert.equal(body.requiredPlan, 'pro');
+  assert.deepEqual(body.limit, { clusters: 1, used: 1 });
+  assert.match(body.message, /includes 1 cluster/);
+  // The job never started, so no collector reached the cluster.
+  assert.equal(started.length, 0);
+});
+
+test('Pro onboards past the free allowance', async (t) => {
+  const { app, onboard } = await bootOnboarding({ plan: 'pro', existing: 3 });
+  t.after(() => app.close());
+
+  assert.equal((await onboard()).status, 202);
+});
+
+test('with billing disabled the cluster allowance is not enforced', async (t) => {
+  const { app, onboard } = await bootOnboarding({ existing: 5, config: apiConfig() });
+  t.after(() => app.close());
+
+  assert.equal((await onboard()).status, 202);
 });

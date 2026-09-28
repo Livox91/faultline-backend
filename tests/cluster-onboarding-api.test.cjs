@@ -20,23 +20,51 @@ test('cluster onboarding validates names and control-plane IP addresses', () => 
   assert.throws(() => controlPlaneIp('127.0.0.1:70000'));
 });
 
-test('cluster onboarding starts a background job with normalized input', () => {
+test('cluster onboarding starts a background job with normalized input', async () => {
   const calls = [];
-  const controller = new ClusterOnboardingController({
-    start: (...args) => {
-      calls.push(args);
-      return { id: 'job-1', status: 'running' };
+  const capacityChecks = [];
+  const clusters = { list: async () => [] };
+  const controller = new ClusterOnboardingController(
+    {
+      start: (...args) => {
+        calls.push(args);
+        return { id: 'job-1', status: 'running' };
+      },
+      get: () => undefined,
     },
-    get: () => undefined,
-  });
+    // The plan's cluster allowance is checked before the job starts; tier rules
+    // themselves are covered in entitlements.test.cjs.
+    { assertClusterCapacity: async (...args) => capacityChecks.push(args) },
+    clusters,
+  );
+  const actor = { id: 'user-1', organizationId: 'org-1' };
   assert.deepEqual(
-    controller.start(
-      { clusterName: ' Demo ', controlPlaneIp: '10.0.0.8' },
-      { id: 'user-1', organizationId: 'org-1' },
-    ),
+    await controller.start({ clusterName: ' Demo ', controlPlaneIp: '10.0.0.8' }, actor),
     { id: 'job-1', status: 'running' },
   );
   assert.deepEqual(calls, [['Demo', '10.0.0.8', 'user-1']]);
+  assert.deepEqual(capacityChecks, [[actor, clusters]]);
+});
+
+test('a refused cluster allowance never starts the onboarding job', async () => {
+  const calls = [];
+  const controller = new ClusterOnboardingController(
+    { start: (...args) => calls.push(args) },
+    {
+      assertClusterCapacity: async () => {
+        throw new Error('plan limit');
+      },
+    },
+    { list: async () => [] },
+  );
+  await assert.rejects(
+    controller.start(
+      { clusterName: 'Demo', controlPlaneIp: '10.0.0.8' },
+      { id: 'user-1', organizationId: 'org-1' },
+    ),
+    /plan limit/,
+  );
+  assert.equal(calls.length, 0);
 });
 
 test('the onboarding process receives the authenticated owner id', () => {

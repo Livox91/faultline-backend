@@ -8,6 +8,7 @@ const {
   ClustersController,
 } = require('../apps/api/dist/clusters.controller');
 const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
+const { PlanEntitlements } = require('../apps/api/dist/billing/entitlements');
 const {
   AUDIT_LOG_REPOSITORY,
   PROJECT_ASSIGNMENT_REPOSITORY,
@@ -46,6 +47,8 @@ test('cluster API returns registration metadata without deriving namespaces from
       },
       actingAs(admin({ assignments: [{ projectId: registered.id }] })),
       AuditTrail,
+      // Reads never consult the plan; only registering a new cluster does.
+      { provide: PlanEntitlements, useValue: { assertClusterCapacity: async () => {} } },
       { provide: AUDIT_LOG_REPOSITORY, useValue: new InMemoryAuditLogRepository() },
       {
         provide: PROJECT_ASSIGNMENT_REPOSITORY,
@@ -99,10 +102,12 @@ test('cluster registration accepts multiple clusters and idempotent retries per 
     },
   };
   const assignments = [];
+  const capacityChecks = [];
   const controller = new ClustersController(
     directory,
     { assign: async (...values) => assignments.push(values) },
     { record: async () => undefined },
+    { assertClusterCapacity: async (user) => capacityChecks.push(user.id) },
   );
   const actor = { id: 'admin-1', organizationId: 'org-1' };
 
@@ -118,4 +123,6 @@ test('cluster registration accepts multiple clusters and idempotent retries per 
   assert.equal(creates, 2);
   assert.equal(retried.name, 'Cluster A renamed');
   assert.equal(assignments.length, 3);
+  // Only the two new clusters counted against the plan; the idempotent retry did not.
+  assert.deepEqual(capacityChecks, ['admin-1', 'admin-1']);
 });

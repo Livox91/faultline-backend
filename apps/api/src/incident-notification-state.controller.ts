@@ -1,7 +1,10 @@
 import { Controller,Get,Header,Inject,NotFoundException,Param } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
+import { RequiresFeature } from './auth/context';
 import { INCIDENT_REPOSITORY,type IncidentRepository } from '@faultline/incidents';
 import { INCIDENT_NOTIFICATION_STATE_REPOSITORY,INCIDENT_COMMUNICATION_REPOSITORY,NOTIFICATION_ATTEMPTS,type IncidentNotificationStateRepository,type IncidentCommunicationRepository,type NotificationAttemptRepository } from '@faultline/notifications';
 @Controller('incidents/:id')
+@RequiresFeature(FEATURES.VOICE_AGENT)
 export class IncidentNotificationStateController {
   constructor(@Inject(INCIDENT_REPOSITORY)private readonly incidents:IncidentRepository,@Inject(INCIDENT_COMMUNICATION_REPOSITORY)private readonly communications:IncidentCommunicationRepository,@Inject(INCIDENT_NOTIFICATION_STATE_REPOSITORY)private readonly states:IncidentNotificationStateRepository,@Inject(NOTIFICATION_ATTEMPTS)private readonly attempts:NotificationAttemptRepository){}
   private async exists(id:string){if(!(await this.incidents.getIncident(id)))throw new NotFoundException('Incident not found');}

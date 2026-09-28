@@ -162,17 +162,41 @@ What a tier *unlocks* is `packages/billing/src/entitlements.ts`. `Plan.features`
 for the pricing page; these are the ids the API enforces, kept apart so a reworded bullet
 cannot quietly open or close a module.
 
-| Module | id | From |
-|---|---|---|
-| Log Aggregator | `log-aggregator` | Basic |
-| Incident Ledger | `incident-ledger` | Basic |
-| Voice Call Agent | `voice-call-agent` | Pro |
-| Reporting Module | `reporting` | Pro |
-| Auto Remediation | `auto-remediation` | Enterprise |
+Modules match the console's navigation, one per page:
 
-Tiers are ranked, and a tier carries everything below it: Pro gets the two free modules,
-Enterprise gets all five. That is a property of the model rather than something each list
-restates, so a module added to Basic later cannot be withheld from the tiers above it.
+| Module | id | From | Routes gated |
+|---|---|---|---|
+| Onboarded Clusters | `clusters` | Basic | - |
+| Cluster Onboarding | `cluster-onboarding` | Basic (1 cluster) | cluster limit, see below |
+| Incidents | `incidents` | Basic | - |
+| Alerts | `alerts` | Basic | - |
+| Incident Ledger | `incident-ledger` | Basic | - |
+| Team & Roles | `team-management` | Pro | `/admin/users` |
+| Integrations | `integrations` | Pro | `/integrations/slack`, `/clusters/:id/slack-*` |
+| Runtime | `log-aggregator` | Pro | `/telemetry/*`, `/resources/*`, `/baselines` |
+| Reports | `reporting` | Pro | `/analytics/incidents*`, `/reports/system-summary` |
+| Voice Agent | `voice-call-agent` | Pro | `/contacts`, `/notification-groups`, `/on-call/*`, `/clusters/:id/sres`, `/incidents/:id/communications` and siblings |
+| Remediation | `auto-remediation` | Enterprise | none yet - not built |
+
+Basic modules carry no decorator: every account holds at least Basic, so a check would
+only cost a query. An incident's own evidence and technical report belong to Incidents,
+not to Runtime or Reports, so a Basic account can still investigate what it is alerted to.
+
+Tiers are ranked, and a tier carries everything below it. That is a property of the model
+rather than something each list restates, so a module added to Basic later cannot be
+withheld from the tiers above it.
+
+**A plan belongs to the organization.** The subscription is bought by the organization's
+owner, and every account in the organization works under it: an engineer's tier is the
+best live subscription among themselves and their organization's Admins. Reading only the
+engineer's own row would put every engineer on Basic.
+
+**Basic may register one cluster.** `POST /cluster-onboarding` and `POST /clusters` refuse
+a new cluster once the organization has used its allowance, with the same structured 403
+as a locked module plus `limit: { clusters, used }`. The check runs before the onboarding
+job starts, so nothing is installed into a cluster that is then refused. Uninstalling the
+existing cluster frees the slot. The operator CLI (`npm run cluster:onboard`) is not a
+customer path and is not limited.
 
 A route declares what it needs:
 
@@ -184,13 +208,13 @@ list() { … }
 ```
 
 The two are different questions and both must pass. An Admin on Basic is still an Admin;
-there is simply no Voice Call Agent on their plan to administer. `EntitlementsGuard` runs
+there is simply no Voice Agent on their plan to administer. `EntitlementsGuard` runs
 *after* authentication, the password-change confinement and the role/project checks, so a
 stranger is never told which tier a module belongs to, and only a route that declares a
 module pays for the subscription lookup.
 
 **No live subscription means the free tier, not nothing.** Cancelled, past due, or never
-subscribed all read as `basic`: a lapsed Pro account keeps its Log Aggregator and
+subscribed all read as `basic`: a lapsed Pro account keeps its clusters, incidents and
 Incident Ledger rather than losing its history the day a card expires. With
 `BILLING_ENABLED=false` nothing is enforced at all - a self-hosted deployment sells no
 plans, so falling back to `basic` there would switch paid modules off for everyone.

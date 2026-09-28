@@ -449,7 +449,11 @@ test('the public plans endpoint exposes every tier, its pricing, and no secrets'
 
 /* ------------------------------------ first login, confinement, and release */
 
-/** Boots the API surface with the real guards, over the provisioner's storage. */
+/**
+ * Boots the API surface with the real guards, over the provisioner's storage -
+ * including its subscriptions, since the API now reads the purchased tier to decide
+ * which modules the new Admin may open.
+ */
 async function bootApi(context) {
   return bootWithRealGuards({
     controllers: [AuthController, ClustersController, AdminUsersController],
@@ -459,6 +463,7 @@ async function bootApi(context) {
     ],
     users: context.users,
     audit: context.audit,
+    subscriptions: context.subscriptions,
     config,
   });
 }

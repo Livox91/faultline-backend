@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { BadRequestException, Body, Controller, Get, Header, Inject, NotFoundException, Param, Patch, Post } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
+import { RequiresFeature } from './auth/context';
 import { USER_REPOSITORY, type UserRepository } from '@faultline/auth';
 import {
   CONTACT_REPOSITORY,
@@ -39,6 +41,7 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
 }
 
 @Controller('contacts')
+@RequiresFeature(FEATURES.VOICE_AGENT)
 export class ContactsController {
   constructor(
     @Inject(CONTACT_REPOSITORY) private readonly contacts: ContactRepository,
@@ -109,6 +112,7 @@ export class ContactsController {
 }
 
 @Controller('notification-groups')
+@RequiresFeature(FEATURES.VOICE_AGENT)
 export class NotificationGroupsController {
   constructor(
     @Inject(NOTIFICATION_GROUP_REPOSITORY) private readonly groups: NotificationGroupRepository,

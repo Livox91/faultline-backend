@@ -11,6 +11,7 @@ import {
   Patch,
   Req,
 } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
 import {
   AUDIT_ACTIONS,
   PERMISSIONS,
@@ -26,6 +27,7 @@ import { AuditTrail } from './auth/audit-trail';
 import {
   CurrentUser,
   RequirePermission,
+  RequiresFeature,
   Roles,
   type RequestWithUser,
 } from './auth/context';
@@ -37,6 +39,7 @@ import {
 
 @Controller('clusters/:id')
 @Roles(ROLES.ADMIN)
+@RequiresFeature(FEATURES.INTEGRATIONS)
 export class ClusterSlackController {
   constructor(
     @Inject(CLUSTER_DIRECTORY) private readonly clusters: ClusterDirectory,

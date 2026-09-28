@@ -15,6 +15,7 @@ import {
   Put,
   Req,
 } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
 import {
   AUDIT_ACTIONS,
   DuplicateEmailError,
@@ -37,6 +38,7 @@ import { AuditTrail } from './audit-trail';
 import {
   CurrentUser,
   RequirePermission,
+  RequiresFeature,
   Roles,
   type RequestWithUser,
 } from './context';
@@ -83,6 +85,7 @@ const status = (value: unknown): UserStatus | undefined => {
  */
 @Controller('admin/users')
 @Roles(ROLES.ADMIN)
+@RequiresFeature(FEATURES.TEAM_MANAGEMENT)
 export class AdminUsersController {
   constructor(
     @Inject(USER_REPOSITORY) private readonly users: UserRepository,
