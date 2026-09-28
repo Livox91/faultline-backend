@@ -45,6 +45,12 @@ test('the onboarding process receives the authenticated owner id', () => {
     'utf8',
   );
   assert.match(service, /'--owner-user-id',[\s\S]*ownerUserId/);
+  assert.match(
+    service,
+    /job\.operation === 'uninstall' \? 'Cluster uninstall' : 'Onboarding'/,
+  );
+  assert.match(service, /child\.once\('exit', complete\)/);
+  assert.match(service, /child\.once\('close', complete\)/);
 });
 
 test('web onboarding supplies a generated identity instead of deriving one from context or port', () => {
