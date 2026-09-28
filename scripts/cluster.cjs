@@ -1062,14 +1062,25 @@ async function removeClusterRegistration(clusterId) {
       for (const table of [
         'notification_attempts',
         'escalation_executions',
+        'incident_notification_states',
         'incident_acknowledgements',
         'notification_audit_events',
         'incident_communications',
-      ])
+      ]) {
+        // Notification storage evolved across migrations. In particular,
+        // 0014 replaced escalation_executions with incident_notification_states.
+        // Uninstall must work against either schema instead of rolling back all
+        // cluster cleanup when an optional legacy table is absent.
+        const relation = await client.query(
+          'SELECT to_regclass($1) AS name',
+          [`public.${table}`],
+        );
+        if (!relation.rows[0]?.name) continue;
         await client.query(
           `DELETE FROM ${table} WHERE incident_id = ANY($1::text[])`,
           [incidentIds],
         );
+      }
     }
     // Incident evidence, timelines, affected resources and external tickets cascade
     // from incidents. Project assignments cascade from the cluster row.

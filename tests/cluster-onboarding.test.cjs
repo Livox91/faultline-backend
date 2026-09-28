@@ -183,6 +183,9 @@ test('uninstall removes the test namespace and cluster registration', () => {
   assert.match(source, /DELETE FROM metric_baselines WHERE cluster_id = \$1/);
   assert.match(source, /DELETE FROM log_pattern_aggregates WHERE cluster_id = \$1/);
   assert.match(source, /DELETE FROM clusters WHERE id = \$1/);
+  assert.match(source, /incident_notification_states/);
+  assert.match(source, /SELECT to_regclass\(\$1\) AS name/);
+  assert.match(source, /if \(!relation\.rows\[0\]\?\.name\) continue/);
   assert.match(source, /clearState\(\)/);
   assert.match(source, /args\.id && args\.id !== state\.clusterId/);
   assert.match(source, /command === 'uninstall'\) await uninstall\(\)/);
