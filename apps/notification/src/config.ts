@@ -18,7 +18,7 @@ export interface NotificationWorkerConfig {
   fromNumber?: string;
   voiceAgentId?: string;
   smsAgentId?: string;
-  highEscalationEnabled: boolean;
+  highSeverityEnabled: boolean;
   consumerGroup: string;
   organizationId: string;
   schedulerPollMs: number;
@@ -50,7 +50,7 @@ const notificationEnvironment = z
     RETELL_FROM_NUMBER: optionalPhone,
     RETELL_VOICE_AGENT_ID: optionalText,
     RETELL_SMS_AGENT_ID: optionalText,
-    NOTIFICATION_HIGH_ESCALATION_ENABLED: z
+    NOTIFICATION_HIGH_SEVERITY_ENABLED: z
       .enum(['true', 'false'])
       .default('false'),
     NOTIFICATION_CONSUMER_GROUP: z
@@ -147,8 +147,8 @@ export function loadNotificationConfig(
     fromNumber: value.RETELL_FROM_NUMBER,
     voiceAgentId: value.RETELL_VOICE_AGENT_ID,
     smsAgentId: value.RETELL_SMS_AGENT_ID,
-    highEscalationEnabled:
-      value.NOTIFICATION_HIGH_ESCALATION_ENABLED === 'true',
+    highSeverityEnabled:
+      value.NOTIFICATION_HIGH_SEVERITY_ENABLED === 'true',
     consumerGroup: value.NOTIFICATION_CONSUMER_GROUP,
     organizationId: value.NOTIFICATION_ORGANIZATION_ID,
     schedulerPollMs: value.NOTIFICATION_SCHEDULER_POLL_MS,

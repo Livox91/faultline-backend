@@ -29,12 +29,15 @@ run(
 );
 run('npm', ['run', 'build'], { inherit: true, timeout: 180_000 });
 try {
-  run('npm', ['run', 'db:migrate'], {
-    inherit: true,
+  const migrationOutput = run('npm', ['run', 'db:migrate'], {
     env: environment,
     timeout: 120_000,
   });
-} catch {
+  if (migrationOutput) console.log(migrationOutput);
+} catch (error) {
+  const detail = error.detail || error.message || '';
+  if (!/password authentication failed|authentication failed for user|28P01/i.test(detail))
+    throw new Error(`PostgreSQL migration failed.\n${detail}`);
   throw new Error(
     [
       'PostgreSQL rejected the credentials in .env.infrastructure.',

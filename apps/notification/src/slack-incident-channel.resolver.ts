@@ -6,7 +6,11 @@ import type { NotificationWorkerConfig } from './config';
 @Injectable()
 export class SlackIncidentChannelResolver {
   constructor(private readonly legacyConfig?: NotificationWorkerConfig) {}
-  resolve(incident: Incident, slack?: SlackIntegration): string | undefined {
+  resolve(
+    incident: Incident,
+    slack?: SlackIntegration,
+    clusterChannelId?: string,
+  ): string | undefined {
     const settings = slack ?? (this.legacyConfig ? {
       organizationId: 'test',
       enabled: this.legacyConfig.slack.enabled,
@@ -16,6 +20,7 @@ export class SlackIncidentChannelResolver {
       createdAt: '', updatedAt: '',
     } : undefined);
     if (!settings) return undefined;
+    if (clusterChannelId) return clusterChannelId;
     const service = selectedService(incident);
     if (!service) return settings.incidentChannelId;
 

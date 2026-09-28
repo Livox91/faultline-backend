@@ -40,7 +40,7 @@ export class RetellCommunicationProvider implements CommunicationProvider {
           acknowledgement_prompt:
             'Would you like to acknowledge this incident?',
           acknowledgement_confirmation:
-            'The incident has been acknowledged. Further escalation will stop.',
+            'The incident has been acknowledged. Further notification will stop.',
           allowed_actions: 'ACKNOWLEDGE_INCIDENT,DECLINE_INCIDENT,UNKNOWN',
         },
       },

@@ -96,6 +96,14 @@ Start Port    End Port
   assert.match(setup, /PostgreSQL port repaired/);
 });
 
+test('direct notification migration compares retained text incident ids safely', () => {
+  const migration = read(
+    'packages/database/migrations/0014_direct_cluster_notifications.sql',
+  );
+  assert.match(migration, /JOIN incidents i ON i\.id::text = e\.incident_id/);
+  assert.doesNotMatch(migration, /JOIN incidents i ON i\.id = e\.incident_id/);
+});
+
 test('combined development pipeline loads every application environment', () => {
   const pipeline = read('scripts/dev-pipeline.cjs');
   assert.match(

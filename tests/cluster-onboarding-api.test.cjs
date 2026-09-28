@@ -32,7 +32,7 @@ test('cluster onboarding starts a background job with normalized input', () => {
   assert.deepEqual(
     controller.start(
       { clusterName: ' Demo ', controlPlaneIp: '10.0.0.8' },
-      { id: 'user-1' },
+      { id: 'user-1', organizationId: 'org-1' },
     ),
     { id: 'job-1', status: 'running' },
   );
@@ -47,6 +47,35 @@ test('the onboarding process receives the authenticated owner id', () => {
   assert.match(service, /'--owner-user-id',[\s\S]*ownerUserId/);
 });
 
+test('web onboarding supplies a generated identity instead of deriving one from context or port', () => {
+  const service = readFileSync(
+    resolve(__dirname, '../apps/api/src/cluster-onboarding.service.ts'),
+    'utf8',
+  );
+  assert.match(service, /const clusterId = randomUUID\(\)/);
+  assert.match(service, /'--id',[\s\S]*clusterId/);
+});
+
+test('cluster registration retries are tenant-safe and idempotent', () => {
+  const script = readFileSync(
+    resolve(__dirname, '../scripts/cluster.cjs'),
+    'utf8',
+  );
+  assert.match(script, /ON CONFLICT \(id\) DO UPDATE SET/);
+  assert.match(
+    script,
+    /WHERE clusters\.organization_id = EXCLUDED\.organization_id/,
+  );
+  assert.doesNotMatch(
+    script,
+    /organization_id=EXCLUDED\.organization_id/,
+  );
+  assert.match(
+    script,
+    /organization_id='default'[\s\S]*NOT EXISTS \([\s\S]*FROM project_users pu WHERE pu\.project_id=c\.id/,
+  );
+});
+
 test('cluster uninstall is scoped to the authenticated owner and background job', () => {
   const calls = [];
   const controller = new ClusterOnboardingController({
@@ -57,6 +86,7 @@ test('cluster uninstall is scoped to the authenticated owner and background job'
   });
   const actor = {
     id: 'user-1',
+    organizationId: 'org-1',
     status: 'active',
     assignments: [{ projectId: 'cluster-1' }],
   };

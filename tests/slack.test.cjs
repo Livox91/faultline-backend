@@ -26,6 +26,12 @@ const {
 const {
   NotificationConsumer,
 } = require('../apps/notification/dist/notification.consumer');
+const {
+  ClusterSlackController,
+} = require('../apps/api/dist/cluster-slack.controller');
+const {
+  HttpSlackChannelDirectory,
+} = require('../apps/api/dist/slack-channel-directory');
 
 const baseEnvironment = {
   RETELL_API_KEY: 'retell-test',
@@ -155,6 +161,89 @@ test('Slack channel resolver prefers a service-specific mapping', () => {
     }),
   );
   assert.equal(resolver.resolve(incident()), 'C-PAYMENTS');
+});
+
+test('Slack channel resolver gives a cluster mapping highest priority', () => {
+  const resolver = new SlackIncidentChannelResolver(config({
+    serviceChannels: { payments: 'C-SERVICE' },
+  }));
+  assert.equal(
+    resolver.resolve(incident(), undefined, 'C-CLUSTER'),
+    'C-CLUSTER',
+  );
+});
+
+test('Slack channel directory follows pagination and sorts channel names', async () => {
+  const requests = [];
+  const directory = new HttpSlackChannelDirectory(async (url, init) => {
+    requests.push({ url, init });
+    const second = url.includes('cursor=next-page');
+    return new Response(JSON.stringify(second ? {
+      ok: true,
+      channels: [{ id: 'C2', name: 'alpha', is_member: true }],
+      response_metadata: { next_cursor: '' },
+    } : {
+      ok: true,
+      channels: [
+        { id: 'C1', name: 'zeta', is_private: true, is_member: true },
+        { id: 'C3', name: 'not-joined', is_member: false },
+      ],
+      response_metadata: { next_cursor: 'next-page' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  assert.deepEqual(await directory.list('xoxb-secret'), [
+    { id: 'C2', name: 'alpha', isPrivate: false, isMember: true },
+    { id: 'C1', name: 'zeta', isPrivate: true, isMember: true },
+  ]);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].init.headers.Authorization, 'Bearer xoxb-secret');
+  assert.match(requests[1].url, /cursor=next-page/);
+});
+
+test('cluster Slack mapping API verifies and persists the selected channel', async () => {
+  let saved;
+  const cluster = {
+    id: 'production', name: 'Production', environment: 'production',
+    createdAt: '', updatedAt: '', total: 0, open: 0, critical: 0,
+  };
+  const controller = new ClusterSlackController(
+    {
+      async get(id, organizationId) {
+        return id === 'production' && organizationId === 'org-1'
+          ? { ...cluster, ...(saved ? { slackChannelId: saved.id, slackChannelName: saved.name } : {}) }
+          : undefined;
+      },
+      async updateSlackMapping(id, organizationId, mapping) {
+        saved = mapping;
+        return this.get(id, organizationId);
+      },
+    },
+    { async get() { return { enabled: true, botToken: 'xoxb-secret' }; } },
+    { async list() { return [{ id: 'C12345678', name: 'prod-incidents', isPrivate: false, isMember: true }]; } },
+    { async record() {} },
+  );
+  const user = { id: 'admin', organizationId: 'org-1' };
+  assert.deepEqual(await controller.list('production', user), {
+    channels: [{ id: 'C12345678', name: 'prod-incidents', isPrivate: false, isMember: true }],
+    mapping: null,
+  });
+  assert.deepEqual(
+    await controller.save(
+      'production',
+      { slackChannelId: 'C12345678' },
+      user,
+      { headers: {} },
+    ),
+    {
+      clusterId: 'production',
+      mapping: { id: 'C12345678', name: 'prod-incidents' },
+    },
+  );
+  assert.deepEqual(saved, { id: 'C12345678', name: 'prod-incidents' });
+  await assert.rejects(
+    controller.save('production', { slackChannelId: 'C-NOT-LISTED' }, user, { headers: {} }),
+    /Selected Slack channel is not available/,
+  );
 });
 
 test('Slack channel resolver falls back to the owning team mapping', () => {
@@ -411,6 +500,33 @@ test('Slack ticket publisher creates exactly one ticket from a persisted inciden
     await tickets.findByIncidentAndProvider(persisted.id, 'slack'),
     first,
   );
+});
+
+test('Slack ticket publisher posts a new incident to its cluster channel', async () => {
+  const incidents = new InMemoryIncidentRepository();
+  const persisted = incident();
+  await incidents.createIncident(persisted);
+  const calls = [];
+  const publisher = new SlackIncidentTicketPublisher(
+    config({ serviceChannels: { payments: 'C-SERVICE' } }),
+    {
+      async postMessage(input) {
+        calls.push(input);
+        return { channel: input.channel, timestamp: '123.456' };
+      },
+    },
+    new SlackMessageBuilder(),
+    incidents,
+    new InMemoryExternalTicketRepository(),
+    new InMemoryIdempotencyStore(),
+    new SlackIncidentChannelResolver(config()),
+    undefined,
+    undefined,
+    undefined,
+    { async get(id) { return id === 'production' ? { slackChannelId: 'C-CLUSTER' } : undefined; } },
+  );
+  await publisher.createIncidentTicket({ incidentId: persisted.id });
+  assert.equal(calls[0].channel, 'C-CLUSTER');
 });
 
 test('Slack ticket publisher ignores disabled, missing, and unclassified incidents', async () => {
@@ -805,7 +921,6 @@ test('notification lifecycle creates Slack tickets only for incident creation ev
     queue,
     config(),
     { async handleIncident() {} },
-    { async handle() {} },
     {
       async createIncidentTicket(value) {
         ticketCalls.push(value);

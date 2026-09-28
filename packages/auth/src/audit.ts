@@ -13,6 +13,8 @@ export const AUDIT_ACTIONS = {
   PROJECT_DELETED: 'project.deleted',
   PROJECT_ASSIGNED: 'project.assignment.created',
   PROJECT_ASSIGNMENT_REMOVED: 'project.assignment.removed',
+  CLUSTER_SRE_ASSIGNED: 'cluster.sre.assigned',
+  CLUSTER_SRE_REMOVED: 'cluster.sre.removed',
   USER_CREATED: 'user.created',
   PASSWORD_CHANGED: 'user.password.changed',
   SUBSCRIPTION_PURCHASED: 'subscription.purchased',

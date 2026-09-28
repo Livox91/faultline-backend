@@ -41,12 +41,17 @@ export class ClusterOnboardingService {
       throw new Error('A cluster onboarding job is already running');
 
     const id = randomUUID();
+    // Kubernetes context names and control-plane ports are local metadata, not
+    // tenant-safe identifiers. The collector receives this generated value and
+    // uses it as its globally unique telemetry and registry identity.
+    const clusterId = randomUUID();
     const job: StoredClusterOnboardingJob = {
       id,
       ownerUserId,
       operation: 'onboard',
       clusterName,
       controlPlaneIp,
+      clusterId,
       status: 'running',
       output: [],
       startedAt: new Date().toISOString(),
@@ -61,6 +66,8 @@ export class ClusterOnboardingService {
         resolve(repositoryRoot, 'scripts/cluster.cjs'),
         'onboard',
         '--yes',
+        '--id',
+        clusterId,
         '--name',
         clusterName,
         '--control-plane',

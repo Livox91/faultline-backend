@@ -26,6 +26,11 @@ import { SlackApiError, SLACK_CLIENT, type SlackClient } from './slack.client';
 import { SlackMessageBuilder } from './slack-message-builder';
 import { SlackIncidentChannelResolver } from './slack-incident-channel.resolver';
 import { SlackIncidentTimelineMapper } from './slack-incident-timeline.mapper';
+import type { ClusterDirectory } from '@faultline/database';
+
+export const NOTIFICATION_CLUSTER_DIRECTORY = Symbol(
+  'faultline.notification-cluster-directory',
+);
 
 @Injectable()
 export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
@@ -44,6 +49,8 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
     @Optional() private readonly logger?: ApplicationLogger,
     @Optional() @Inject(SLACK_INTEGRATION_REPOSITORY)
     private readonly integrations?: SlackIntegrationRepository,
+    @Optional() @Inject(NOTIFICATION_CLUSTER_DIRECTORY)
+    private readonly clusters?: ClusterDirectory,
   ) {}
 
   async createIncidentTicket(
@@ -65,7 +72,12 @@ export class SlackIncidentTicketPublisher implements IncidentTicketPublisher {
     if (!incident || !incident.classification) return undefined;
     const slack = await this.integrationForIncident(incident.id);
     if (!slack?.enabled || !slack.botToken) return undefined;
-    const channel = this.channels.resolve(incident, slack);
+    const cluster = await this.clusters?.get(incident.clusterId);
+    const channel = this.channels.resolve(
+      incident,
+      slack,
+      cluster?.slackChannelId,
+    );
     if (!channel) return undefined;
 
     const existing = await this.tickets.findByIncidentAndProvider(

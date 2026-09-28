@@ -19,8 +19,7 @@ import {
   PostgresIncidentRepository,
   PostgresContactRepository,
   PostgresNotificationGroupRepository,
-  PostgresEscalationPolicyRepository,
-  PostgresEscalationExecutionRepository,
+  PostgresIncidentNotificationStateRepository,
   PostgresIncidentAcknowledgementRepository,
   PostgresNotificationAuditRepository,
   PostgresNotificationAttemptRepository,
@@ -31,17 +30,19 @@ import {
   PostgresProjectAssignmentRepository,
   PostgresUserRepository,
   PostgresSlackIntegrationRepository,
+  PostgresClusterSreAssignmentRepository,
 } from '@faultline/database';
 import {
-  CONTACT_REPOSITORY, ESCALATION_EXECUTION_REPOSITORY, ESCALATION_POLICY_REPOSITORY,
-  INCIDENT_ACKNOWLEDGEMENTS, InMemoryContactRepository, InMemoryEscalationExecutionRepository,
-  InMemoryEscalationPolicyRepository, InMemoryIncidentAcknowledgementRepository,
+  CONTACT_REPOSITORY, INCIDENT_NOTIFICATION_STATE_REPOSITORY,
+  INCIDENT_ACKNOWLEDGEMENTS, InMemoryContactRepository, InMemoryIncidentNotificationStateRepository,
+  InMemoryIncidentAcknowledgementRepository,
   InMemoryNotificationAuditRepository, InMemoryNotificationGroupRepository,
   InMemoryNotificationAttemptRepository,InMemoryIncidentCommunicationRepository,INCIDENT_COMMUNICATION_REPOSITORY,NOTIFICATION_ATTEMPTS,
   NOTIFICATION_AUDIT_REPOSITORY, NOTIFICATION_GROUP_REPOSITORY,
   ON_CALL_SCHEDULE_REPOSITORY,ON_CALL_SHIFT_REPOSITORY,AVAILABILITY_OVERRIDE_REPOSITORY,InMemoryOnCallScheduleRepository,InMemoryOnCallShiftRepository,InMemoryAvailabilityOverrideRepository,
   EXTERNAL_TICKET_REPOSITORY,InMemoryExternalTicketRepository,
   SLACK_INTEGRATION_REPOSITORY,InMemorySlackIntegrationRepository,
+  CLUSTER_SRE_ASSIGNMENT_REPOSITORY,InMemoryClusterSreAssignmentRepository,
 } from '@faultline/notifications';
 import {
   AUDIT_LOG_REPOSITORY,
@@ -99,7 +100,7 @@ import {
   ClustersController,
   type RegisteredCluster,
 } from './clusters.controller';
-import { ContactsController, EscalationPoliciesController, NotificationGroupsController } from './notification-management.controller';
+import { ContactsController, NotificationGroupsController } from './notification-management.controller';
 import { IncidentAcknowledgementController } from './incident-acknowledgement.controller';
 import { IncidentNotificationStateController } from './incident-notification-state.controller';
 import {
@@ -141,6 +142,12 @@ import { AdminAuditController } from './auth/audit.controller';
 import { ClusterOnboardingController } from './cluster-onboarding.controller';
 import { ClusterOnboardingService } from './cluster-onboarding.service';
 import { SlackIntegrationController, SlackIntegrationService } from './slack-integration.controller';
+import { ClusterSlackController } from './cluster-slack.controller';
+import { ClusterSresController } from './cluster-sres.controller';
+import {
+  HttpSlackChannelDirectory,
+  SLACK_CHANNEL_DIRECTORY,
+} from './slack-channel-directory';
 
 export const CLICKHOUSE_CONNECTION = Symbol('faultline.clickhouse-connection');
 
@@ -168,8 +175,7 @@ const infrastructureProviders: Provider[] =
         },
         { provide: CONTACT_REPOSITORY, useClass: InMemoryContactRepository },
         { provide: NOTIFICATION_GROUP_REPOSITORY, useClass: InMemoryNotificationGroupRepository },
-        { provide: ESCALATION_POLICY_REPOSITORY, useClass: InMemoryEscalationPolicyRepository },
-        { provide: ESCALATION_EXECUTION_REPOSITORY, useClass: InMemoryEscalationExecutionRepository },
+        { provide: INCIDENT_NOTIFICATION_STATE_REPOSITORY, useClass: InMemoryIncidentNotificationStateRepository },
         { provide: INCIDENT_ACKNOWLEDGEMENTS, useClass: InMemoryIncidentAcknowledgementRepository },
         {
           provide: INCIDENT_ANALYTICS_REPOSITORY,
@@ -186,6 +192,7 @@ const infrastructureProviders: Provider[] =
         { provide: AVAILABILITY_OVERRIDE_REPOSITORY, useClass: InMemoryAvailabilityOverrideRepository },
         { provide: EXTERNAL_TICKET_REPOSITORY, useClass: InMemoryExternalTicketRepository },
         { provide: SLACK_INTEGRATION_REPOSITORY, useClass: InMemorySlackIntegrationRepository },
+        { provide: CLUSTER_SRE_ASSIGNMENT_REPOSITORY, useClass: InMemoryClusterSreAssignmentRepository },
         { provide: USER_REPOSITORY, useFactory: getDevelopmentUserRepository },
         {
           provide: PROJECT_ASSIGNMENT_REPOSITORY,
@@ -212,6 +219,7 @@ const infrastructureProviders: Provider[] =
               throw new Error('Not available in tests');
             },
             update: async () => undefined,
+            updateSlackMapping: async () => undefined,
             remove: async () => false,
           },
         },
@@ -246,8 +254,7 @@ const infrastructureProviders: Provider[] =
         },
         { provide: CONTACT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresContactRepository(database) },
         { provide: NOTIFICATION_GROUP_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationGroupRepository(database) },
-        { provide: ESCALATION_POLICY_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresEscalationPolicyRepository(database) },
-        { provide: ESCALATION_EXECUTION_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresEscalationExecutionRepository(database) },
+        { provide: INCIDENT_NOTIFICATION_STATE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentNotificationStateRepository(database) },
         { provide: INCIDENT_ACKNOWLEDGEMENTS, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentAcknowledgementRepository(database) },
         { provide: NOTIFICATION_AUDIT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationAuditRepository(database) },
         { provide: NOTIFICATION_ATTEMPTS, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationAttemptRepository(database) },
@@ -257,6 +264,7 @@ const infrastructureProviders: Provider[] =
         { provide: AVAILABILITY_OVERRIDE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresAvailabilityOverrideRepository(database) },
         { provide: EXTERNAL_TICKET_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresExternalTicketRepository(database) },
         { provide: SLACK_INTEGRATION_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresSlackIntegrationRepository(database, readEnvFlag('SLACK_TOKEN_ENCRYPTION_KEY')) },
+        { provide: CLUSTER_SRE_ASSIGNMENT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresClusterSreAssignmentRepository(database) },
         {
           provide: USER_REPOSITORY,
           inject: [DATABASE],
@@ -445,7 +453,6 @@ const billingProviders: Provider[] = billingEnabled
     ClusterOnboardingController,
     ContactsController,
     NotificationGroupsController,
-    EscalationPoliciesController,
     IncidentAcknowledgementController,
     IncidentNotificationStateController,
     IncidentExternalTicketController,
@@ -454,6 +461,8 @@ const billingProviders: Provider[] = billingEnabled
     SystemSummaryController,
     OnCallController,
     SlackIntegrationController,
+    ClusterSlackController,
+    ClusterSresController,
   ],
   providers: [
     ...infrastructureProviders,
@@ -465,6 +474,8 @@ const billingProviders: Provider[] = billingEnabled
     AdminBootstrap,
     ClusterOnboardingService,
     SlackIntegrationService,
+    { provide: HttpSlackChannelDirectory, useFactory: () => new HttpSlackChannelDirectory() },
+    { provide: SLACK_CHANNEL_DIRECTORY, useExisting: HttpSlackChannelDirectory },
     {
       provide: TELEMETRY_SCOPE_RESOLVER,
       useClass: UserTelemetryScopeResolver,
