@@ -85,26 +85,33 @@ Acknowledging one call records incident ownership and changes the durable notifi
 
 ## Configure a recipient
 
-Create an onsite engineer through the Admin user API or UI. Assign them under **Clusters → Assigned SREs**, then create the linked notification contact:
+An onsite engineer cannot exist without a phone number Retell can call. Creating one through **Team & Roles**, `POST /admin/users` or `npm run user:create` requires an E.164 `phoneNumber`, and creates the linked notification contact in the same step with voice on (SMS is optional and defaults to on):
 
 ```powershell
 $headers = @{ Authorization = 'Bearer <admin-access-token>' }
 
-$contact = Invoke-RestMethod http://localhost:3000/contacts `
+$engineer = Invoke-RestMethod http://localhost:3000/admin/users `
   -Method Post `
   -Headers $headers `
   -ContentType 'application/json' `
   -Body (@{
-    organizationId = 'default'
-    userId = '<onsite-engineer-user-id>'
+    email = 'payments-sre@example.com'
     name = 'Payments SRE'
-    role = 'ENGINEER'
+    role = 'onsiteengineer'
+    password = '<at least 12 characters>'
     phoneNumber = '+15551234567'
-    voiceEnabled = $true
     smsEnabled = $true
-    enabled = $true
+    projectIds = @('<cluster-id>')
   } | ConvertTo-Json)
 ```
+
+The API keeps that contact callable. It refuses:
+
+- an onsite engineer without a `phoneNumber`, with one that is not valid E.164, or with `voiceEnabled = $false`;
+- a `/contacts` change that turns voice off or disables a contact linked to an onsite engineer;
+- changing a user's role to `onsiteengineer` before they have a callable linked contact.
+
+Then assign the engineer as an SRE of their clusters so incidents on those clusters call them.
 
 If an organization has no assigned, contactable onsite engineer, link a notification contact to its primary Admin account so fallback delivery can succeed.
 

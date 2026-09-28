@@ -6,7 +6,7 @@
  * password is lost. It writes the same tables the API reads, so an account created here
  * behaves identically to one created through the admin UI.
  *
- *   npm run user:create -- --email a@b.c --name "Ahmed" --role onsiteengineer --password "..."
+ *   npm run user:create -- --email a@b.c --name "Ahmed" --role onsiteengineer --password "..." --phone +923001234567 [--sms false]
  *   npm run user:list
  *   npm run user:assign -- --email a@b.c --project project-a
  *   npm run user:unassign -- --email a@b.c --project project-a
@@ -20,6 +20,7 @@ const { readFileSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { Client } = require('pg');
 const { hashPassword, parseRole, ROLES } = require('@faultline/auth');
+const { normalizePhoneNumber } = require('@faultline/notifications');
 
 const root = resolve(__dirname, '..');
 
@@ -114,14 +115,55 @@ const commands = {
       );
     if (typeof args.password !== 'string' || args.password.length < 12)
       throw new Error('Pass --password with at least 12 characters');
+    // Same rule as the API: Retell calls an onsite engineer on this number, so the
+    // account is not created without one, and voice is always on.
+    let phoneNumber;
+    if (role === ROLES.ONSITE_ENGINEER) {
+      if (typeof args.phone !== 'string')
+        throw new Error(
+          'Pass --phone in E.164 format (e.g. +923001234567): Retell calls onsite engineers on it',
+        );
+      phoneNumber = normalizePhoneNumber(args.phone);
+    }
 
     const id = randomUUID();
+    await client.query('BEGIN');
     try {
-      await client.query(
-        `INSERT INTO users (id, email, name, role, password_hash) VALUES ($1, $2, $3, $4, $5)`,
+      const inserted = await client.query(
+        `INSERT INTO users (id, email, name, role, password_hash) VALUES ($1, $2, $3, $4, $5)
+         RETURNING organization_id`,
         [id, email.toLowerCase(), name, role, await hashPassword(args.password)],
       );
+      if (phoneNumber) {
+        const organizationId = inserted.rows[0].organization_id;
+        const contactId = randomUUID();
+        const now = new Date().toISOString();
+        await client.query(
+          `INSERT INTO notification_contacts (id, organization_id, user_id, aggregate)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            contactId,
+            organizationId,
+            id,
+            JSON.stringify({
+              id: contactId,
+              organizationId,
+              userId: id,
+              name,
+              role: 'ENGINEER',
+              phoneNumber,
+              voiceEnabled: true,
+              smsEnabled: args.sms !== 'false',
+              enabled: true,
+              createdAt: now,
+              updatedAt: now,
+            }),
+          ],
+        );
+      }
+      await client.query('COMMIT');
     } catch (error) {
+      await client.query('ROLLBACK');
       if (error.code === '23505')
         throw new Error(`A user with the email ${email} already exists`);
       throw error;

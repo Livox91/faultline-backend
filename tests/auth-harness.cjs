@@ -28,6 +28,10 @@ const {
   InMemorySubscriptionRepository,
 } = require('@faultline/billing');
 const {
+  CONTACT_REPOSITORY,
+  InMemoryContactRepository,
+} = require('@faultline/notifications');
+const {
   AuthenticationGuard,
 } = require('../apps/api/dist/auth/authentication.guard');
 const {
@@ -131,6 +135,7 @@ async function bootWithRealGuards({
   assignments = new InMemoryProjectAssignmentRepository(),
   audit = new InMemoryAuditLogRepository(),
   subscriptions = new InMemorySubscriptionRepository(),
+  contacts = new InMemoryContactRepository(),
   config = apiConfig(),
 } = {}) {
   class TestModule {}
@@ -142,6 +147,7 @@ async function bootWithRealGuards({
       { provide: PROJECT_ASSIGNMENT_REPOSITORY, useValue: assignments },
       { provide: AUDIT_LOG_REPOSITORY, useValue: audit },
       { provide: SUBSCRIPTION_REPOSITORY, useValue: subscriptions },
+      { provide: CONTACT_REPOSITORY, useValue: contacts },
       { provide: APPLICATION_CONFIG, useValue: config },
       { provide: Reflector, useValue: new Reflector() },
       { provide: require('@faultline/platform').ApplicationLogger, useValue: silentLogger },
@@ -161,6 +167,7 @@ async function bootWithRealGuards({
     assignments,
     audit,
     subscriptions,
+    contacts,
     base: await app.getUrl(),
   };
 }

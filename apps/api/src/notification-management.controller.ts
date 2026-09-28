@@ -2,15 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { BadRequestException, Body, Controller, Get, Header, Inject, NotFoundException, Param, Patch, Post } from '@nestjs/common';
 import { FEATURES } from '@faultline/billing';
 import { RequiresFeature } from './auth/context';
-import { USER_REPOSITORY, type UserRepository } from '@faultline/auth';
+import { ROLES, USER_REPOSITORY, type UserRepository } from '@faultline/auth';
 import {
   CONTACT_REPOSITORY,
   NOTIFICATION_GROUP_REPOSITORY,
   normalizePhoneNumber,
+  type Contact,
   type ContactRepository,
   type NotificationGroupRepository,
 } from '@faultline/notifications';
 import { z } from 'zod';
+import { ENGINEER_CONTACT_RULE, isCallable } from './engineer-contact';
 
 const id = z.string().trim().min(1).max(128);
 const contactInput = z.object({
@@ -59,13 +61,15 @@ export class ContactsController {
     } catch (error) {
       throw new BadRequestException((error as Error).message);
     }
-    return this.contacts.create({
+    const contact: Contact = {
       id: randomUUID(),
       ...input,
       phoneNumber,
       createdAt: now,
       updatedAt: now,
-    });
+    };
+    await this.requireCallableEngineer(contact);
+    return this.contacts.create(contact);
   }
 
   @Get()
@@ -95,12 +99,22 @@ export class ContactsController {
       } catch (error) {
         throw new BadRequestException((error as Error).message);
       }
-    return this.contacts.update({
+    const contact: Contact = {
       ...current,
       ...input,
       phoneNumber,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    await this.requireCallableEngineer(contact);
+    return this.contacts.update(contact);
+  }
+
+  /** An onsite engineer's contact is how Retell reaches them, so it must stay callable. */
+  private async requireCallableEngineer(contact: Contact) {
+    if (!contact.userId) return;
+    const user = await this.users.findById(contact.userId);
+    if (user?.role === ROLES.ONSITE_ENGINEER && !isCallable(contact))
+      throw new BadRequestException(ENGINEER_CONTACT_RULE);
   }
 
   private async validateUser(userId: string | undefined, organizationId: string) {

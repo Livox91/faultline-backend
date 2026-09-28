@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   Body,
@@ -34,6 +35,11 @@ import {
   type UserStatus,
 } from '@faultline/auth';
 import type { ClusterDirectory } from '@faultline/database';
+import {
+  CONTACT_REPOSITORY,
+  type ContactMethod,
+  type ContactRepository,
+} from '@faultline/notifications';
 import { AuditTrail } from './audit-trail';
 import {
   CurrentUser,
@@ -43,6 +49,7 @@ import {
   type RequestWithUser,
 } from './context';
 import { CLUSTER_DIRECTORY } from '../clusters.controller';
+import { ENGINEER_CONTACT_RULE, e164, isCallable } from '../engineer-contact';
 
 /** Never exposes a password hash, whoever is asking. */
 const present = (user: UserRecord, projectIds: readonly string[]) => ({
@@ -92,6 +99,7 @@ export class AdminUsersController {
     @Inject(PROJECT_ASSIGNMENT_REPOSITORY)
     private readonly assignments: ProjectAssignmentRepository,
     @Inject(CLUSTER_DIRECTORY) private readonly projects: ClusterDirectory,
+    @Inject(CONTACT_REPOSITORY) private readonly contacts: ContactRepository,
     private readonly audit: AuditTrail,
   ) {}
 
@@ -132,6 +140,10 @@ export class AdminUsersController {
     const password = text(body?.password, 'password', { required: true })!;
     if (password.length < 12)
       throw new BadRequestException('Password must be at least 12 characters');
+    // Checked before anything is written: an onsite engineer is never created without
+    // the phone number Retell calls them on.
+    const contactMethod =
+      role === ROLES.ONSITE_ENGINEER ? this.contactMethod(body) : undefined;
 
     let created: UserRecord;
     try {
@@ -150,6 +162,21 @@ export class AdminUsersController {
       throw error;
     }
 
+    const now = new Date().toISOString();
+    const contact = contactMethod
+      ? await this.contacts.create({
+          id: randomUUID(),
+          organizationId: created.organizationId,
+          userId: created.id,
+          name: created.name,
+          role: 'ENGINEER',
+          ...contactMethod,
+          enabled: true,
+          createdAt: now,
+          updatedAt: now,
+        })
+      : undefined;
+
     // Projects may be named at creation so an engineer is never briefly account-
     // without-access, which reads as a broken login to the person using it.
     const projectIds = await this.assignProjects(
@@ -167,7 +194,7 @@ export class AdminUsersController {
       request,
       metadata: { email: created.email, role: created.role },
     });
-    return present(created, projectIds);
+    return { ...present(created, projectIds), ...(contact ? { contact } : {}) };
   }
 
   @Patch(':id')
@@ -193,6 +220,14 @@ export class AdminUsersController {
       throw new BadRequestException('You cannot change your own role');
     if (id === actor.id && nextStatus === 'disabled')
       throw new BadRequestException('You cannot disable your own account');
+    // Becoming an onsite engineer makes the account someone Retell calls, so it needs a
+    // contact that can take the call first.
+    if (
+      role === ROLES.ONSITE_ENGINEER &&
+      existing.role !== ROLES.ONSITE_ENGINEER &&
+      !(await this.contacts.findByUserIds([id], existing.organizationId)).some(isCallable)
+    )
+      throw new BadRequestException(ENGINEER_CONTACT_RULE);
 
     const password = text(body?.password, 'password');
     if (password !== undefined && password.length < 12)
@@ -304,6 +339,16 @@ export class AdminUsersController {
       request,
       metadata: { userId: id },
     });
+  }
+
+  /** Voice is not optional for an onsite engineer; SMS is, and defaults to on. */
+  private contactMethod(body: Record<string, unknown>): ContactMethod {
+    const phoneNumber = e164(body?.phoneNumber);
+    if (body?.voiceEnabled === false)
+      throw new BadRequestException(ENGINEER_CONTACT_RULE);
+    if (body?.smsEnabled !== undefined && typeof body.smsEnabled !== 'boolean')
+      throw new BadRequestException('Invalid smsEnabled');
+    return { phoneNumber, voiceEnabled: true, smsEnabled: body?.smsEnabled !== false };
   }
 
   private async assignProjects(
