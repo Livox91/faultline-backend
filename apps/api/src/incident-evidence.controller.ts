@@ -145,6 +145,7 @@ export class IncidentEvidenceController {
         })),
         // Structured evidence already stored in PostgreSQL; telemetry stays in ClickHouse.
         anomalyEvidence: incident.evidence,
+        resourceSnapshots: incident.resourceSnapshots ?? [],
         eventIds,
         queryContext,
         telemetry: {

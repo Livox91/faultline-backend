@@ -79,6 +79,25 @@ function incident() {
     resolvedAt,
     anomalies: [first, second],
     evidence: [],
+    resourceSnapshots: [
+      {
+        timestamp: detectedAt,
+        observedAt: detectedAt,
+        resource: resource('payment-api'),
+        cpuUsageCores: 0.75,
+        cpuLimitCores: 1,
+        cpuUtilizationPercent: 75,
+        memoryUsageBytes: 458227712,
+        memoryLimitBytes: 536870912,
+        memoryUtilizationPercent: 85.34,
+        fieldTimestamps: {
+          cpuUsage: detectedAt,
+          cpuLimit: detectedAt,
+          memoryUsage: detectedAt,
+          memoryLimit: detectedAt,
+        },
+      },
+    ],
     timeline: [
       {
         id: 'timeline-2',
@@ -176,6 +195,7 @@ test('complete incident generates a normalized technical report', async () => {
     bySeverity: { HIGH: 1, CRITICAL: 1 },
     byStatus: { RESOLVED: 2 },
   });
+  assert.deepEqual(report.resourceSnapshots, value.resourceSnapshots);
   assert.equal(report.codeAnalysis.totalFindings, 2);
   assert.equal(report.codeAnalysis.criticalFindings, 1);
   assert.equal(report.remediation.suggested.length, 1);

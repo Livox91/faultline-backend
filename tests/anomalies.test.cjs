@@ -140,6 +140,11 @@ test('HIGH_MEMORY_UTILIZATION requires repeated samples, includes warning/critic
   )[0];
   assert.equal(opened.status, 'OPEN');
   assert.equal(opened.severity, 'WARNING');
+  assert.deepEqual(opened.evidence[0].attributes, {
+    utilizationPercent: 85,
+    warningThresholdPercent: 85,
+    criticalThresholdPercent: 95,
+  });
   const activating = metric('k8s.container.memory.usage', 400);
   const active = rules.evaluate(
     activating,

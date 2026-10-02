@@ -14,6 +14,7 @@ const {
 const {
   IncidentExternalTicketController,
 } = require('../apps/api/dist/incident-external-ticket.controller');
+const { EVENT_TOPICS, QUEUE } = require('@faultline/queue');
 
 const incidentId = '11111111-1111-4111-8111-111111111111';
 
@@ -46,7 +47,7 @@ function incident() {
   };
 }
 
-async function serve({ withTicket = false, unsafeUrl = false } = {}) {
+async function serve({ withTicket = false, unsafeUrl = false, published = [] } = {}) {
   const incidents = new InMemoryIncidentRepository();
   await incidents.createIncident(incident());
   const tickets = new InMemoryExternalTicketRepository();
@@ -70,6 +71,14 @@ async function serve({ withTicket = false, unsafeUrl = false } = {}) {
     providers: [
       { provide: INCIDENT_REPOSITORY, useValue: incidents },
       { provide: EXTERNAL_TICKET_REPOSITORY, useValue: tickets },
+      {
+        provide: QUEUE,
+        useValue: {
+          async publish(topic, message) {
+            published.push({ topic, message });
+          },
+        },
+      },
     ],
   })(TicketApiModule);
   const app = await NestFactory.create(TicketApiModule, { logger: false });
@@ -107,6 +116,45 @@ test('Slack ticket endpoint returns an explicit empty state', async () => {
     );
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ticket: null });
+  } finally {
+    await app.close();
+  }
+});
+
+test('Slack ticket endpoint queues manual creation when automatic creation did not link one', async () => {
+  const published = [];
+  const app = await serve({ published });
+  try {
+    const response = await fetch(
+      `${await app.getUrl()}/incidents/${incidentId}/external-tickets/slack`,
+      { method: 'POST' },
+    );
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), {
+      status: 'REQUESTED',
+      ticket: null,
+    });
+    assert.equal(published.length, 1);
+    assert.equal(published[0].topic, EVENT_TOPICS.incidentTicketRequested);
+    assert.deepEqual(published[0].message.payload, { incidentId });
+  } finally {
+    await app.close();
+  }
+});
+
+test('Slack ticket creation returns the linked ticket without publishing a duplicate', async () => {
+  const published = [];
+  const app = await serve({ withTicket: true, published });
+  try {
+    const response = await fetch(
+      `${await app.getUrl()}/incidents/${incidentId}/external-tickets/slack`,
+      { method: 'POST' },
+    );
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.status, 'LINKED');
+    assert.equal(body.ticket.channelId, 'C123');
+    assert.equal(published.length, 0);
   } finally {
     await app.close();
   }

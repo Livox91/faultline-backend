@@ -168,6 +168,24 @@ export interface IncidentTimelineEntry {
   summary: string;
 }
 
+/** CPU and memory values frozen when the processor first opens an incident. */
+export interface IncidentResourceSnapshot {
+  /** Incident/anomaly event-time at which this snapshot was attached. */
+  timestamp: string;
+  /** Event-time of the newest resource-state field included in the snapshot. */
+  observedAt: string;
+  resource: AnomalyAffectedResource;
+  cpuUsageCores?: number;
+  cpuLimitCores?: number;
+  cpuRequestCores?: number;
+  cpuUtilizationPercent?: number;
+  memoryUsageBytes?: number;
+  memoryLimitBytes?: number;
+  memoryRequestBytes?: number;
+  memoryUtilizationPercent?: number;
+  fieldTimestamps: Readonly<Record<string, string>>;
+}
+
 /** Framework and persistence independent operational incident aggregate. */
 export interface Incident {
   id: string;
@@ -198,6 +216,8 @@ export interface Incident {
   anomalies: readonly Anomaly[];
   evidence: readonly IncidentEvidence[];
   timeline: readonly IncidentTimelineEntry[];
+  /** Optional for backward compatibility with incidents stored before snapshots existed. */
+  resourceSnapshots?: readonly IncidentResourceSnapshot[];
 }
 
 export interface IncidentFilter {

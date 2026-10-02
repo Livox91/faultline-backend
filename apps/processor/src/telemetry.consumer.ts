@@ -1,5 +1,6 @@
 import {
   RESOURCE_STATE,
+  type ResourceState,
   type ResourceStateStore,
 } from './resource-state/resource-state';
 import {
@@ -39,7 +40,11 @@ import {
   type LogClassificationOutcome,
   type LogClassifier,
 } from './log-classification/contracts';
-import type { Incident } from '@faultline/incidents';
+import type {
+  AnomalyAffectedResource,
+  Incident,
+  IncidentResourceSnapshot,
+} from '@faultline/incidents';
 import type { IncidentCommunicationState, IncidentLifecycleEvent, IncidentLifecycleEventType } from '@faultline/notifications';
 
 @Injectable()
@@ -235,6 +240,7 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
           logClassification?.decision === 'INCIDENT';
         const change = await this.correlator?.correlate(anomaly, {
           allowCreate,
+          resourceSnapshot: incidentResourceSnapshot(state, anomaly.timestamp),
         });
         if (change) {
           this.logIncident(change);
@@ -394,6 +400,51 @@ export class TelemetryConsumer implements OnModuleInit, OnModuleDestroy {
       },
     });
   }
+}
+
+function incidentResourceSnapshot(
+  state: ResourceState | undefined,
+  timestamp: string,
+): IncidentResourceSnapshot | undefined {
+  if (!state) return undefined;
+  const values = [
+    state.cpuUsage,
+    state.cpuLimit,
+    state.cpuRequest,
+    state.cpuUtilizationPercent,
+    state.memoryUsage,
+    state.memoryLimit,
+    state.memoryRequest,
+    state.memoryUtilizationPercent,
+  ];
+  if (values.every((value) => value === undefined)) return undefined;
+
+  const resource: AnomalyAffectedResource = {
+    scope: state.scope,
+    clusterId: state.clusterId,
+    namespace: state.namespace,
+    workload: state.workload,
+    workloadKind: state.workloadKind,
+    workloadUid: state.workloadUid,
+    pod: state.pod,
+    podUid: state.podUid,
+    container: state.container,
+    node: state.node,
+  };
+  return {
+    timestamp,
+    observedAt: state.updatedAt,
+    resource,
+    cpuUsageCores: state.cpuUsage,
+    cpuLimitCores: state.cpuLimit,
+    cpuRequestCores: state.cpuRequest,
+    cpuUtilizationPercent: state.cpuUtilizationPercent,
+    memoryUsageBytes: state.memoryUsage,
+    memoryLimitBytes: state.memoryLimit,
+    memoryRequestBytes: state.memoryRequest,
+    memoryUtilizationPercent: state.memoryUtilizationPercent,
+    fieldTimestamps: { ...state.fieldTimestamps },
+  };
 }
 
 function affectedServiceKey(incident:Incident):string {

@@ -305,8 +305,24 @@ test('Kubernetes memory failure flows through ingestion and correlation into one
     const metrics = [
       {
         ...common,
-        id: 'oom-limit',
+        id: 'oom-cpu-limit',
         timestamp: at(0),
+        name: 'k8s.container.cpu.limit',
+        value: 1,
+        unit: 'cores',
+      },
+      {
+        ...common,
+        id: 'oom-cpu-usage',
+        timestamp: at(1),
+        name: 'k8s.container.cpu.usage',
+        value: 0.4,
+        unit: 'cores',
+      },
+      {
+        ...common,
+        id: 'oom-limit',
+        timestamp: at(2),
         name: 'k8s.container.memory.limit',
         value: 512,
         unit: 'MiB',
@@ -314,7 +330,7 @@ test('Kubernetes memory failure flows through ingestion and correlation into one
       {
         ...common,
         id: 'oom-usage',
-        timestamp: at(1),
+        timestamp: at(3),
         name: 'k8s.container.memory.usage',
         value: 500,
         unit: 'MiB',
@@ -322,7 +338,7 @@ test('Kubernetes memory failure flows through ingestion and correlation into one
       {
         ...common,
         id: 'oom-usage-confirmed',
-        timestamp: at(2),
+        timestamp: at(4),
         name: 'k8s.container.memory.usage',
         value: 500,
         unit: 'MiB',
@@ -330,7 +346,7 @@ test('Kubernetes memory failure flows through ingestion and correlation into one
       {
         ...common,
         id: 'oom-restarts-before',
-        timestamp: at(3),
+        timestamp: at(5),
         name: 'k8s.container.restart_count',
         value: 2,
         unit: '1',
@@ -338,7 +354,7 @@ test('Kubernetes memory failure flows through ingestion and correlation into one
       {
         ...common,
         id: 'oom-restarts-after',
-        timestamp: at(4),
+        timestamp: at(6),
         name: 'k8s.container.restart_count',
         value: 3,
         unit: '1',
@@ -451,6 +467,11 @@ test('Kubernetes memory failure flows through ingestion and correlation into one
     assert.equal(incident.primaryResource.workload, 'payment-api');
     assert.equal(incident.severity, 'CRITICAL');
     assert.equal(incident.confidence, 0.98);
+    assert.equal(incident.resourceSnapshots.length, 1);
+    assert.equal(incident.resourceSnapshots[0].cpuUsageCores, 0.4);
+    assert.equal(incident.resourceSnapshots[0].cpuUtilizationPercent, 40);
+    assert.equal(incident.resourceSnapshots[0].memoryUsageBytes, 500 * 1024 * 1024);
+    assert.equal(incident.resourceSnapshots[0].memoryUtilizationPercent, 97.66);
     assert.ok(
       incident.anomalies.some(
         (item) => item.classification === 'HIGH_MEMORY_UTILIZATION',

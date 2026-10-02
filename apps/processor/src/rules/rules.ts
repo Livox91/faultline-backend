@@ -64,6 +64,8 @@ abstract class UtilizationRule extends BaseRule {
         evidence: [
           calculationEvidence(state, this.label + ' usage divided by limit', {
             utilizationPercent: value,
+            warningThresholdPercent: context.thresholds[this.warning],
+            criticalThresholdPercent: context.thresholds[this.critical],
           }),
         ],
       }),

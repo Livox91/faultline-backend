@@ -128,6 +128,125 @@ test('deterministic rules classify stable operational log categories', async (t)
     });
 });
 
+test('production runtime signatures map into the stable log taxonomy', async (t) => {
+  const cases = [
+    [
+      'TypeError: Cannot read properties of undefined (reading id)',
+      'APPLICATION_EXCEPTION',
+    ],
+    ['ReferenceError: customer is not defined', 'APPLICATION_EXCEPTION'],
+    ['TypeError: handler is not a function', 'APPLICATION_EXCEPTION'],
+    [
+      'SyntaxError: Unexpected token < in JSON at position 0',
+      'APPLICATION_EXCEPTION',
+    ],
+    [
+      'UnhandledPromiseRejectionWarning: payment failed',
+      'APPLICATION_EXCEPTION',
+    ],
+    ['RangeError: Maximum call stack size exceeded', 'APPLICATION_EXCEPTION'],
+    [
+      'ERR_HTTP_HEADERS_SENT: Cannot set headers after they are sent',
+      'APPLICATION_EXCEPTION',
+    ],
+    [
+      'duplicate key value violates unique constraint users_email_key',
+      'APPLICATION_EXCEPTION',
+    ],
+    [
+      'insert violates foreign key constraint orders_customer_id_fkey',
+      'APPLICATION_EXCEPTION',
+    ],
+    ['transaction already closed', 'APPLICATION_EXCEPTION'],
+    ['deadlock detected while updating orders', 'APPLICATION_EXCEPTION'],
+    ['background job settlement-sync failed', 'APPLICATION_EXCEPTION'],
+    ['data inconsistency after partial failure', 'APPLICATION_EXCEPTION'],
+    [
+      'Hydration failed because the initial UI does not match',
+      'APPLICATION_EXCEPTION',
+    ],
+    ['ReferenceError: window is not defined', 'APPLICATION_EXCEPTION'],
+    ['ChunkLoadError: Loading chunk 812 failed', 'APPLICATION_EXCEPTION'],
+    ['Maximum update depth exceeded', 'APPLICATION_EXCEPTION'],
+    ['password authentication failed for user app', 'DATABASE_CONNECTIVITY'],
+    ['database booknest does not exist', 'DATABASE_CONNECTIVITY'],
+    ['FATAL: too many connections for role app', 'DATABASE_CONNECTIVITY'],
+    [
+      'connection pool exhausted while acquiring client',
+      'DATABASE_CONNECTIVITY',
+    ],
+    [
+      'PrismaClientInitializationError: cannot reach database server',
+      'DATABASE_CONNECTIVITY',
+    ],
+    ['upstream returned 502 Bad Gateway', 'DEPENDENCY_TIMEOUT'],
+    ['provider service request timed out', 'DEPENDENCY_TIMEOUT'],
+    ['upstream returned 504 Gateway Timeout', 'DEPENDENCY_TIMEOUT'],
+    ['jwt malformed', 'AUTHENTICATION_FAILURE'],
+    ['JsonWebTokenError: invalid signature', 'AUTHENTICATION_FAILURE'],
+    ['Token not provided', 'AUTHENTICATION_FAILURE'],
+    ['Session not found', 'AUTHENTICATION_FAILURE'],
+    ['CSRF validation failed: invalid token', 'AUTHENTICATION_FAILURE'],
+    ['S3 AccessDenied while reading customer export', 'AUTHORIZATION_FAILURE'],
+    ['SignatureDoesNotMatch from object storage', 'AUTHORIZATION_FAILURE'],
+    ['relation customer_orders does not exist', 'CONFIGURATION_ERROR'],
+    ['column customer_status does not exist', 'CONFIGURATION_ERROR'],
+    [
+      'invalid value for environment variable PUBLIC_URL',
+      'CONFIGURATION_ERROR',
+    ],
+    [
+      'blocked by CORS policy: no access control allow origin',
+      'CONFIGURATION_ERROR',
+    ],
+    ['EACCES: permission denied, open /data/report.pdf', 'STORAGE_FAILURE'],
+    [
+      'ENOENT: no such file or directory, stat /app/config.json',
+      'STORAGE_FAILURE',
+    ],
+    ['MulterError: Unexpected field', 'STORAGE_FAILURE'],
+    ['presigned URL expired; upload rejected', 'STORAGE_FAILURE'],
+    ['FATAL ERROR: JavaScript heap out of memory', 'RESOURCE_EXHAUSTION'],
+    ['spawn worker failed with ENOMEM', 'RESOURCE_EXHAUSTION'],
+    ['worker pool exhausted under load', 'RESOURCE_EXHAUSTION'],
+    ['process exited with code 137', 'RESOURCE_EXHAUSTION'],
+    ['getaddrinfo ENOTFOUND api.partner.invalid', 'NETWORK_FAILURE'],
+    ['socket hang up while calling payment provider', 'NETWORK_FAILURE'],
+    ['TypeError: fetch failed', 'NETWORK_FAILURE'],
+    ['unable to verify the first certificate', 'NETWORK_FAILURE'],
+    ['Error: Cannot find module @booknest/payments', 'STARTUP_FAILURE'],
+    [
+      'ERR_REQUIRE_ESM: require() of ES Module not supported',
+      'STARTUP_FAILURE',
+    ],
+    ['listen EADDRINUSE: address already in use :::3000', 'STARTUP_FAILURE'],
+    ['container exits repeatedly after health check', 'STARTUP_FAILURE'],
+  ];
+
+  for (const [message, expected] of cases)
+    await t.test(message, async () => {
+      const outcome = await classifier().classifier.classify(log(message));
+      assert.equal(outcome.result.classification, expected);
+      assert.equal(outcome.result.classifierType, 'RULE');
+      assert.ok(outcome.result.confidence >= 0.8);
+    });
+});
+
+test('ordinary HTTP and job messages do not become production incidents', async () => {
+  const messages = [
+    'GET /missing returned 404',
+    'request completed with status 400 after validation',
+    'background job completed successfully',
+    'connection pool has 8 idle connections',
+    'memory usage is within the expected range',
+  ];
+  for (const message of messages) {
+    const outcome = await classifier().classifier.classify(log(message));
+    assert.equal(outcome.result.classification, 'UNKNOWN');
+    assert.equal(outcome.anomaly, undefined);
+  }
+});
+
 test('routine and unknown logs bypass ML or remain UNKNOWN', async () => {
   let calls = 0;
   const { classifier: subject } = classifier({

@@ -40,6 +40,11 @@ const incidentCsvColumns = [
   'acknowledgedAt',
   'resolvedAt',
   'resolutionTimeMs',
+  'snapshotObservedAt',
+  'cpuUsageCores',
+  'cpuUtilizationPercent',
+  'memoryUsageBytes',
+  'memoryUtilizationPercent',
 ] as const;
 
 /** One incident technical report becomes one stable, spreadsheet-safe UTF-8 row. */
@@ -48,6 +53,7 @@ export class CsvReportExporter
 {
   async export(report: IncidentTechnicalReport): Promise<ExportResult> {
     const sanitized = sanitizeReportContent(report) as IncidentTechnicalReport;
+    const snapshot = sanitized.resourceSnapshots?.[0];
     const row: Record<(typeof incidentCsvColumns)[number], CsvValue> = {
       incidentId: sanitized.incident.id,
       title: sanitized.incident.title,
@@ -61,6 +67,11 @@ export class CsvReportExporter
       resolutionTimeMs: sanitized.incident.resolvedAt
         ? sanitized.incident.durationMs
         : null,
+      snapshotObservedAt: snapshot?.observedAt,
+      cpuUsageCores: snapshot?.cpuUsageCores,
+      cpuUtilizationPercent: snapshot?.cpuUtilizationPercent,
+      memoryUsageBytes: snapshot?.memoryUsageBytes,
+      memoryUtilizationPercent: snapshot?.memoryUtilizationPercent,
     };
     return {
       contentType: 'text/csv; charset=utf-8',

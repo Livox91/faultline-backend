@@ -30,6 +30,7 @@ const report = (overrides = {}) => ({
   codeAnalysis: { totalFindings: 0, criticalFindings: 0, findings: [] },
   remediation: { suggested: [], executed: [] },
   health: { services: [] },
+  resourceSnapshots: overrides.resourceSnapshots ?? [],
   timeline: [],
 });
 
@@ -38,11 +39,11 @@ test('CSV report exporter writes stable headers and a normal incident row', asyn
   const [headers, row] = result.content.split('\r\n');
   assert.equal(
     headers,
-    'incidentId,title,description,severity,status,affectedServices,detectedAt,acknowledgedAt,resolvedAt,resolutionTimeMs',
+    'incidentId,title,description,severity,status,affectedServices,detectedAt,acknowledgedAt,resolvedAt,resolutionTimeMs,snapshotObservedAt,cpuUsageCores,cpuUtilizationPercent,memoryUsageBytes,memoryUtilizationPercent',
   );
   assert.equal(
     row,
-    'incident-1,Payment failure,Payment dependency failed,CRITICAL,RESOLVED,payments;database,2026-09-21T10:00:00.000Z,2026-09-21T10:00:30.000Z,2026-09-21T10:02:00.000Z,120000',
+    'incident-1,Payment failure,Payment dependency failed,CRITICAL,RESOLVED,payments;database,2026-09-21T10:00:00.000Z,2026-09-21T10:00:30.000Z,2026-09-21T10:02:00.000Z,120000,,,,,',
   );
 });
 
@@ -73,8 +74,23 @@ test('CSV report exporter emits empty fields for null optional timestamps', asyn
     },
   }));
   const row = result.content.split('\r\n')[1];
-  assert.match(row, /\.000Z,,,?$/);
-  assert.equal(row.split(',').slice(-3).join(','), ',,');
+  const values = row.split(',');
+  assert.equal(values[7], '');
+  assert.equal(values[8], '');
+  assert.equal(values[9], '');
+});
+
+test('CSV report exporter includes the incident-time CPU and memory snapshot', async () => {
+  const result = await new CsvReportExporter().export(report({
+    resourceSnapshots: [{
+      observedAt: '2026-09-21T10:00:00.000Z',
+      cpuUsageCores: 0.42,
+      cpuUtilizationPercent: 42,
+      memoryUsageBytes: 458227712,
+      memoryUtilizationPercent: 85.34,
+    }],
+  }));
+  assert.match(result.content, /2026-09-21T10:00:00\.000Z,0\.42,42,458227712,85\.34$/);
 });
 
 test('CSV report exporter uses a UTF-8 CSV content type', async () => {

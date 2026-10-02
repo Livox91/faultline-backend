@@ -83,8 +83,72 @@ test('creates a workload incident and resolves Pod -> ReplicaSet -> Deployment',
   assert.equal(change.incident.status, 'OPEN');
   assert.equal(change.incident.classification, 'MEMORY_EXHAUSTION');
   assert.equal(change.incident.confidence, 0.45);
+  assert.equal(
+    change.incident.summary,
+    'Anomaly detected. Type: High Memory Utilization. 1 correlated signal: HIGH_MEMORY_UTILIZATION',
+  );
   assert.equal(change.incident.primaryResource.scope, 'deployment');
   assert.equal(change.incident.primaryResource.workload, 'payment-api');
+});
+
+test('correlates semantic causes with downstream failures across workloads in one namespace', async () => {
+  const cases = [
+    {
+      cause: 'DATABASE_CONNECTIVITY',
+      impact: 'DEPLOYMENT_DEGRADED',
+      classification: 'APPLICATION_DEPENDENCY_FAILURE',
+      title: 'Database Connectivity Issue',
+    },
+    {
+      cause: 'CONFIGURATION_ERROR',
+      impact: 'CRASH_LOOP',
+      classification: 'WORKLOAD_CONFIGURATION_FAILURE',
+      title: 'Configuration Error',
+    },
+    {
+      cause: 'APPLICATION_EXCEPTION',
+      impact: 'POD_NOT_READY',
+      classification: 'APPLICATION_DEGRADATION',
+      title: 'Application Exception',
+    },
+  ];
+
+  for (const value of cases) {
+    const { repository, engine } = setup();
+    await engine.correlate(anomaly(value.cause, 0, {
+      source: 'LOG_CLASSIFIER',
+      summary: `${value.cause} in backend`,
+      affectedResource: resource('backend-7847d-x72a', {
+        workload: 'backend-7847d',
+      }),
+    }));
+    const result = await engine.correlate(anomaly(value.impact, 1_000, {
+      source: 'DETERMINISTIC',
+      summary: `${value.impact} in frontend`,
+      affectedResource: resource('frontend-5bc9d-a82f1', {
+        workload: 'frontend-5bc9d',
+      }),
+    }));
+
+    assert.equal((await repository.listActiveIncidents()).length, 1);
+    assert.equal(result.incident.anomalies.length, 2);
+    assert.equal(result.incident.classification, value.classification);
+    assert.equal(result.incident.title, value.title);
+    assert.match(result.incident.summary, new RegExp(`Type: ${value.title}`));
+  }
+});
+
+test('serializes concurrent correlation in one cluster namespace to prevent duplicate incidents', async () => {
+  const { repository, engine } = setup();
+  const [first, second] = await Promise.all([
+    engine.correlate(anomaly('DEPLOYMENT_DEGRADED', 0)),
+    engine.correlate(anomaly('DEPLOYMENT_DEGRADED', 1)),
+  ]);
+
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal((await repository.listActiveIncidents()).length, 1);
+  assert.equal(first.incident.id, second.incident.id);
 });
 
 test('correlates memory evidence, deduplicates the incident, escalates severity and confidence', async () => {

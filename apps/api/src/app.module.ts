@@ -145,6 +145,11 @@ import { SlackIntegrationController, SlackIntegrationService } from './slack-int
 import { ClusterSlackController } from './cluster-slack.controller';
 import { ClusterSresController } from './cluster-sres.controller';
 import {
+  getDevelopmentQueue,
+  NatsJetStreamQueue,
+  QUEUE,
+} from '@faultline/queue';
+import {
   HttpSlackChannelDirectory,
   SLACK_CHANNEL_DIRECTORY,
 } from './slack-channel-directory';
@@ -346,6 +351,29 @@ const infrastructureProviders: Provider[] =
         },
       ];
 
+const queueProvider: Provider =
+  process.env.NODE_ENV === 'test'
+    ? { provide: QUEUE, useFactory: getDevelopmentQueue }
+    : {
+        provide: QUEUE,
+        inject: [APPLICATION_CONFIG, HealthService],
+        useFactory: async (
+          config: ApplicationConfig,
+          health: HealthService,
+        ) => {
+          if (!config.infrastructure.brokerUrl) return getDevelopmentQueue();
+          const queue = await NatsJetStreamQueue.connect({
+            servers: config.infrastructure.brokerUrl,
+            clientId: `${config.infrastructure.brokerClientId}-api`,
+            consumerGroup: 'faultline-api',
+            maxDeliver: config.infrastructure.brokerMaxDeliver,
+            retryDelayMs: config.infrastructure.brokerRetryDelayMs,
+          });
+          health.register(queue);
+          return queue;
+        },
+      };
+
 /**
  * Outbound email.
  *
@@ -466,6 +494,7 @@ const billingProviders: Provider[] = billingEnabled
   ],
   providers: [
     ...infrastructureProviders,
+    queueProvider,
     emailProvider,
     ...billingProviders,
     AuditTrail,

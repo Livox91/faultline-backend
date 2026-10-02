@@ -2,6 +2,7 @@ require('reflect-metadata');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { InMemoryIncidentRepository } = require('@faultline/incidents');
+const { EVENT_TOPICS } = require('@faultline/queue');
 const {
   InMemoryExternalTicketRepository,
   InMemoryIdempotencyStore,
@@ -874,7 +875,7 @@ test('significant normalized incident timeline entry posts a thread reply', asyn
   assert.equal(calls.threads.length, 1);
   assert.match(
     JSON.stringify(calls.threads[0]),
-    /Significant anomaly detected/,
+    /Anomaly detected · Type: OOM Killed/,
   );
   assert.match(
     JSON.stringify(calls.threads[0]),
@@ -906,11 +907,11 @@ test('Slack thread API failure is contained and remains retryable', async () => 
   assert.equal(calls.posts.length, 0);
 });
 
-test('notification lifecycle creates Slack tickets only for incident creation events', async () => {
-  let handler;
+test('notification lifecycle creates automatic tickets and accepts manual fallback requests', async () => {
+  const handlers = new Map();
   const queue = {
-    async subscribe(_topic, value) {
-      handler = value;
+    async subscribe(topic, value) {
+      handlers.set(topic, value);
       return { async close() {} };
     },
   };
@@ -935,7 +936,8 @@ test('notification lifecycle creates Slack tickets only for incident creation ev
   );
   await consumer.onModuleInit();
   const value = incident();
-  await handler({
+  const lifecycleHandler = handlers.get(EVENT_TOPICS.incidentsLifecycle);
+  await lifecycleHandler({
     payload: {
       type: 'INCIDENT_CREATED',
       incident: value,
@@ -943,7 +945,7 @@ test('notification lifecycle creates Slack tickets only for incident creation ev
       changedFields: ['created'],
     },
   });
-  await handler({
+  await lifecycleHandler({
     payload: {
       type: 'INCIDENT_STATUS_CHANGED',
       incident: value,
@@ -951,7 +953,13 @@ test('notification lifecycle creates Slack tickets only for incident creation ev
       changedFields: ['status'],
     },
   });
-  assert.deepEqual(ticketCalls, [{ incidentId: value.id }]);
+  await handlers.get(EVENT_TOPICS.incidentTicketRequested)({
+    payload: { incidentId: value.id },
+  });
+  assert.deepEqual(ticketCalls, [
+    { incidentId: value.id },
+    { incidentId: value.id },
+  ]);
   assert.deepEqual(ticketUpdates, [
     { incidentId: value.id, state: 'INVESTIGATING' },
   ]);

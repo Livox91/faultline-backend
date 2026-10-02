@@ -1,7 +1,7 @@
 import type { LogEvent } from '@faultline/telemetry';
 
 /** Stable, intentionally small taxonomy. Additive changes require a new version. */
-export const LOG_CLASSIFICATION_TAXONOMY_VERSION = 'log-taxonomy-v1';
+export const LOG_CLASSIFICATION_TAXONOMY_VERSION = 'log-taxonomy-v2';
 export const logClassifications = [
   'NORMAL',
   'APPLICATION_EXCEPTION',

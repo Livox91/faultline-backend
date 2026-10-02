@@ -2,11 +2,15 @@ import {
   Controller,
   Get,
   Header,
+  HttpCode,
   Inject,
   NotFoundException,
   Param,
   ParseUUIDPipe,
+  Post,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import {
   INCIDENT_REPOSITORY,
   type IncidentRepository,
@@ -16,6 +20,7 @@ import {
   type ExternalTicket,
   type ExternalTicketRepository,
 } from '@faultline/notifications';
+import { EVENT_TOPICS, QUEUE, type Queue } from '@faultline/queue';
 
 export interface SlackTicketView {
   provider: 'slack';
@@ -34,6 +39,7 @@ export class IncidentExternalTicketController {
     private readonly incidents: IncidentRepository,
     @Inject(EXTERNAL_TICKET_REPOSITORY)
     private readonly tickets: ExternalTicketRepository,
+    @Inject(QUEUE) private readonly queue: Queue,
   ) {}
 
   @Get(':incidentId/external-tickets/slack')
@@ -48,6 +54,41 @@ export class IncidentExternalTicketController {
       'slack',
     );
     return { ticket: ticket ? toView(ticket) : null };
+  }
+
+  @Post(':incidentId/external-tickets/slack')
+  @HttpCode(202)
+  @Header('Cache-Control', 'no-store')
+  async createSlackTicket(
+    @Param('incidentId', new ParseUUIDPipe()) incidentId: string,
+  ): Promise<
+    | { status: 'LINKED'; ticket: SlackTicketView }
+    | { status: 'REQUESTED'; ticket: null }
+  > {
+    if (!(await this.incidents.getIncident(incidentId)))
+      throw new NotFoundException('Incident not found');
+    const existing = await this.tickets.findByIncidentAndProvider(
+      incidentId,
+      'slack',
+    );
+    if (existing) return { status: 'LINKED', ticket: toView(existing) };
+
+    try {
+      await this.queue.publish(EVENT_TOPICS.incidentTicketRequested, {
+        id: `manual-slack-ticket:${incidentId}:${randomUUID()}`,
+        payload: { incidentId },
+        headers: {
+          eventType: EVENT_TOPICS.incidentTicketRequested,
+          schemaVersion: '1',
+          source: 'faultline-api',
+        },
+      });
+    } catch {
+      throw new ServiceUnavailableException(
+        'Slack ticket creation could not be queued',
+      );
+    }
+    return { status: 'REQUESTED', ticket: null };
   }
 }
 

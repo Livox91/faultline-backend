@@ -7,6 +7,7 @@ import type {
   IncidentClassification,
   IncidentEvidence,
   IncidentRepository,
+  IncidentResourceSnapshot,
   IncidentSeverity,
   IncidentTimelineEntry,
 } from '@faultline/incidents';
@@ -70,6 +71,10 @@ const families = [
   dependencyLogs,
   accessLogs,
 ];
+const operationalImpact = new Set<AnomalyClassification>([
+  ...availability,
+  ...applicationHealth,
+]);
 
 function resourceKey(resource: AnomalyAffectedResource): string {
   const identity =
@@ -92,6 +97,20 @@ function related(incident: Incident, anomaly: Anomaly): boolean {
     incident.anomalies.map((item) => item.classification),
   );
   if (classes.has(anomaly.classification)) return true;
+  const incidentHasSemanticAnchor = incident.anomalies.some(
+    (item) => item.source === 'LOG_CLASSIFIER',
+  );
+  const incidentHasOperationalImpact = incident.anomalies.some((item) =>
+    operationalImpact.has(item.classification),
+  );
+  // A semantic error is the likely cause while readiness, crash, replica, error-rate,
+  // and latency anomalies are its observable impact. This relation is generic across
+  // semantic classifications; resource proximity is checked separately.
+  if (
+    (incidentHasSemanticAnchor && operationalImpact.has(anomaly.classification)) ||
+    (anomaly.source === 'LOG_CLASSIFIER' && incidentHasOperationalImpact)
+  )
+    return true;
   for (const family of families)
     if (
       family.has(anomaly.classification) &&
@@ -157,7 +176,7 @@ function related(incident: Incident, anomaly: Anomaly): boolean {
   return false;
 }
 
-function title(classification: IncidentClassification): string {
+function title(classification: string): string {
   return classification
     .toLowerCase()
     .split('_')
@@ -165,15 +184,56 @@ function title(classification: IncidentClassification): string {
     .join(' ');
 }
 
+function anomalyTitle(classification: AnomalyClassification): string {
+  const labels: Partial<Record<AnomalyClassification, string>> = {
+    OOM_KILLED: 'OOM Killed',
+    DATABASE_CONNECTIVITY: 'Database Connectivity Issue',
+  };
+  return labels[classification] ?? title(classification);
+}
+
+function primarySignal(anomalies: readonly Anomaly[]): Anomaly {
+  return [...anomalies].sort(
+    (left, right) =>
+      Number(right.source === 'LOG_CLASSIFIER') -
+        Number(left.source === 'LOG_CLASSIFIER') ||
+      severityRank[right.severity] - severityRank[left.severity] ||
+      Date.parse(left.firstSeen) - Date.parse(right.firstSeen),
+  )[0]!;
+}
+
+function incidentTitle(
+  classification: IncidentClassification,
+  anomalies: readonly Anomaly[],
+): string {
+  const primary = primarySignal(anomalies);
+  return primary.source === 'LOG_CLASSIFIER'
+    ? anomalyTitle(primary.classification)
+    : title(classification);
+}
+
 function incidentSummary(
   classification: IncidentClassification,
   anomalies: readonly Anomaly[],
 ): string {
-  const base = `${title(classification)} supported by ${anomalies.length} anomaly signal${anomalies.length === 1 ? '' : 's'}`;
-  const logEvidence = anomalies.find(
-    (item) => item.source === 'LOG_CLASSIFIER',
-  );
-  return logEvidence ? `${base}; ${logEvidence.summary}` : base;
+  const primary = primarySignal(anomalies);
+  const base = `Anomaly detected. Type: ${anomalyTitle(primary.classification)}. ${anomalies.length} correlated signal${anomalies.length === 1 ? '' : 's'}`;
+  const observations = [
+    ...new Set(
+      anomalies
+        .map((item) => item.summary.trim())
+        .filter((summary) => summary.length > 0),
+    ),
+  ];
+  if (observations.length === 0) return base;
+
+  const visible = observations.slice(0, 3);
+  const remaining = observations.length - visible.length;
+  const suffix =
+    remaining > 0
+      ? `; +${remaining} more signal${remaining === 1 ? '' : 's'}`
+      : '';
+  return `${base}: ${visible.join('; ')}${suffix}`;
 }
 
 function uniquePods(
@@ -201,7 +261,6 @@ function classify(anomalies: readonly Anomaly[]): IncidentClassification {
         classes.has('MEMORY_GROWTH_ANOMALY')))
   )
     return 'MEMORY_EXHAUSTION';
-  if (classes.has('DEPLOYMENT_DEGRADED')) return 'DEPLOYMENT_DEGRADATION';
   if ([...classes].some((item) => dependencyLogs.has(item)))
     return 'APPLICATION_DEPENDENCY_FAILURE';
   if (
@@ -211,6 +270,12 @@ function classify(anomalies: readonly Anomaly[]): IncidentClassification {
     classes.has('FAILED_MOUNT')
   )
     return 'WORKLOAD_CONFIGURATION_FAILURE';
+  if (
+    classes.has('APPLICATION_EXCEPTION') ||
+    [...classes].some((item) => accessLogs.has(item))
+  )
+    return 'APPLICATION_DEGRADATION';
+  if (classes.has('DEPLOYMENT_DEGRADED')) return 'DEPLOYMENT_DEGRADATION';
   if (classes.has('CRASH_LOOP') || classes.has('POD_NOT_READY'))
     return 'WORKLOAD_CRASHING';
   if (classes.has('FAILED_SCHEDULING')) return 'SCHEDULING_FAILURE';
@@ -345,7 +410,11 @@ function timelineEntry(anomaly: Anomaly): IncidentTimelineEntry {
   };
 }
 
-function rebuild(incident: Incident, anomaly: Anomaly): Incident {
+function rebuild(
+  incident: Incident,
+  anomaly: Anomaly,
+  resourceSnapshot?: IncidentResourceSnapshot,
+): Incident {
   const previous = incident.anomalies.findIndex(
     (item) => item.anomalyId === anomaly.anomalyId,
   );
@@ -411,7 +480,7 @@ function rebuild(incident: Incident, anomaly: Anomaly): Incident {
     primaryResource,
     affectedResources,
     classification,
-    title: title(classification),
+    title: incidentTitle(classification, anomalies),
     summary: incidentSummary(classification, anomalies),
     severity: deriveSeverity(classification, anomalies),
     confidence: confidence(classification, anomalies),
@@ -431,10 +500,16 @@ function rebuild(incident: Incident, anomaly: Anomaly): Incident {
     anomalies,
     evidence,
     timeline,
+    resourceSnapshots:
+      incident.resourceSnapshots?.length || !resourceSnapshot
+        ? (incident.resourceSnapshots ?? [])
+        : [resourceSnapshot],
   };
 }
 
 export class IncidentCorrelationEngine implements IncidentCorrelator {
+  private readonly scopeQueues = new Map<string, Promise<void>>();
+
   constructor(
     private readonly repository: IncidentRepository,
     private readonly config: IncidentCorrelationConfig,
@@ -442,12 +517,41 @@ export class IncidentCorrelationEngine implements IncidentCorrelator {
 
   async correlate(
     anomaly: Anomaly,
-    options: { allowCreate?: boolean } = {},
+    options: {
+      allowCreate?: boolean;
+      resourceSnapshot?: IncidentResourceSnapshot;
+    } = {},
+  ): Promise<IncidentChange | undefined> {
+    const scope = JSON.stringify([
+      anomaly.clusterId,
+      anomaly.affectedResource.namespace ?? '',
+    ]);
+    const previous = this.scopeQueues.get(scope) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.scopeQueues.set(scope, current);
+    await previous;
+    try {
+      return await this.correlateInScope(anomaly, options);
+    } finally {
+      release();
+      if (this.scopeQueues.get(scope) === current) this.scopeQueues.delete(scope);
+    }
+  }
+
+  private async correlateInScope(
+    anomaly: Anomaly,
+    options: {
+      allowCreate?: boolean;
+      resourceSnapshot?: IncidentResourceSnapshot;
+    },
   ): Promise<IncidentChange | undefined> {
     const prior = await this.repository.findByAnomalyId(anomaly.anomalyId);
     if (prior) {
       const updated = await this.repository.updateIncident(
-        rebuild(prior, anomaly),
+        rebuild(prior, anomaly, options.resourceSnapshot),
       );
       return { type: 'UPDATED', incident: updated };
     }
@@ -467,7 +571,7 @@ export class IncidentCorrelationEngine implements IncidentCorrelator {
     )[0];
     if (existing) {
       const updated = await this.repository.updateIncident(
-        rebuild(existing, anomaly),
+        rebuild(existing, anomaly, options.resourceSnapshot),
       );
       return { type: 'UPDATED', incident: updated };
     }
@@ -481,7 +585,7 @@ export class IncidentCorrelationEngine implements IncidentCorrelator {
       primaryResource: primary,
       affectedResources: [anomaly.affectedResource],
       classification,
-      title: title(classification),
+      title: incidentTitle(classification, [anomaly]),
       summary: incidentSummary(classification, [anomaly]),
       severity: deriveSeverity(classification, [anomaly]),
       status: 'OPEN',
@@ -496,6 +600,9 @@ export class IncidentCorrelationEngine implements IncidentCorrelator {
         source: anomaly.source,
       })),
       timeline: [timelineEntry(anomaly)],
+      resourceSnapshots: options.resourceSnapshot
+        ? [options.resourceSnapshot]
+        : [],
     };
     return {
       type: 'CREATED',
@@ -530,6 +637,24 @@ export class IncidentCorrelationEngine implements IncidentCorrelator {
     key: string,
   ): boolean {
     if (incident.correlationKey === key) return true;
+    if (
+      incident.clusterId === anomaly.clusterId &&
+      incident.namespace === anomaly.affectedResource.namespace
+    ) {
+      const incidentHasSemanticAnchor = incident.anomalies.some(
+        (item) => item.source === 'LOG_CLASSIFIER',
+      );
+      const incidentHasOperationalImpact = incident.anomalies.some((item) =>
+        operationalImpact.has(item.classification),
+      );
+      if (
+        (incidentHasSemanticAnchor &&
+          (anomaly.source === 'LOG_CLASSIFIER' ||
+            operationalImpact.has(anomaly.classification))) ||
+        (anomaly.source === 'LOG_CLASSIFIER' && incidentHasOperationalImpact)
+      )
+        return true;
+    }
     const anomalyNode = anomaly.affectedResource.node;
     if (!anomalyNode) return false;
     if (
