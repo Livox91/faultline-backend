@@ -6,7 +6,9 @@ export interface CredentialsEmailInput {
   readonly username: string;
   readonly temporaryPassword: string;
   readonly loginUrl: string;
-  readonly planName: string;
+  readonly planName?: string;
+  /** Used for accounts invited by an administrator rather than created by checkout. */
+  readonly roleName?: string;
 }
 
 const escapeHtml = (value: string): string =>
@@ -27,10 +29,19 @@ const escapeHtml = (value: string): string =>
  * change screen until it is.
  */
 export function credentialsEmail(input: CredentialsEmailInput): EmailMessage {
+  const accountDescription = input.planName
+    ? `Your ${input.planName} subscription has been successfully activated.`
+    : `Your ${input.roleName ?? 'team member'} account has been created.`;
+  const subjectAccount = input.roleName
+    ? `${input.roleName} account`
+    : 'admin account';
+  const unexpectedAccount = input.planName
+    ? 'If you did not purchase this subscription, reply to this email immediately.'
+    : 'If you were not expecting this account, contact your administrator immediately.';
   const text = [
     `Welcome to ${input.applicationName}`,
     '',
-    `Your ${input.planName} subscription has been successfully activated.`,
+    accountDescription,
     '',
     'Your account credentials:',
     '',
@@ -44,7 +55,7 @@ export function credentialsEmail(input: CredentialsEmailInput): EmailMessage {
     'You must change your temporary password when you first log in. Until you do,',
     'the account can reach nothing but the password change screen.',
     '',
-    'If you did not purchase this subscription, reply to this email immediately.',
+    unexpectedAccount,
   ].join('\n');
 
   const html = `<!doctype html>
@@ -54,7 +65,7 @@ export function credentialsEmail(input: CredentialsEmailInput): EmailMessage {
       <tr><td style="padding:28px;">
         <h1 style="margin:0 0 4px;font-size:20px;">Welcome to ${escapeHtml(input.applicationName)}</h1>
         <p style="margin:0 0 20px;color:#6b7280;font-size:14px;">
-          Your ${escapeHtml(input.planName)} subscription has been successfully activated.
+          ${escapeHtml(accountDescription)}
         </p>
 
         <p style="margin:0 0 8px;font-size:14px;font-weight:600;">Your account credentials</p>
@@ -78,7 +89,7 @@ export function credentialsEmail(input: CredentialsEmailInput): EmailMessage {
         </p>
 
         <p style="margin:20px 0 0;color:#9ca3af;font-size:12px;">
-          If you did not purchase this subscription, reply to this email immediately.
+          ${escapeHtml(unexpectedAccount)}
         </p>
       </td></tr>
     </table>
@@ -87,7 +98,7 @@ export function credentialsEmail(input: CredentialsEmailInput): EmailMessage {
 
   return {
     to: input.to,
-    subject: `Your ${input.applicationName} admin account`,
+    subject: `Your ${input.applicationName} ${subjectAccount}`,
     text,
     html,
   };

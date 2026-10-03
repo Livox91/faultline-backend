@@ -9,16 +9,8 @@ import {
 } from '@faultline/auth';
 import { clientAddress, userAgent, type RequestWithUser } from './context';
 
-/**
- * Writes the audit trail.
- *
- * Recording never fails the operation it describes: an audit write that throws would
- * turn a successful login into a 500 and, worse, would make the trail a denial-of-
- * service surface. A failure is logged at error level instead, where alerting can see
- * it. The trade is deliberate and worth stating: this favours availability of the
- * system over guaranteed completeness of the trail. Deployments that need the opposite
- * should make `record` rethrow.
- */
+/** Writes the audit trail. A failed write fails the request so actions are never
+ * reported as allowed without their required audit evidence. */
 @Injectable()
 export class AuditTrail {
   constructor(
@@ -30,6 +22,7 @@ export class AuditTrail {
     user?: AuthenticatedUser | null;
     actor?: string;
     userId?: string | null;
+    organizationId?: string | null;
     action: AuditAction | string;
     resourceType: string;
     resourceId?: string | null;
@@ -39,6 +32,8 @@ export class AuditTrail {
   }): Promise<void> {
     try {
       await this.repository.record({
+        organizationId:
+          entry.user?.organizationId ?? entry.organizationId ?? null,
         userId: entry.user?.id ?? entry.userId ?? null,
         actor: entry.user?.email ?? entry.actor ?? 'anonymous',
         action: entry.action,
@@ -55,6 +50,7 @@ export class AuditTrail {
         action: entry.action,
         reason: error instanceof Error ? error.message : 'unknown',
       });
+      throw error;
     }
   }
 }

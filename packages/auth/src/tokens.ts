@@ -25,6 +25,8 @@ export interface AccessTokenClaims {
   exp: number;
   /** Set once a second factor has been satisfied; absent when MFA is not in play. */
   amr?: readonly string[];
+  /** Compared with the stored user version so password recovery revokes older tokens. */
+  sv?: number;
 }
 
 export interface TokenSettings {

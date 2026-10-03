@@ -12,6 +12,14 @@ const { stripeAvailable } = require('./stripe-webhooks.cjs');
 const passed = [];
 const warnings = [];
 const failures = [];
+const isStrongPassword = (value) =>
+  typeof value === 'string' &&
+  value.length >= 12 &&
+  value.length <= 128 &&
+  /[a-z]/.test(value) &&
+  /[A-Z]/.test(value) &&
+  /[0-9]/.test(value) &&
+  /[^A-Za-z0-9\s]/.test(value);
 function check(label, work, help) {
   try {
     work();
@@ -123,7 +131,7 @@ function tcp(port) {
           throw new Error(
             'apps/api/.env has an invalid AUTH_BOOTSTRAP_ADMIN_EMAIL',
           );
-        if ((api.AUTH_BOOTSTRAP_ADMIN_PASSWORD ?? '').length < 12)
+        if (!isStrongPassword(api.AUTH_BOOTSTRAP_ADMIN_PASSWORD))
           throw new Error(
             'apps/api/.env has an invalid AUTH_BOOTSTRAP_ADMIN_PASSWORD',
           );

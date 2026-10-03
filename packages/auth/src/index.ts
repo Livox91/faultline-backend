@@ -5,3 +5,5 @@ export * from './tokens';
 export * from './audit';
 export * from './repository';
 export * from './provisioning';
+export * from './mfa';
+export * from './password-reset';

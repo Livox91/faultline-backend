@@ -12,6 +12,7 @@ const {
   issueAccessToken,
   verifyAccessToken,
   hashPassword,
+  passwordPolicyError,
   verifyPassword,
 } = require('@faultline/auth');
 const {
@@ -27,6 +28,7 @@ const {
 const {
   AdminAuditController,
 } = require('../apps/api/dist/auth/audit.controller');
+const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
 const {
   TELEMETRY_SCOPE_RESOLVER,
   UserTelemetryScopeResolver,
@@ -100,7 +102,12 @@ const incident = (id, clusterId) => ({
   confidence: 0.9,
   firstSeen: '2026-09-10T00:00:00.000Z',
   lastSeen: '2026-09-10T00:05:00.000Z',
-  primaryResource: { scope: 'pod', clusterId, namespace: 'default', pod: 'p-1' },
+  primaryResource: {
+    scope: 'pod',
+    clusterId,
+    namespace: 'default',
+    pod: 'p-1',
+  },
   affectedResources: [],
   anomalies: [{ anomalyId: `anomaly-${id}` }],
   evidence: [],
@@ -136,13 +143,13 @@ async function boot() {
     email: 'admin@faultline.test',
     name: 'Administrator',
     role: ROLES.ADMIN,
-    password: 'correct-horse-battery',
+    password: 'Correct-horse-battery1!',
   });
   const engineerRecord = await context.users.create({
     email: 'ahmed@faultline.test',
     name: 'Ahmed',
     role: ROLES.ONSITE_ENGINEER,
-    password: 'correct-horse-battery',
+    password: 'Correct-horse-battery1!',
   });
   await context.assignments.assign(
     adminRecord.id,
@@ -209,13 +216,22 @@ test('the rules themselves: every role reaches only assigned projects', () => {
 });
 
 test('passwords are salted, verified in constant time and never matched by a bad hash', async () => {
-  const hash = await hashPassword('correct-horse-battery');
-  assert.notEqual(hash, await hashPassword('correct-horse-battery'));
-  assert.equal(await verifyPassword('correct-horse-battery', hash), true);
+  const hash = await hashPassword('Correct-horse-battery1!');
+  assert.notEqual(hash, await hashPassword('Correct-horse-battery1!'));
+  assert.equal(await verifyPassword('Correct-horse-battery1!', hash), true);
   assert.equal(await verifyPassword('wrong-horse-battery', hash), false);
   // An external-identity user has no hash; a login against one simply fails.
   assert.equal(await verifyPassword('anything', null), false);
   assert.equal(await verifyPassword('anything', 'not-a-hash'), false);
+  assert.equal(passwordPolicyError('Strong-password1!'), undefined);
+  assert.match(passwordPolicyError('all-lowercase1!'), /uppercase/i);
+  assert.match(passwordPolicyError('ALL-UPPERCASE1!'), /lowercase/i);
+  assert.match(passwordPolicyError('Missing-number!'), /number/i);
+  assert.match(passwordPolicyError('MissingSymbol1'), /symbol/i);
+  await assert.rejects(
+    () => hashPassword('length-only-password'),
+    /uppercase.*number.*symbol/i,
+  );
 });
 
 test('a tampered, foreign-issued or expired token is refused', () => {
@@ -270,7 +286,11 @@ test('an anonymous caller reaches nothing', async () => {
       '/admin/audit',
     ]) {
       const response = await call(base, null, path);
-      assert.equal(response.status, 401, `${path} must refuse anonymous callers`);
+      assert.equal(
+        response.status,
+        401,
+        `${path} must refuse anonymous callers`,
+      );
     }
     // A syntactically valid but unsigned token is no better than none.
     assert.equal((await call(base, 'not-a-token', '/projects')).status, 401);
@@ -326,20 +346,32 @@ test('one admin cannot see clusters or incidents owned by another admin', async 
       email: 'other-admin@faultline.test',
       name: 'Other Administrator',
       role: ROLES.ADMIN,
-      password: 'correct-horse-battery',
+      password: 'Correct-horse-battery1!',
     });
     await assignments.assign(other.id, PROJECT_B, adminRecord.id, []);
     const otherToken = tokenFor(other);
 
     const listed = await call(base, otherToken, '/clusters');
     assert.equal(listed.status, 200);
-    assert.deepEqual((await listed.json()).map((entry) => entry.id), [PROJECT_B]);
-    assert.equal((await call(base, otherToken, `/clusters/${PROJECT_A}`)).status, 403);
+    assert.deepEqual(
+      (await listed.json()).map((entry) => entry.id),
+      [PROJECT_B],
+    );
+    assert.equal(
+      (await call(base, otherToken, `/clusters/${PROJECT_A}`)).status,
+      403,
+    );
 
     const incidents = await call(base, otherToken, '/incidents');
     assert.equal(incidents.status, 200);
-    assert.deepEqual((await incidents.json()).map((entry) => entry.id), ['incident-b']);
-    assert.equal((await call(base, otherToken, '/incidents/incident-a')).status, 404);
+    assert.deepEqual(
+      (await incidents.json()).map((entry) => entry.id),
+      ['incident-b'],
+    );
+    assert.equal(
+      (await call(base, otherToken, '/incidents/incident-a')).status,
+      404,
+    );
 
     const visibleUsers = await call(base, otherToken, '/admin/users');
     assert.equal(visibleUsers.status, 200);
@@ -347,6 +379,48 @@ test('one admin cannot see clusters or incidents owned by another admin', async 
       (await visibleUsers.json()).items.every((user) =>
         (user.projectIds ?? []).every((id) => id === PROJECT_B),
       ),
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('administrators can only list and modify users in their organization', async () => {
+  const context = await boot();
+  const { app, base, users, assignments, adminToken } = context;
+  const foreign = await users.create({
+    organizationId: 'foreign-organization',
+    email: 'foreign-admin@faultline.test',
+    name: 'Foreign Administrator',
+    role: ROLES.ADMIN,
+    password: 'Correct-horse-battery1!',
+  });
+  try {
+    const listed = await call(base, adminToken, '/admin/users');
+    assert.equal(listed.status, 200);
+    assert.equal(
+      (await listed.json()).items.some((user) => user.id === foreign.id),
+      false,
+    );
+
+    const updated = await call(base, adminToken, `/admin/users/${foreign.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: 'Cross-tenant edit' }),
+    });
+    assert.equal(updated.status, 404);
+    assert.equal((await users.findById(foreign.id)).name, 'Foreign Administrator');
+
+    const assigned = await call(
+      base,
+      adminToken,
+      `/admin/users/${foreign.id}/projects/${PROJECT_A}`,
+      { method: 'PUT', body: JSON.stringify({}) },
+    );
+    assert.equal(assigned.status, 404);
+    assert.deepEqual(
+      await assignments.listForUser(foreign.id),
+      [],
+      'a refused cross-organization request must not write an assignment',
     );
   } finally {
     await app.close();
@@ -388,7 +462,8 @@ test('incident reads are bounded by assignment, not by the filter the caller sen
 
     // Naming another project in the filter is refused rather than silently emptied.
     assert.equal(
-      (await call(base, engineerToken, `/incidents?cluster=${PROJECT_B}`)).status,
+      (await call(base, engineerToken, `/incidents?cluster=${PROJECT_B}`))
+        .status,
       403,
     );
 
@@ -403,10 +478,10 @@ test('incident reads are bounded by assignment, not by the filter the caller sen
     );
 
     const adminAll = await call(base, adminToken, '/incidents');
-    assert.deepEqual(
-      (await adminAll.json()).map((entry) => entry.id).sort(),
-      ['incident-a', 'incident-b'],
-    );
+    assert.deepEqual((await adminAll.json()).map((entry) => entry.id).sort(), [
+      'incident-a',
+      'incident-b',
+    ]);
     assert.equal(
       (await call(base, adminToken, '/incidents/incident-b')).status,
       200,
@@ -424,7 +499,16 @@ test('an engineer cannot create, change or delete projects, or manage anyone', a
       ['PATCH', `/projects/${PROJECT_A}`, { name: 'renamed' }],
       ['DELETE', `/projects/${PROJECT_A}`, undefined],
       ['GET', '/admin/users', undefined],
-      ['POST', '/admin/users', { email: 'x@y.z', name: 'X', role: 'admin', password: 'correct-horse-battery' }],
+      [
+        'POST',
+        '/admin/users',
+        {
+          email: 'x@y.z',
+          name: 'X',
+          role: 'admin',
+          password: 'Correct-horse-battery1!',
+        },
+      ],
       ['GET', '/admin/audit', undefined],
       ['PUT', `/admin/users/${engineerRecord.id}/projects/${PROJECT_B}`, {}],
     ];
@@ -459,7 +543,11 @@ test('an admin manages users and assignments, and access follows immediately', a
     const ahmed = users.find((user) => user.email === 'ahmed@faultline.test');
     assert.deepEqual(ahmed.projectIds, [PROJECT_A]);
     assert.equal(ahmed.role, ROLES.ONSITE_ENGINEER);
-    assert.equal(ahmed.passwordHash, undefined, 'no credential is ever returned');
+    assert.equal(
+      ahmed.passwordHash,
+      undefined,
+      'no credential is ever returned',
+    );
     assert.deepEqual(
       users.find((user) => user.role === ROLES.ADMIN).projectIds.sort(),
       [PROJECT_A, PROJECT_B],
@@ -503,16 +591,39 @@ test('an admin manages users and assignments, and access follows immediately', a
 });
 
 test('a disabled account loses access while holding a valid token', async () => {
-  const { app, base, adminToken, engineerToken, engineerRecord } = await boot();
+  const { app, base, adminToken, engineerToken, engineerRecord, users, audit } =
+    await boot();
   try {
     assert.equal((await call(base, engineerToken, '/projects')).status, 200);
+    await users.configureMfa(engineerRecord.id, 'encrypted-test-secret', [], 0);
     const disabled = await call(
       base,
       adminToken,
       `/admin/users/${engineerRecord.id}`,
-      { method: 'PATCH', body: JSON.stringify({ status: 'disabled' }) },
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status: 'disabled',
+          password: 'Replacement-password2!',
+          mfaEnabled: false,
+        }),
+      },
     );
     assert.equal(disabled.status, 200);
+    const statusChanges = await audit.list({ action: 'user.status.changed' });
+    assert.equal(statusChanges.length, 1);
+    assert.deepEqual(statusChanges[0].metadata, {
+      from: 'active',
+      to: 'disabled',
+    });
+    const passwordChanges = await audit.list({
+      action: 'user.password.changed',
+    });
+    assert.equal(passwordChanges.length, 1);
+    assert.equal(passwordChanges[0].metadata.administratorInitiated, true);
+    const mfaResets = await audit.list({ action: 'user.mfa.reset' });
+    assert.equal(mfaResets.length, 1);
+    assert.equal(mfaResets[0].resourceId, engineerRecord.id);
     assert.equal(
       (await call(base, engineerToken, '/projects')).status,
       401,
@@ -526,15 +637,25 @@ test('a disabled account loses access while holding a valid token', async () => 
 test('an admin cannot lock administration out of the system through themselves', async () => {
   const { app, base, adminToken, adminRecord } = await boot();
   try {
-    const demoted = await call(base, adminToken, `/admin/users/${adminRecord.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ role: ROLES.ONSITE_ENGINEER }),
-    });
+    const demoted = await call(
+      base,
+      adminToken,
+      `/admin/users/${adminRecord.id}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ role: ROLES.ONSITE_ENGINEER }),
+      },
+    );
     assert.equal(demoted.status, 400);
-    const disabled = await call(base, adminToken, `/admin/users/${adminRecord.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'disabled' }),
-    });
+    const disabled = await call(
+      base,
+      adminToken,
+      `/admin/users/${adminRecord.id}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'disabled' }),
+      },
+    );
     assert.equal(disabled.status, 400);
   } finally {
     await app.close();
@@ -569,6 +690,7 @@ test('refused attempts and permission changes are written to the audit trail', a
     for (const entry of denials) {
       assert.equal(entry.action, 'access.denied');
       assert.equal(entry.actor, 'ahmed@faultline.test');
+      assert.equal(entry.organizationId, 'default');
     }
 
     const grants = await audit.list({ action: 'project.assignment.created' });
@@ -583,6 +705,50 @@ test('refused attempts and permission changes are written to the audit trail', a
   } finally {
     await app.close();
   }
+});
+
+test('administrators only receive audit records from their organization', async () => {
+  const { app, base, adminToken, audit } = await boot();
+  const common = {
+    userId: null,
+    actor: 'system',
+    action: 'test.event',
+    resourceType: 'test',
+    resourceId: null,
+    outcome: 'allowed',
+    ip: null,
+    userAgent: null,
+    metadata: {},
+  };
+  await audit.record({ ...common, organizationId: 'default' });
+  await audit.record({ ...common, organizationId: 'foreign-organization' });
+  try {
+    const response = await call(base, adminToken, '/admin/audit');
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.items.length, 1);
+    assert.equal(body.items[0].organizationId, 'default');
+  } finally {
+    await app.close();
+  }
+});
+
+test('audit write failures are logged and propagated', async () => {
+  const failure = new Error('audit storage unavailable');
+  const logged = [];
+  const audit = new AuditTrail(
+    { record: async () => { throw failure; } },
+    { error: (entry) => logged.push(entry) },
+  );
+  await assert.rejects(
+    audit.record({
+      organizationId: 'default',
+      action: 'test.action',
+      resourceType: 'test',
+    }),
+    failure,
+  );
+  assert.equal(logged[0].event, 'audit_write_failed');
 });
 
 test('the telemetry scope intersects the deployment scope with the caller assignments', async () => {
@@ -651,13 +817,13 @@ test('login issues a token that the guards accept, and refuses everything else',
       email: 'boss@faultline.test',
       name: 'Boss',
       role: ROLES.ADMIN,
-      password: 'correct-horse-battery',
+      password: 'Correct-horse-battery1!',
     });
     const ahmed = await users.create({
       email: 'ahmed2@faultline.test',
       name: 'Ahmed',
       role: ROLES.ONSITE_ENGINEER,
-      password: 'correct-horse-battery',
+      password: 'Correct-horse-battery1!',
     });
     await assignments.assign(ahmed.id, PROJECT_A, admin.id, []);
 
@@ -683,7 +849,7 @@ test('login issues a token that the guards accept, and refuses everything else',
 
     const ok = await login({
       email: 'ahmed2@faultline.test',
-      password: 'correct-horse-battery',
+      password: 'Correct-horse-battery1!',
     });
     assert.equal(ok.status, 200);
     const session = await ok.json();
@@ -722,21 +888,23 @@ test('login issues a token that the guards accept, and refuses everything else',
 test('an engineer is not told who else is assigned to their project', async () => {
   const { app, base, engineerToken, adminToken } = await boot();
   try {
-    const mine = await call(base, engineerToken, "/projects");
+    const mine = await call(base, engineerToken, '/projects');
     const [project] = await mine.json();
     assert.equal(project.id, PROJECT_A);
     assert.equal(
       project.assignedUserIds,
       undefined,
-      "the assignment roster is an administrative fact, not a project detail",
+      'the assignment roster is an administrative fact, not a project detail',
     );
     const single = await call(base, engineerToken, `/projects/${PROJECT_A}`);
     assert.equal((await single.json()).assignedUserIds, undefined);
 
     // An Admin does see it: that is how the users screen shows assignment counts.
-    const asAdmin = await call(base, adminToken, "/projects");
+    const asAdmin = await call(base, adminToken, '/projects');
     const admins = await asAdmin.json();
-    assert.ok(Array.isArray(admins.find((p) => p.id === PROJECT_A).assignedUserIds));
+    assert.ok(
+      Array.isArray(admins.find((p) => p.id === PROJECT_A).assignedUserIds),
+    );
   } finally {
     await app.close();
   }

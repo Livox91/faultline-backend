@@ -38,6 +38,7 @@ import { IS_PUBLIC, type RequestWithUser } from './context';
 @Injectable()
 export class AuthenticationGuard implements CanActivate {
   private readonly tokens: TokenSettings;
+  private readonly mfaRequired: boolean;
 
   constructor(
     private readonly reflector: Reflector,
@@ -51,6 +52,7 @@ export class AuthenticationGuard implements CanActivate {
       issuer: config.auth.issuer,
       ttlSeconds: config.auth.accessTokenTtlSeconds,
     };
+    this.mfaRequired = config.auth.mfaRequired;
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -64,17 +66,21 @@ export class AuthenticationGuard implements CanActivate {
     const token = readBearerToken(request.headers.authorization);
     if (!token) throw new UnauthorizedException('Authentication required');
 
-    let subject: string;
+    let claims: ReturnType<typeof verifyAccessToken>;
     try {
-      subject = verifyAccessToken(token, this.tokens).sub;
+      claims = verifyAccessToken(token, this.tokens);
     } catch {
       // The reason is deliberately not echoed: distinguishing "expired" from "bad
       // signature" to an unauthenticated caller is free information.
       throw new UnauthorizedException('Invalid or expired credentials');
     }
 
-    const user = await this.users.findById(subject);
+    const user = await this.users.findById(claims.sub);
     if (!user || user.status !== 'active' || !isRole(user.role))
+      throw new UnauthorizedException('Invalid or expired credentials');
+    // Tokens issued before session versioning are version 1. A successful password
+    // reset increments the stored value and immediately invalidates every older JWT.
+    if ((claims.sv ?? 1) !== user.sessionVersion)
       throw new UnauthorizedException('Invalid or expired credentials');
 
     const authenticated: AuthenticatedUser = {
@@ -86,6 +92,7 @@ export class AuthenticationGuard implements CanActivate {
       role: user.role,
       status: user.status,
       mfaEnabled: user.mfaEnabled,
+      mfaEnrollmentRequired: this.mfaRequired && !user.mfaEnabled,
       // Read from storage, never from the token: the whole point is that it flips to
       // false the moment the password is changed, without re-issuing anything.
       mustChangePassword: user.mustChangePassword,

@@ -24,9 +24,29 @@ const scrypt = promisify(scryptCallback) as (
 const DEFAULTS = { N: 16384, r: 8, p: 1, keyLength: 64 } as const;
 const MAX_MEMORY = 64 * 1024 * 1024;
 
+export const PASSWORD_MINIMUM_LENGTH = 12;
+export const PASSWORD_MAXIMUM_LENGTH = 128;
+export const PASSWORD_POLICY_MESSAGE =
+  'Password must be 12 to 128 characters and include an uppercase letter, a lowercase letter, a number, and a symbol';
+
+/** The policy applied whenever a person chooses or assigns a new local password. */
+export function passwordPolicyError(password: unknown): string | undefined {
+  if (
+    typeof password !== 'string' ||
+    password.length < PASSWORD_MINIMUM_LENGTH ||
+    password.length > PASSWORD_MAXIMUM_LENGTH ||
+    !/[a-z]/.test(password) ||
+    !/[A-Z]/.test(password) ||
+    !/[0-9]/.test(password) ||
+    !/[^A-Za-z0-9\s]/.test(password)
+  )
+    return PASSWORD_POLICY_MESSAGE;
+  return undefined;
+}
+
 export async function hashPassword(password: string): Promise<string> {
-  if (typeof password !== 'string' || password.length < 12)
-    throw new Error('Password must be at least 12 characters');
+  const policyError = passwordPolicyError(password);
+  if (policyError) throw new Error(policyError);
   const salt = randomBytes(16);
   const derived = await scrypt(password.normalize('NFKC'), salt, DEFAULTS.keyLength, {
     N: DEFAULTS.N,

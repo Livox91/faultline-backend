@@ -60,6 +60,17 @@ if (!stripeReady())
   );
 
 const secret = () => randomBytes(32).toString('base64url');
+// Prefix the random material with one character from every required class so the
+// bootstrap credential always passes the same user-password policy as the API.
+const strongPassword = () => `Aa1!${secret()}`;
+const isStrongPassword = (value) =>
+  typeof value === 'string' &&
+  value.length >= 12 &&
+  value.length <= 128 &&
+  /[a-z]/.test(value) &&
+  /[A-Z]/.test(value) &&
+  /[0-9]/.test(value) &&
+  /[^A-Za-z0-9\s]/.test(value);
 const force = process.argv.includes('--force');
 const infrastructurePath = resolve(root, '.env.infrastructure');
 let infrastructure = parseEnv(infrastructurePath);
@@ -168,7 +179,7 @@ const slackTokenEncryptionKey =
     : undefined) ||
   secret();
 const bootstrapAdminEmail = 'admin@faultline.local';
-const bootstrapAdminPassword = secret();
+const bootstrapAdminPassword = strongPassword();
 const common =
   'NODE_ENV=development\nAPP_VERSION=0.1.0\nHOST=0.0.0.0\nLOG_LEVEL=log\n';
 const files = {
@@ -240,7 +251,7 @@ const requiredLocalFields = {
           },
           AUTH_BOOTSTRAP_ADMIN_PASSWORD: {
             value: bootstrapAdminPassword,
-            valid: (value) => typeof value === 'string' && value.length >= 12,
+            valid: isStrongPassword,
           },
         }
       : {}),

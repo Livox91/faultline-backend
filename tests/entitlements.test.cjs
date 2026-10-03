@@ -90,7 +90,7 @@ async function boot({ plan, status = 'active', config = billingOn() } = {}) {
     email: 'owner@faultline.test',
     name: 'Owner',
     role: ROLES.ADMIN,
-    password: 'correct-horse-battery',
+    password: 'Correct-horse-battery1!',
   });
   if (plan) {
     const subscription = await context.subscriptions.createForCheckout({
@@ -344,7 +344,7 @@ async function engineerIn(context, organizationId) {
     email: `engineer-${organizationId}@faultline.test`,
     name: 'Engineer',
     role: ROLES.ONSITE_ENGINEER,
-    password: 'correct-horse-battery',
+    password: 'Correct-horse-battery1!',
     organizationId,
   });
   return tokenFor(engineer);
@@ -402,7 +402,7 @@ async function bootOnboarding({ plan, existing, config = billingOn() }) {
     email: 'owner@faultline.test',
     name: 'Owner',
     role: ROLES.ADMIN,
-    password: 'correct-horse-battery',
+    password: 'Correct-horse-battery1!',
   });
   if (plan) {
     const subscription = await context.subscriptions.createForCheckout({

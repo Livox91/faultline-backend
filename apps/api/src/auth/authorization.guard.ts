@@ -16,6 +16,7 @@ import {
 import { AuditTrail } from './audit-trail';
 import {
   IS_PUBLIC,
+  MFA_ENROLLMENT_EXEMPT,
   PASSWORD_CHANGE_EXEMPT,
   PROJECT_SOURCE,
   REQUIRED_PERMISSION,
@@ -74,6 +75,14 @@ export class AuthorizationGuard implements CanActivate {
       if (!exempt) return this.deny(request, 'password-change', 'pending');
     }
 
+    if (!user.mustChangePassword && user.mfaEnrollmentRequired) {
+      const exempt = this.reflector.getAllAndOverride<boolean>(
+        MFA_ENROLLMENT_EXEMPT,
+        [context.getHandler(), context.getClass()],
+      );
+      if (!exempt) return this.deny(request, 'mfa-enrollment', 'pending');
+    }
+
     const roles = this.reflector.getAllAndOverride<readonly Role[]>(
       REQUIRED_ROLES,
       [context.getHandler(), context.getClass()],
@@ -129,6 +138,8 @@ export class AuthorizationGuard implements CanActivate {
         ? 'You do not have access to this project'
         : check === 'password-change'
           ? 'You must change your temporary password before continuing'
+          : check === 'mfa-enrollment'
+            ? 'You must enroll multi-factor authentication before continuing'
           : 'Your role does not permit this action',
     );
   }

@@ -132,6 +132,11 @@ import { AuthorizationGuard } from './auth/authorization.guard';
 import { AuditTrail } from './auth/audit-trail';
 import { AdminBootstrap } from './auth/bootstrap';
 import { AuthController, LoginThrottle } from './auth/auth.controller';
+import { MfaController } from './auth/mfa.controller';
+import {
+  PasswordResetController,
+  PasswordResetThrottle,
+} from './auth/password-reset.controller';
 import { BillingController } from './billing/billing.controller';
 import { EntitlementsController } from './billing/entitlements.controller';
 import { EntitlementsGuard, PlanEntitlements } from './billing/entitlements';
@@ -464,6 +469,8 @@ const billingProviders: Provider[] = billingEnabled
   imports: [PlatformModule.forRoot('api', resolve(__dirname, '../.env'))],
   controllers: [
     AuthController,
+    MfaController,
+    PasswordResetController,
     ...(billingEnabled ? [BillingController] : []),
     // Unlike the purchase routes, this one is registered either way: the console asks
     // what the account may reach on every deployment, and with billing off the honest
@@ -500,6 +507,7 @@ const billingProviders: Provider[] = billingEnabled
     AuditTrail,
     PlanEntitlements,
     LoginThrottle,
+    PasswordResetThrottle,
     AdminBootstrap,
     ClusterOnboardingService,
     SlackIntegrationService,

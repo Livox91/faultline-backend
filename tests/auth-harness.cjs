@@ -23,6 +23,7 @@ const {
   issueAccessToken,
 } = require('@faultline/auth');
 const { APPLICATION_CONFIG } = require('@faultline/platform');
+const { EMAIL_SENDER, RecordingEmailSender } = require('@faultline/email');
 const {
   SUBSCRIPTION_REPOSITORY,
   InMemorySubscriptionRepository,
@@ -76,12 +77,15 @@ function apiConfig(overrides = {}) {
     // Off unless a test says otherwise: a deployment that sells nothing enforces no
     // tiers, which is also what every pre-existing authorization test assumes.
     billing: { enabled: false, provider: 'stripe', priceIds: {}, ...(overrides.billing ?? {}) },
+    publicUrl: 'https://faultline.test',
+    applicationName: 'Faultline',
     ...overrides.extra,
   };
 }
 
 const admin = (overrides = {}) => ({
   id: '00000000-0000-4000-8000-0000000000a1',
+  organizationId: 'default',
   email: 'admin@faultline.test',
   name: 'Administrator',
   role: 'admin',
@@ -93,6 +97,7 @@ const admin = (overrides = {}) => ({
 
 const engineer = (projectIds = [], overrides = {}) => ({
   id: '00000000-0000-4000-8000-0000000000e1',
+  organizationId: 'default',
   email: 'engineer@faultline.test',
   name: 'Onsite Engineer',
   role: 'onsiteengineer',
@@ -136,6 +141,7 @@ async function bootWithRealGuards({
   audit = new InMemoryAuditLogRepository(),
   subscriptions = new InMemorySubscriptionRepository(),
   contacts = new InMemoryContactRepository(),
+  email = new RecordingEmailSender(),
   config = apiConfig(),
 } = {}) {
   class TestModule {}
@@ -149,6 +155,7 @@ async function bootWithRealGuards({
       { provide: SUBSCRIPTION_REPOSITORY, useValue: subscriptions },
       { provide: CONTACT_REPOSITORY, useValue: contacts },
       { provide: APPLICATION_CONFIG, useValue: config },
+      { provide: EMAIL_SENDER, useValue: email },
       { provide: Reflector, useValue: new Reflector() },
       { provide: require('@faultline/platform').ApplicationLogger, useValue: silentLogger },
       AuditTrail,
@@ -168,6 +175,7 @@ async function bootWithRealGuards({
     audit,
     subscriptions,
     contacts,
+    email,
     base: await app.getUrl(),
   };
 }

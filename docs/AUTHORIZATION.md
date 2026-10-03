@@ -20,12 +20,12 @@ expose a single row.
 
 Four layers, each independent:
 
-| Layer | What it does | On failure |
-|---|---|---|
-| `AuthenticationGuard` (global) | Verifies the token, re-loads the user **and their current assignments** from PostgreSQL | `401` |
-| `AuthorizationGuard` (global) | Checks `@Roles`, `@RequirePermission` and `@RequiresProjectAccess`; records every refusal | `403` |
-| Query scoping | The caller's permitted cluster ids are passed **into** the SQL (`cluster_id = ANY($1)`), not filtered out of its result | empty result |
-| `assertScopedCluster` | The telemetry store refuses any cluster outside the resolved scope before touching ClickHouse | `403` |
+| Layer                          | What it does                                                                                                            | On failure   |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `AuthenticationGuard` (global) | Verifies the token, re-loads the user **and their current assignments** from PostgreSQL                                 | `401`        |
+| `AuthorizationGuard` (global)  | Checks `@Roles`, `@RequirePermission` and `@RequiresProjectAccess`; records every refusal                               | `403`        |
+| Query scoping                  | The caller's permitted cluster ids are passed **into** the SQL (`cluster_id = ANY($1)`), not filtered out of its result | empty result |
+| `assertScopedCluster`          | The telemetry store refuses any cluster outside the resolved scope before touching ClickHouse                           | `403`        |
 
 Both guards are registered with `APP_GUARD`, so **a new route is protected unless it is
 explicitly marked `@Public()`**. Forgetting a decorator locks a door rather than opening
@@ -53,18 +53,18 @@ Deliberately different, because they say different things:
 `packages/auth/src/roles.ts` is the single definition; `src/auth/roles.js` in the
 frontend mirrors it for display only.
 
-| Permission | Admin | Onsite Engineer |
-|---|:--:|:--:|
-| `project:view` | ✅ *(assigned only)* | ✅ *(assigned only)* |
-| `incident:view` | ✅ *(assigned only)* | ✅ *(assigned only)* |
-| `remediation:act` | ✅ *(assigned only)* | ✅ *(assigned only)* |
-| `project:create` / `edit` / `delete` | ✅ | ❌ |
-| `project:assign` | ✅ | ❌ |
-| `user:view` / `user:manage` | ✅ | ❌ |
-| `audit:view` | ✅ | ❌ |
-| `settings:manage` | ✅ | ❌ |
+| Permission                           |        Admin         |   Onsite Engineer    |
+| ------------------------------------ | :------------------: | :------------------: |
+| `project:view`                       | ✅ _(assigned only)_ | ✅ _(assigned only)_ |
+| `incident:view`                      | ✅ _(assigned only)_ | ✅ _(assigned only)_ |
+| `remediation:act`                    | ✅ _(assigned only)_ | ✅ _(assigned only)_ |
+| `project:create` / `edit` / `delete` |          ✅          |          ❌          |
+| `project:assign`                     |          ✅          |          ❌          |
+| `user:view` / `user:manage`          |          ✅          |          ❌          |
+| `audit:view`                         |          ✅          |          ❌          |
+| `settings:manage`                    |          ✅          |          ❌          |
 
-A *permission* answers "may this role ever?"; an *assignment* answers "may this user,
+A _permission_ answers "may this role ever?"; an _assignment_ answers "may this user,
 here?". They are separate checks, which is why an engineer holds `project:view` and still
 sees only their own projects.
 
@@ -82,6 +82,8 @@ users ──┬─< project_users >── clusters      (project_users is the ma
   second place to grant it: no per-user flag, no per-project override. Its
   `environments text[]` column is the seam for environment-level access; empty means
   "every environment", so today's rows keep working when it starts being enforced.
+  Migration `0020` adds a database trigger requiring the target user, project, and
+  assigning administrator to belong to the same organization.
 - `clusters.environment` — advisory today, read by those checks when they land.
 - `audit_log` — append-only **at the table**:
 
@@ -93,35 +95,45 @@ users ──┬─< project_users >── clusters      (project_users is the ma
   Verified: `UPDATE audit_log SET action='tampered'` reports `UPDATE 0` even as the
   database owner. Dropping the trail is a migration, which is reviewable.
 
+The centralized trail records every security- or incident-relevant operator mutation
+with the authenticated actor, target, outcome, client address, user agent, and safe
+change metadata. This includes user creation and profile edits; role, status, password,
+and MFA changes; project assignment changes; incident acknowledgements; and manual Slack
+ticket requests. Incident acknowledgement also remains in the notification event trail,
+where it participates in the operational incident timeline.
+
 ## Endpoints
 
 ### Public
-| Method | Path | |
-|---|---|---|
-| `GET` | `/health`, `/health/ready` | liveness / readiness |
-| `POST` | `/auth/login` | `{email, password}` → `{accessToken, expiresAt, user}` |
+
+| Method | Path                       |                                                        |
+| ------ | -------------------------- | ------------------------------------------------------ |
+| `GET`  | `/health`, `/health/ready` | liveness / readiness                                   |
+| `POST` | `/auth/login`              | `{email, password}` → `{accessToken, expiresAt, user}` |
 
 ### Any authenticated user
-| Method | Path | Scope |
-|---|---|---|
-| `GET` | `/auth/me` | own identity |
-| `POST` | `/auth/logout` | records the event |
-| `GET` | `/projects`, `/clusters` | assigned projects for every role |
-| `GET` | `/projects/:id` | `403` unless assigned |
-| `GET` | `/incidents` | bounded by assignment, whatever filter is sent |
-| `GET` | `/incidents/:id` | `404` when outside your projects |
-| `GET` | `/incidents/:id/evidence` | as above |
-| `GET` | `/telemetry/*`, `/resources/:id/timeline`, `/baselines*` | `403` for a cluster outside scope |
-| `GET` | `/system/info` | authenticated |
+
+| Method | Path                                                     | Scope                                          |
+| ------ | -------------------------------------------------------- | ---------------------------------------------- |
+| `GET`  | `/auth/me`                                               | own identity                                   |
+| `POST` | `/auth/logout`                                           | records the event                              |
+| `GET`  | `/projects`, `/clusters`                                 | assigned projects for every role               |
+| `GET`  | `/projects/:id`                                          | `403` unless assigned                          |
+| `GET`  | `/incidents`                                             | bounded by assignment, whatever filter is sent |
+| `GET`  | `/incidents/:id`                                         | `404` when outside your projects               |
+| `GET`  | `/incidents/:id/evidence`                                | as above                                       |
+| `GET`  | `/telemetry/*`, `/resources/:id/timeline`, `/baselines*` | `403` for a cluster outside scope              |
+| `GET`  | `/system/info`                                           | authenticated                                  |
 
 ### Admin only
-| Method | Path | |
-|---|---|---|
-| `POST` / `PATCH` / `DELETE` | `/projects[/:id]` | delete returns `409` while incidents reference it |
-| `GET` / `POST` | `/admin/users` | list / create |
-| `PATCH` | `/admin/users/:id` | name, role, status, password, MFA |
-| `PUT` / `DELETE` | `/admin/users/:id/projects/:projectId` | assign / unassign |
-| `GET` | `/admin/audit` | read-only; filter by `action`, `outcome`, `userId`, `since`, `until`, `limit` |
+
+| Method                      | Path                                   |                                                                               |
+| --------------------------- | -------------------------------------- | ----------------------------------------------------------------------------- |
+| `POST` / `PATCH` / `DELETE` | `/projects[/:id]`                      | delete returns `409` while incidents reference it                             |
+| `GET` / `POST`              | `/admin/users`                         | list / create                                                                 |
+| `PATCH`                     | `/admin/users/:id`                     | name, role, status, password, MFA                                             |
+| `PUT` / `DELETE`            | `/admin/users/:id/projects/:projectId` | assign / unassign                                                             |
+| `GET`                       | `/admin/audit`                         | read-only; filter by `action`, `outcome`, `userId`, `since`, `until`, `limit` |
 
 ## Configuration
 
@@ -129,14 +141,16 @@ Added to `apps/api/.env` (see `.env.example`). `AUTH_JWT_SECRET` is **required**
 API outside `NODE_ENV=test` — it refuses to start without it, because starting would mean
 every request 500s.
 
-| Variable | Default | Notes |
-|---|---|---|
-| `AUTH_JWT_SECRET` | — | ≥32 chars. Rotating it logs everyone out. |
-| `AUTH_TOKEN_ISSUER` | `faultline` | `iss` claim, written and required |
-| `AUTH_ACCESS_TOKEN_TTL_SECONDS` | `3600` | 60–86400 |
-| `AUTH_MFA_REQUIRED` | `false` | See the MFA note below |
-| `AUTH_BOOTSTRAP_ADMIN_EMAIL` | — | Seeds the first Admin, only while `users` is empty |
-| `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | — | Both or neither; ≥12 chars |
+| Variable                          | Default     | Notes                                                                       |
+| --------------------------------- | ----------- | --------------------------------------------------------------------------- |
+| `AUTH_JWT_SECRET`                 | —           | ≥32 chars. Rotating it logs everyone out.                                   |
+| `AUTH_TOKEN_ISSUER`               | `faultline` | `iss` claim, written and required                                           |
+| `AUTH_ACCESS_TOKEN_TTL_SECONDS`   | `3600`      | 60–86400                                                                    |
+| `AUTH_PASSWORD_RESET_TTL_SECONDS` | `1800`      | Single-use reset-link lifetime; 300–86400                                   |
+| `AUTH_MFA_REQUIRED`               | `false`     | Confines unenrolled accounts to authenticator setup when true               |
+| `AUTH_MFA_ENCRYPTION_KEY`         | JWT-derived | Separate ≥32-character TOTP encryption key; recommended                     |
+| `AUTH_BOOTSTRAP_ADMIN_EMAIL`      | —           | Seeds the first Admin, only while `users` is empty                          |
+| `AUTH_BOOTSTRAP_ADMIN_PASSWORD`   | —           | Both or neither; 12–128 chars with uppercase, lowercase, number, and symbol |
 
 Unset both bootstrap values once you have signed in — an env file is not a credential
 store.
@@ -151,8 +165,8 @@ npm run faultline:start            # the bootstrap Admin is seeded on first star
 Or create accounts directly, which also works when the last Admin password is lost:
 
 ```bash
-npm run user:create   -- --email admin@you.io  --name "Admin" --role admin --password "at-least-12-chars"
-npm run user:create   -- --email ahmed@you.io  --name "Ahmed" --role onsiteengineer --password "at-least-12-chars" --projects project-a,project-c
+npm run user:create   -- --email admin@you.io  --name "Admin" --role admin --password "Strong-password1!"
+npm run user:create   -- --email ahmed@you.io  --name "Ahmed" --role onsiteengineer --password "Strong-password1!" --projects project-a,project-c
 npm run user:assign   -- --email ahmed@you.io  --project project-a
 npm run user:unassign -- --email ahmed@you.io  --project project-a
 npm run user:role     -- --email ahmed@you.io  --role admin
@@ -163,7 +177,12 @@ npm run user:list
 
 `user:role` and `user:disable` refuse to remove the last active Admin.
 
-## Enterprise identity (SSO / OAuth / LDAP / MFA)
+Every newly chosen or administrator-assigned local password must contain 12–128
+characters, including uppercase and lowercase letters, a number, and a symbol. Password
+change and recovery also verify against the stored scrypt hash and reject reuse of the
+current password.
+
+## Enterprise identity (SSO / OAuth / LDAP)
 
 Not wired, but the shape is deliberate:
 
@@ -172,29 +191,58 @@ Not wired, but the shape is deliberate:
   verification against a JWKS; no caller changes, because nothing else parses a token.
 - `users.external_subject` already exists for the IdP's `sub` claim, and
   `password_hash` is nullable for users who have no local credential.
-- **MFA**: with `AUTH_MFA_REQUIRED=true` and a user who has `mfa_enabled`, login answers
-  `503` rather than issuing a token. That is intentional — there is no MFA provider in
-  this deployment, and a screen that accepts any six digits is worse than no screen. The
-  frontend's `/mfa` page says so instead of pretending to verify.
+
+## Authenticator MFA
+
+Users enroll from **Account Security** using any RFC 6238 TOTP authenticator. Enrollment
+requires the current password and a valid first code. Secrets are AES-256-GCM encrypted
+at rest, recovery codes are stored only as keyed digests, login challenges expire after
+five minutes, and a TOTP counter or recovery code can be consumed only once.
+
+An enrolled account always completes `POST /auth/mfa/verify` before an access token is
+issued. With `AUTH_MFA_REQUIRED=true`, an unenrolled account receives a password-authenticated
+session that the backend confines to `/auth/me`, logout, password change and MFA setup.
+The React redirect is explanatory; the global authorization guard applies the lock.
+
+Use a stable `AUTH_MFA_ENCRYPTION_KEY` in production. When it is absent, a domain-separated
+key derived from `AUTH_JWT_SECRET` is used, so rotating that JWT secret also invalidates
+the encrypted authenticator secrets.
+
+## Password recovery
+
+`POST /auth/forgot-password` always returns the same accepted response for a valid email
+shape, whether or not an active local account exists. For a matching account it emails
+a link to `/reset-password` containing 32 random bytes. PostgreSQL stores only the
+SHA-256 digest, expires the link after `AUTH_PASSWORD_RESET_TTL_SECONDS`, and invalidates
+an older link when a newer one is requested.
+
+`POST /auth/reset-password` atomically consumes the link, stores the new scrypt hash,
+clears temporary-password confinement, and increments `users.session_version`. The
+authentication guard compares that version with the JWT `sv` claim, immediately
+revoking access tokens issued before the reset. MFA configuration is preserved and is
+still required on the next login. Production API deployments require
+`EMAIL_TRANSPORT=smtp`; development's `log` transport writes the reset email to the API
+log for local testing.
 
 ## Known limitations
 
-1. **Tokens are not revocable before expiry.** Disabling a user or revoking an
-   assignment takes effect immediately (the guard re-reads storage), but a stolen token
-   stays valid for its TTL. A denylist behind `/auth/logout` would close this; the
-   default TTL is 1 hour to bound it.
+1. **Ordinary logout does not revoke a token before expiry.** Password recovery does
+   revoke all older tokens through `session_version`; disabling a user or revoking an
+   assignment also takes effect immediately because the guard re-reads storage. A
+   denylist behind `/auth/logout` would provide per-token revocation; the default TTL is
+   1 hour to bound the current behaviour.
 2. **The token is in `sessionStorage`**, readable by any script on the origin — the known
    cost of a bearer token in a SPA. The backend is written so an httpOnly session cookie
    can replace it without touching the rest of the app.
 3. **Login throttling is per-process** (8 attempts / 15 min / email). It raises the cost
    of online guessing against one pod; a scaled-out deployment wants a shared limiter at
    the edge.
-4. **Audit writes never fail the operation they describe.** A failed write is logged at
-   `error` level rather than turning a successful login into a 500 — availability over
-   guaranteed completeness. Deployments needing the opposite should make
-   `AuditTrail.record` rethrow.
+4. **Audit storage is fail-closed.** A failed audit write is logged at `error` level and
+   propagated, so the API never reports an audited action as allowed without its audit
+   evidence. Records tied to a known account carry `organization_id`, and the admin
+   audit endpoint always applies the authenticated administrator's organization scope.
 5. **The API enables no CORS.** The frontend must be same-origin; in development Vite
-   proxies `/api`. Serving it from another origin needs CORS *and* a re-think of (2).
+   proxies `/api`. Serving it from another origin needs CORS _and_ a re-think of (2).
 6. **Environment-level access is modelled, not enforced.** `project_users.environments`
    and `clusters.environment` are read and written; no check consults them yet, and
    `hasEnvironmentAccess` already sits on the path for when one should.

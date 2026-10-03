@@ -85,7 +85,7 @@ Acknowledging one call records incident ownership and changes the durable notifi
 
 ## Configure a recipient
 
-An onsite engineer cannot exist without a phone number Retell can call. Creating one through **Team & Roles**, `POST /admin/users` or `npm run user:create` requires an E.164 `phoneNumber`, and creates the linked notification contact in the same step with voice on (SMS is optional and defaults to on):
+An onsite engineer cannot exist without a phone number Retell can call. Creating one through **Team & Roles** or `POST /admin/users` requires an E.164 `phoneNumber`, creates the linked notification contact in the same step with voice on (SMS is optional and defaults to on), and emails an automatically generated temporary password. The engineer must replace it on first sign-in:
 
 ```powershell
 $headers = @{ Authorization = 'Bearer <admin-access-token>' }
@@ -98,12 +98,13 @@ $engineer = Invoke-RestMethod http://localhost:3000/admin/users `
     email = 'payments-sre@example.com'
     name = 'Payments SRE'
     role = 'onsiteengineer'
-    password = '<at least 12 characters>'
     phoneNumber = '+15551234567'
     smsEnabled = $true
     projectIds = @('<cluster-id>')
   } | ConvertTo-Json)
 ```
+
+The local `npm run user:create` administration command remains a manual credential path and accepts `--password`.
 
 The API keeps that contact callable. It refuses:
 

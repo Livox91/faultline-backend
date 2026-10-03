@@ -210,7 +210,7 @@ test('paying with the email of an existing account links the subscription and ch
     email: PURCHASER,
     name: 'Existing Engineer',
     role: ROLES.ONSITE_ENGINEER,
-    password: 'their-own-password',
+    password: 'Their-own-password1!',
     username: 'existing.engineer',
   });
 
@@ -223,7 +223,7 @@ test('paying with the email of an existing account links the subscription and ch
   assert.equal(after.role, ROLES.ONSITE_ENGINEER, 'the role is untouched');
   assert.equal(after.mustChangePassword, false, 'their password is untouched');
   assert.equal(
-    await verifyPassword('their-own-password', after.passwordHash),
+    await verifyPassword('Their-own-password1!', after.passwordHash),
     true,
     'the existing password still works',
   );
@@ -561,7 +561,7 @@ test('changing the password lifts the lock and retires the temporary credential'
 
     // The current password is required even though the caller holds a valid token.
     assert.equal(
-      (await change({ currentPassword: 'wrong-password', newPassword: 'a-brand-new-secret' }))
+      (await change({ currentPassword: 'wrong-password', newPassword: 'A-brand-new-secret1!' }))
         .status,
       401,
     );
@@ -571,6 +571,11 @@ test('changing the password lifts the lock and retires the temporary credential'
       'the new password must meet the length floor',
     );
     assert.equal(
+      (await change({ currentPassword: temporary, newPassword: 'all-lowercase-password1!' })).status,
+      400,
+      'the new password must satisfy every character-class rule',
+    );
+    assert.equal(
       (await change({ currentPassword: temporary, newPassword: temporary })).status,
       400,
       'the new password must actually differ',
@@ -578,7 +583,7 @@ test('changing the password lifts the lock and retires the temporary credential'
 
     const success = await change({
       currentPassword: temporary,
-      newPassword: 'a-brand-new-secret',
+      newPassword: 'A-brand-new-secret1!',
     });
     assert.equal(success.status, 200);
     const refreshed = await success.json();
@@ -589,7 +594,7 @@ test('changing the password lifts the lock and retires the temporary credential'
     const stored = await context.users.findByEmail(PURCHASER);
     assert.equal(stored.mustChangePassword, false);
     assert.ok(stored.passwordHash.startsWith('scrypt$'));
-    assert.equal(await verifyPassword('a-brand-new-secret', stored.passwordHash), true);
+    assert.equal(await verifyPassword('A-brand-new-secret1!', stored.passwordHash), true);
     assert.equal(
       await verifyPassword(temporary, stored.passwordHash),
       false,
@@ -622,7 +627,7 @@ test('the existing RBAC is untouched: an engineer is still confined to their pro
     email: 'ahmed@example.com',
     name: 'Ahmed',
     role: ROLES.ONSITE_ENGINEER,
-    password: 'engineer-password-1',
+    password: 'Engineer-password1!',
   });
   const assignments = new InMemoryProjectAssignmentRepository();
   await assignments.assign(engineer.id, 'project-a', engineer.id, []);
@@ -650,7 +655,7 @@ test('the existing RBAC is untouched: an engineer is still confined to their pro
   try {
     const token = (
       await (
-        await login(base, { email: 'ahmed@example.com', password: 'engineer-password-1' })
+        await login(base, { email: 'ahmed@example.com', password: 'Engineer-password1!' })
       ).json()
     ).accessToken;
 

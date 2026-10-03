@@ -9,7 +9,6 @@ import {
   Injectable,
   Post,
   Req,
-  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
@@ -19,20 +18,24 @@ import {
 import {
   AUDIT_ACTIONS,
   PROJECT_ASSIGNMENT_REPOSITORY,
+  PASSWORD_MINIMUM_LENGTH,
   TEMPORARY_PASSWORD_LENGTH,
   USER_REPOSITORY,
   isRole,
   issueAccessToken,
   presentUser,
+  passwordPolicyError,
   verifyPassword,
   type AuthenticatedUser,
   type ProjectAssignmentRepository,
   type TokenSettings,
   type UserRepository,
+  issueMfaChallengeToken,
 } from '@faultline/auth';
 import { AuditTrail } from './audit-trail';
 import {
   AllowWhilePasswordChangePending,
+  AllowWhileMfaEnrollmentPending,
   CurrentUser,
   Public,
   type RequestWithUser,
@@ -93,8 +96,6 @@ interface ChangePasswordBody {
  * far better than `P@ssw0rd!`, and composition rules mostly teach people to put the
  * digit at the end. The generated temporary password satisfies this comfortably.
  */
-const MINIMUM_PASSWORD_LENGTH = 12;
-
 /**
  * Local credential login.
  *
@@ -106,6 +107,7 @@ const MINIMUM_PASSWORD_LENGTH = 12;
 @Controller('auth')
 export class AuthController {
   private readonly tokens: TokenSettings;
+  private readonly mfaSecret: string;
   private readonly mfaRequired: boolean;
 
   constructor(
@@ -121,6 +123,7 @@ export class AuthController {
       issuer: config.auth.issuer,
       ttlSeconds: config.auth.accessTokenTtlSeconds,
     };
+    this.mfaSecret = config.auth.mfaEncryptionKey ?? config.auth.jwtSecret ?? '';
     this.mfaRequired = config.auth.mfaRequired;
   }
 
@@ -157,6 +160,7 @@ export class AuthController {
       this.throttle.fail(throttleKey);
       await this.audit.record({
         userId: user?.id ?? null,
+        organizationId: user?.organizationId ?? null,
         actor: identifier,
         action: AUDIT_ACTIONS.LOGIN_FAILED,
         resourceType: 'session',
@@ -177,9 +181,19 @@ export class AuthController {
 
     this.throttle.succeed(throttleKey);
 
-    if (this.mfaRequired && user.mfaEnabled) {
+    if (user.mfaEnabled) {
+      if (!user.mfaSecretCiphertext)
+        throw new UnauthorizedException('MFA configuration is incomplete; contact an administrator');
+      const challengeExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      const challengeId = await this.users.createMfaChallenge(user.id, challengeExpiresAt);
+      const challenge = issueMfaChallengeToken(
+        user.id,
+        challengeId,
+        this.mfaSecret,
+      );
       await this.audit.record({
         userId: user.id,
+        organizationId: user.organizationId,
         actor: user.email,
         action: AUDIT_ACTIONS.LOGIN_SUCCEEDED,
         resourceType: 'session',
@@ -187,12 +201,12 @@ export class AuthController {
         request,
         metadata: { stage: 'password', mfaPending: true },
       });
-      // No token is issued here. The second factor is not implemented in this
-      // deployment; the flag tells the client to collect one and tells an operator
-      // that an MFA provider must be wired before turning AUTH_MFA_REQUIRED on.
-      throw new ServiceUnavailableException(
-        'A second factor is required but no MFA provider is configured',
-      );
+      return {
+        mfaRequired: true,
+        challengeToken: challenge.token,
+        expiresAt: challenge.expiresAt,
+        user: { email: user.email },
+      };
     }
 
     const assignments = await this.assignments.listForUser(user.id);
@@ -205,11 +219,18 @@ export class AuthController {
       role: user.role,
       status: user.status,
       mfaEnabled: user.mfaEnabled,
+      mfaEnrollmentRequired: this.mfaRequired && !user.mfaEnabled,
       mustChangePassword: user.mustChangePassword,
       assignments,
     };
     const { token, expiresAt } = issueAccessToken(
-      { sub: user.id, email: user.email, role: user.role },
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        amr: ['pwd'],
+        sv: user.sessionVersion,
+      },
       this.tokens,
     );
 
@@ -241,6 +262,7 @@ export class AuthController {
    * already takes effect on the next request, because the guard re-reads them.
    */
   @AllowWhilePasswordChangePending()
+  @AllowWhileMfaEnrollmentPending()
   @Post('logout')
   @HttpCode(204)
   @Header('Cache-Control', 'no-store')
@@ -259,6 +281,7 @@ export class AuthController {
 
   /** The identity behind the current token, re-read from storage by the guard. */
   @AllowWhilePasswordChangePending()
+  @AllowWhileMfaEnrollmentPending()
   @Get('me')
   @Header('Cache-Control', 'no-store')
   me(@CurrentUser() user: AuthenticatedUser) {
@@ -276,6 +299,7 @@ export class AuthController {
    * browser, and without this check the theft would become permanent ownership.
    */
   @AllowWhilePasswordChangePending()
+  @AllowWhileMfaEnrollmentPending()
   @Post('change-password')
   @HttpCode(200)
   @Header('Cache-Control', 'no-store')
@@ -292,14 +316,8 @@ export class AuthController {
       throw new BadRequestException(
         'Current and new passwords are both required',
       );
-    if (newPassword.length < MINIMUM_PASSWORD_LENGTH)
-      throw new BadRequestException(
-        `New password must be at least ${MINIMUM_PASSWORD_LENGTH} characters`,
-      );
-    if (newPassword === currentPassword)
-      throw new BadRequestException(
-        'New password must be different from the current one',
-      );
+    const policyError = passwordPolicyError(newPassword);
+    if (policyError) throw new BadRequestException(policyError);
 
     const stored = await this.users.findById(user.id);
     if (!stored) throw new UnauthorizedException('Invalid or expired credentials');
@@ -320,6 +338,10 @@ export class AuthController {
       throw new UnauthorizedException('Current password is incorrect');
     }
     this.throttle.check(`change:${user.id}`);
+    if (await verifyPassword(newPassword, stored.passwordHash ?? null))
+      throw new BadRequestException(
+        'New password must be different from the current password',
+      );
 
     // One write: the hash replaces the temporary one and the confinement lifts
     // together, so there is no moment where the old password still opens the account
@@ -347,20 +369,27 @@ export class AuthController {
     const refreshed: AuthenticatedUser = {
       ...user,
       mustChangePassword: false,
+      mfaEnrollmentRequired: this.mfaRequired && !user.mfaEnabled,
     };
     // A fresh token, so the client is not left holding one minted before the change.
     // The previous token is not invalidated - it belongs to the same user, and the
     // guard reads `mustChangePassword` from storage, so it is no longer confined
     // either. Bounded by the token TTL; see docs/SUBSCRIPTIONS.md.
     const { token, expiresAt } = issueAccessToken(
-      { sub: user.id, email: user.email, role: user.role },
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        amr: user.mfaEnabled ? ['pwd', 'otp'] : ['pwd'],
+        sv: updated.sessionVersion,
+      },
       this.tokens,
     );
     return {
       accessToken: token,
       expiresAt,
       user: presentUser(refreshed),
-      minimumPasswordLength: MINIMUM_PASSWORD_LENGTH,
+      minimumPasswordLength: PASSWORD_MINIMUM_LENGTH,
       temporaryPasswordLength: TEMPORARY_PASSWORD_LENGTH,
     };
   }

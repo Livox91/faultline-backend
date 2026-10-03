@@ -26,6 +26,7 @@ export const REQUIRED_ROLES = 'faultline.auth.roles';
 export const REQUIRED_PERMISSION = 'faultline.auth.permission';
 export const PROJECT_SOURCE = 'faultline.auth.project-source';
 export const PASSWORD_CHANGE_EXEMPT = 'faultline.auth.password-change-exempt';
+export const MFA_ENROLLMENT_EXEMPT = 'faultline.auth.mfa-enrollment-exempt';
 export const REQUIRED_FEATURE = 'faultline.billing.feature';
 
 /**
@@ -56,6 +57,10 @@ export const RequirePermission = (permission: Permission) =>
  */
 export const AllowWhilePasswordChangePending = () =>
   SetMetadata(PASSWORD_CHANGE_EXEMPT, true);
+
+/** Allows the small set of routes needed to enroll when deployment policy requires MFA. */
+export const AllowWhileMfaEnrollmentPending = () =>
+  SetMetadata(MFA_ENROLLMENT_EXEMPT, true);
 
 /**
  * Restricts a route to accounts whose subscription tier includes a module.

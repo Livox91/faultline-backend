@@ -19,6 +19,7 @@ const { Client } = require('pg');
 const {
   generateTemporaryPassword,
   hashPassword,
+  verifyPassword,
   allocateUsername,
 } = require('@faultline/auth');
 const { credentialsEmail, SmtpEmailSender } = require('@faultline/email');
@@ -137,7 +138,8 @@ const commands = {
     const sender = emailSender();
 
     const found = await client.query(
-      `SELECT s.id, s.plan, s.user_id, s.provisioning_status, u.username, u.email AS user_email
+      `SELECT s.id, s.plan, s.user_id, s.provisioning_status, u.username, u.email AS user_email,
+              u.password_hash
          FROM subscriptions s
          LEFT JOIN users u ON u.id = s.user_id
         WHERE lower(s.email) = lower($1)
@@ -148,7 +150,12 @@ const commands = {
     if (!subscription)
       throw new Error(`No subscription recorded for ${email}`);
 
-    const temporaryPassword = generateTemporaryPassword();
+    let temporaryPassword = generateTemporaryPassword();
+    while (
+      subscription.password_hash &&
+      (await verifyPassword(temporaryPassword, subscription.password_hash))
+    )
+      temporaryPassword = generateTemporaryPassword();
     const passwordHash = await hashPassword(temporaryPassword);
 
     let username = subscription.username;

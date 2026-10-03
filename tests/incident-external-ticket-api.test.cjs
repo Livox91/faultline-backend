@@ -2,7 +2,11 @@ require('reflect-metadata');
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { Module } = require('@nestjs/common');
-const { NestFactory } = require('@nestjs/core');
+const { APP_GUARD, NestFactory } = require('@nestjs/core');
+const {
+  AUDIT_LOG_REPOSITORY,
+  InMemoryAuditLogRepository,
+} = require('@faultline/auth');
 const {
   INCIDENT_REPOSITORY,
   InMemoryIncidentRepository,
@@ -15,6 +19,8 @@ const {
   IncidentExternalTicketController,
 } = require('../apps/api/dist/incident-external-ticket.controller');
 const { EVENT_TOPICS, QUEUE } = require('@faultline/queue');
+const { ApplicationLogger } = require('@faultline/platform');
+const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
 
 const incidentId = '11111111-1111-4111-8111-111111111111';
 
@@ -47,8 +53,14 @@ function incident() {
   };
 }
 
-async function serve({ withTicket = false, unsafeUrl = false, published = [] } = {}) {
+async function serve({
+  withTicket = false,
+  unsafeUrl = false,
+  published = [],
+  publishError = false,
+} = {}) {
   const incidents = new InMemoryIncidentRepository();
+  const audit = new InMemoryAuditLogRepository();
   await incidents.createIncident(incident());
   const tickets = new InMemoryExternalTicketRepository();
   if (withTicket)
@@ -71,10 +83,34 @@ async function serve({ withTicket = false, unsafeUrl = false, published = [] } =
     providers: [
       { provide: INCIDENT_REPOSITORY, useValue: incidents },
       { provide: EXTERNAL_TICKET_REPOSITORY, useValue: tickets },
+      { provide: AUDIT_LOG_REPOSITORY, useValue: audit },
+      {
+        provide: ApplicationLogger,
+        useValue: { error() {} },
+      },
+      AuditTrail,
+      {
+        provide: APP_GUARD,
+        useValue: {
+          canActivate(context) {
+            context.switchToHttp().getRequest().user = {
+              id: '00000000-0000-4000-8000-000000000001',
+              email: 'operator@faultline.test',
+              name: 'Operator',
+              role: 'onsiteengineer',
+              status: 'active',
+              mfaEnabled: false,
+              assignments: [{ projectId: 'production' }],
+            };
+            return true;
+          },
+        },
+      },
       {
         provide: QUEUE,
         useValue: {
           async publish(topic, message) {
+            if (publishError) throw new Error('queue unavailable');
             published.push({ topic, message });
           },
         },
@@ -137,6 +173,13 @@ test('Slack ticket endpoint queues manual creation when automatic creation did n
     assert.equal(published.length, 1);
     assert.equal(published[0].topic, EVENT_TOPICS.incidentTicketRequested);
     assert.deepEqual(published[0].message.payload, { incidentId });
+    const entries = await app.get(AUDIT_LOG_REPOSITORY).list({
+      action: 'incident.external-ticket.slack.requested',
+    });
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].actor, 'operator@faultline.test');
+    assert.equal(entries[0].resourceId, incidentId);
+    assert.equal(entries[0].outcome, 'allowed');
   } finally {
     await app.close();
   }
@@ -155,6 +198,25 @@ test('Slack ticket creation returns the linked ticket without publishing a dupli
     assert.equal(body.status, 'LINKED');
     assert.equal(body.ticket.channelId, 'C123');
     assert.equal(published.length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Slack ticket queue failures are audited as denied attempts', async () => {
+  const app = await serve({ publishError: true });
+  try {
+    const response = await fetch(
+      `${await app.getUrl()}/incidents/${incidentId}/external-tickets/slack`,
+      { method: 'POST' },
+    );
+    assert.equal(response.status, 503);
+    const entries = await app.get(AUDIT_LOG_REPOSITORY).list({
+      action: 'incident.external-ticket.slack.requested',
+    });
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].outcome, 'denied');
+    assert.equal(entries[0].metadata.reason, 'queue_publish_failed');
   } finally {
     await app.close();
   }

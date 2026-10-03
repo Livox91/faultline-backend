@@ -178,6 +178,7 @@ export class SubscriptionProvisioningService {
 
     await this.audit.record({
       userId: created.id,
+      organizationId: created.organizationId,
       actor: created.email,
       action: AUDIT_ACTIONS.USER_CREATED,
       resourceType: 'user',
@@ -228,6 +229,7 @@ export class SubscriptionProvisioningService {
 
     await this.audit.record({
       userId: created.id,
+      organizationId: created.organizationId,
       actor: created.email,
       action: AUDIT_ACTIONS.SUBSCRIPTION_PROVISIONED,
       resourceType: 'subscription',
@@ -262,6 +264,7 @@ export class SubscriptionProvisioningService {
 
     await this.audit.record({
       userId: user.id,
+      organizationId: user.organizationId,
       actor: user.email,
       action: AUDIT_ACTIONS.SUBSCRIPTION_PROVISIONED,
       resourceType: 'subscription',

@@ -59,7 +59,7 @@ test('setup generates database credentials instead of hardcoding them', () => {
     setup,
     /AUTH_BOOTSTRAP_ADMIN_PASSWORD=\$\{bootstrapAdminPassword\}/,
   );
-  assert.match(setup, /value\.length >= 12/);
+  assert.match(setup, /isStrongPassword/);
   assert.match(
     setup,
     /'apps\/storage\/\.env':[^\n]*DATABASE_URL=\$\{databaseUrl\}/,
@@ -102,6 +102,22 @@ test('direct notification migration compares retained text incident ids safely',
   );
   assert.match(migration, /JOIN incidents i ON i\.id::text = e\.incident_id/);
   assert.doesNotMatch(migration, /JOIN incidents i ON i\.id = e\.incident_id/);
+});
+
+test('project assignments enforce tenant ownership in PostgreSQL', () => {
+  const migration = read(
+    'packages/database/migrations/0020_project_assignment_organization_guard.sql',
+  );
+  assert.match(migration, /BEFORE INSERT OR UPDATE[\s\S]*ON project_users/);
+  assert.match(
+    migration,
+    /user_organization IS DISTINCT FROM project_organization/,
+  );
+  assert.match(
+    migration,
+    /actor_organization IS DISTINCT FROM project_organization/,
+  );
+  assert.match(migration, /project_users_same_organization/);
 });
 
 test('combined development pipeline loads every application environment', () => {

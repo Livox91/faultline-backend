@@ -128,7 +128,14 @@ export class PlatformModule {
                   'AUTH_ACCESS_TOKEN_TTL_SECONDS',
                   { infer: true },
                 ),
+                passwordResetTtlSeconds: config.get(
+                  'AUTH_PASSWORD_RESET_TTL_SECONDS',
+                  { infer: true },
+                ),
                 mfaRequired: config.get('AUTH_MFA_REQUIRED', { infer: true }),
+                mfaEncryptionKey: config.get('AUTH_MFA_ENCRYPTION_KEY', {
+                  infer: true,
+                }),
                 bootstrapAdmin: bootstrapAdmin(
                   config.get('AUTH_BOOTSTRAP_ADMIN_EMAIL', { infer: true }),
                   config.get('AUTH_BOOTSTRAP_ADMIN_PASSWORD', { infer: true }),
