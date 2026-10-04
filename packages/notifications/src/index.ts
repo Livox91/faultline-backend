@@ -14,6 +14,23 @@ export interface ContactMethod { phoneNumber: string; smsEnabled: boolean; voice
 export interface Contact extends ContactMethod {
   id: string; organizationId: string; userId?: string; name: string; role: ContactRole; enabled: boolean; createdAt: string; updatedAt: string;
 }
+export interface EndUserContact {
+  id:string; organizationId:string; clusterId:string; name:string; email:string;
+  phoneNumber:string; service:string; enabled:boolean; createdAt:string; updatedAt:string;
+}
+export interface EndUserContactRepository {
+  upsert(contact:EndUserContact):Promise<EndUserContact>;
+  get(id:string):Promise<EndUserContact|undefined>;
+  listForCluster(clusterId:string,organizationId:string):Promise<readonly EndUserContact[]>;
+  remove(id:string,clusterId:string,organizationId:string):Promise<boolean>;
+}
+export class InMemoryEndUserContactRepository implements EndUserContactRepository {
+  private readonly values=new Map<string,EndUserContact>();
+  async upsert(value:EndUserContact){const duplicate=[...this.values.values()].find(item=>item.clusterId===value.clusterId&&item.phoneNumber===value.phoneNumber&&item.service.toLowerCase()===value.service.toLowerCase());const saved=duplicate?{...value,id:duplicate.id,createdAt:duplicate.createdAt}:value;this.values.set(saved.id,structuredClone(saved));return structuredClone(saved);}
+  async get(id:string){const value=this.values.get(id);return value?structuredClone(value):undefined;}
+  async listForCluster(clusterId:string,organizationId:string){return[...this.values.values()].filter(value=>value.clusterId===clusterId&&value.organizationId===organizationId).map(value=>structuredClone(value));}
+  async remove(id:string,clusterId:string,organizationId:string){const value=this.values.get(id);return!!value&&value.clusterId===clusterId&&value.organizationId===organizationId&&this.values.delete(id);}
+}
 export interface NotificationGroup {
   id: string; organizationId: string; name: string; contactIds: readonly string[]; enabled: boolean; createdAt: string; updatedAt: string;
 }
@@ -30,7 +47,7 @@ export interface NotificationRecipient {
 }
 
 export type IncidentCommunicationStatus = NotificationStatus | 'SUPPRESSED';
-export interface IncidentCommunication { id:string; incidentId:string; organizationId:string; audience:NotificationAudience; channel:NotificationChannel; recipientId:string; communicationType:CommunicationType; messageVersion:string; status:IncidentCommunicationStatus; createdAt:string; sentAt?:string; providerRequestId?:string; dedupeKey:string; }
+export interface IncidentCommunication { id:string; incidentId:string; organizationId:string; audience:NotificationAudience; channel:NotificationChannel; recipientId:string; recipientDisplayName?:string; maskedPhoneNumber?:string; communicationType:CommunicationType; messageVersion:string; status:IncidentCommunicationStatus; createdAt:string; sentAt?:string; providerRequestId?:string; dedupeKey:string; }
 export interface IncidentCommunicationRepository { save(value:IncidentCommunication):Promise<IncidentCommunication>; findByDedupeKey(key:string):Promise<IncidentCommunication|undefined>; findByProviderRequestId(id:string):Promise<IncidentCommunication|undefined>; listForIncident(incidentId:string):Promise<readonly IncidentCommunication[]>; listRecent(organizationId:string,limit:number):Promise<readonly IncidentCommunication[]>; }
 export class InMemoryIncidentCommunicationRepository implements IncidentCommunicationRepository { private readonly values=new Map<string,IncidentCommunication>();async save(value:IncidentCommunication){this.values.set(value.id,structuredClone(value));return structuredClone(value);}async findByDedupeKey(key:string){const value=[...this.values.values()].find((item)=>item.dedupeKey===key);return value?structuredClone(value):undefined;}async findByProviderRequestId(id:string){const value=[...this.values.values()].find((item)=>item.providerRequestId===id);return value?structuredClone(value):undefined;}async listForIncident(id:string){return[...this.values.values()].filter((item)=>item.incidentId===id).map((item)=>structuredClone(item));}async listRecent(organizationId:string,limit:number){return[...this.values.values()].filter((item)=>item.organizationId===organizationId).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,limit).map((item)=>structuredClone(item));}}
 
@@ -43,7 +60,7 @@ export interface NotificationAttempt {
   incidentId: string;
   recipientId: string;
   clusterId: string;
-  recipientSource: 'ASSIGNED_SRE' | 'ADMIN_FALLBACK';
+  recipientSource: 'ASSIGNED_SRE' | 'ADMIN_FALLBACK' | 'END_USER';
   channel: NotificationChannel;
   provider: string;
   providerRequestId?: string;
@@ -351,6 +368,7 @@ export const CLUSTER_SRE_ASSIGNMENT_REPOSITORY = Symbol(
   'faultline.cluster-sre-assignment-repository',
 );
 export const CONTACT_REPOSITORY = Symbol('faultline.contact-repository');
+export const END_USER_CONTACT_REPOSITORY = Symbol('faultline.end-user-contact-repository');
 export const NOTIFICATION_GROUP_REPOSITORY = Symbol('faultline.notification-group-repository');
 export const INCIDENT_NOTIFICATION_STATE_REPOSITORY = Symbol('faultline.incident-notification-state-repository');
 export const INCIDENT_ACKNOWLEDGEMENTS = Symbol('faultline.incident-acknowledgements');

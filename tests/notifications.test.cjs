@@ -374,15 +374,18 @@ test('message builder keeps engineering and end-user detail separated', () => {
 
 test('Admin test call uses the normal Retell tracking path and is idempotent', async () => {
   const h = await harness({ contactOverrides: { smsEnabled: false } });
-  await h.service.handleTestCall({ requestId: 'test-request-1', organizationId: 'org', userId: h.admin.id });
-  await h.service.handleTestCall({ requestId: 'test-request-1', organizationId: 'org', userId: h.admin.id });
+  await h.service.handleTestCall({ requestId: 'test-request-1', organizationId: 'org', phoneNumber: '+15559876543' });
+  await h.service.handleTestCall({ requestId: 'test-request-1', organizationId: 'org', phoneNumber: '+15559876543' });
   const testCalls = h.calls.filter((call) => call.input.metadata.testCall === 'true');
   assert.equal(testCalls.length, 1);
-  assert.equal(testCalls[0].input.recipient.id, 'admin-contact');
+  assert.equal(testCalls[0].input.recipient.id, 'test-recipient:test-request-1');
+  assert.equal(testCalls[0].input.recipient.phoneNumber, '+15559876543');
   const recent = await h.communications.listRecent('org', 10);
   const communication = recent.find((item) => item.communicationType === 'TEST');
   assert.equal(communication.incidentId, 'test-call:test-request-1');
   assert.equal(communication.status, 'PENDING');
+  assert.equal(communication.maskedPhoneNumber.endsWith('6543'), true);
+  assert.doesNotMatch(JSON.stringify(communication),/15559876543/);
 });
 
 test('Retell connection check masks the outbound number and never returns credentials', async () => {

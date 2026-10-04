@@ -11,7 +11,7 @@ export class IncidentMessageBuilder {
     const eta=incident.estimatedRestorationAt?` Current estimated restoration time is ${new Date(incident.estimatedRestorationAt).toISOString().slice(11,16)} UTC.`:'';
     if(event.state==='RESOLVED'){
       if(audience==='ENGINEERING'){const duration=Math.max(0,Date.parse(incident.resolvedAt??event.occurredAt)-Date.parse(incident.firstSeen));return `The ${engineeringService} incident has been resolved at ${incident.resolvedAt??event.occurredAt}. Duration was ${Math.round(duration/60000)} minutes. Classification: ${incident.classification.toLowerCase().replaceAll('_',' ')}.`;}
-      return `The ${publicService} incident has been resolved. Normal service has been restored.`;
+      return `Faultline: The ${publicService} incident has been resolved. Normal service has been restored. Reply STOP to opt out.`;
     }
     if(event.state==='ACKNOWLEDGED')return audience==='ENGINEERING'
       ? `The ${engineeringService} incident has been acknowledged and is now owned by the engineering team. Severity remains ${incident.severity.toLowerCase()}.`
@@ -19,7 +19,8 @@ export class IncidentMessageBuilder {
     const phase=event.state.toLowerCase().replaceAll('_',' ');
     if(audience==='ENGINEERING'){const signal=incident.evidence[0]?.summary??incident.summary;return `The ${engineeringService} incident is now ${phase}. Current leading signal: ${signal}. Severity is ${incident.severity.toLowerCase()}.${eta}`;}
     if(audience==='STAKEHOLDER')return `Engineering is actively ${phase==='open'?'investigating':phase} the ${publicService} disruption. The incident is ${incident.severity.toLowerCase()} and service impact is ongoing.${eta}`;
-    return `We are continuing to investigate disruption affecting the ${publicService}. Our team is working to restore normal operation.${eta}`;
+    if(event.type==='INCIDENT_ETA_UPDATED')return `Faultline update: ${publicService} remains unavailable.${eta||' A restoration estimate is not yet available.'} Reply STOP to opt out.`;
+    return `Faultline: The ${publicService} service is currently unavailable. Our team is working to restore it.${eta||' A restoration estimate is not yet available.'} Reply STOP to opt out.`;
   }
   build(incident: Incident, audience: NotificationAudience, resolution = false): string {
     const service = incident.primaryResource.workload ?? incident.primaryResource.node ?? 'affected service';

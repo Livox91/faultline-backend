@@ -18,6 +18,7 @@ import {
   PostgresConnection,
   PostgresIncidentRepository,
   PostgresContactRepository,
+  PostgresEndUserContactRepository,
   PostgresNotificationGroupRepository,
   PostgresIncidentNotificationStateRepository,
   PostgresIncidentAcknowledgementRepository,
@@ -35,6 +36,7 @@ import {
 } from '@faultline/database';
 import {
   CONTACT_REPOSITORY, INCIDENT_NOTIFICATION_STATE_REPOSITORY,
+  END_USER_CONTACT_REPOSITORY, InMemoryEndUserContactRepository,
   INCIDENT_ACKNOWLEDGEMENTS, InMemoryContactRepository, InMemoryIncidentNotificationStateRepository,
   InMemoryIncidentAcknowledgementRepository,
   InMemoryNotificationAuditRepository, InMemoryNotificationGroupRepository,
@@ -46,7 +48,6 @@ import {
   SLACK_INTEGRATION_REPOSITORY,InMemorySlackIntegrationRepository,
   CLUSTER_SRE_ASSIGNMENT_REPOSITORY,InMemoryClusterSreAssignmentRepository,
 } from '@faultline/notifications';
-import { getDevelopmentQueue,NatsJetStreamQueue,QUEUE } from '@faultline/queue';
 import {
   AUDIT_LOG_REPOSITORY,
   PROJECT_ASSIGNMENT_REPOSITORY,
@@ -121,6 +122,8 @@ import {
   JsonReportExporter,
   PDF_REPORT_EXPORTER,
   PdfReportExporter,
+  SYSTEM_SUMMARY_PDF_EXPORTER,
+  SystemSummaryPdfExporter,
   SystemSummaryService,
   type IncidentAnalyticsRepository,
 } from '@faultline/reporting';
@@ -148,6 +151,7 @@ import { SlackIntegrationController, SlackIntegrationService } from './slack-int
 import { ClusterSlackController } from './cluster-slack.controller';
 import { ClusterSresController } from './cluster-sres.controller';
 import { VoiceAgentController } from './voice-agent.controller';
+import { EndUserSmsController } from './end-user-sms.controller';
 import {
   getDevelopmentQueue,
   NatsJetStreamQueue,
@@ -183,6 +187,7 @@ const infrastructureProviders: Provider[] =
           useFactory: getDevelopmentBaselineRepository,
         },
         { provide: CONTACT_REPOSITORY, useClass: InMemoryContactRepository },
+        { provide: END_USER_CONTACT_REPOSITORY, useClass: InMemoryEndUserContactRepository },
         { provide: NOTIFICATION_GROUP_REPOSITORY, useClass: InMemoryNotificationGroupRepository },
         { provide: INCIDENT_NOTIFICATION_STATE_REPOSITORY, useClass: InMemoryIncidentNotificationStateRepository },
         { provide: INCIDENT_ACKNOWLEDGEMENTS, useClass: InMemoryIncidentAcknowledgementRepository },
@@ -263,6 +268,7 @@ const infrastructureProviders: Provider[] =
             new PostgresIncidentAnalyticsRepository(database),
         },
         { provide: CONTACT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresContactRepository(database) },
+        { provide: END_USER_CONTACT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresEndUserContactRepository(database) },
         { provide: NOTIFICATION_GROUP_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationGroupRepository(database) },
         { provide: INCIDENT_NOTIFICATION_STATE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentNotificationStateRepository(database) },
         { provide: INCIDENT_ACKNOWLEDGEMENTS, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentAcknowledgementRepository(database) },
@@ -498,14 +504,11 @@ const billingProviders: Provider[] = billingEnabled
     ClusterSlackController,
     ClusterSresController,
     VoiceAgentController,
+    EndUserSmsController,
   ],
   providers: [
     ...infrastructureProviders,
-<<<<<<< HEAD
-    ...(process.env.NODE_ENV==='test'?[{provide:QUEUE,useFactory:getDevelopmentQueue}]:[{provide:QUEUE,inject:[APPLICATION_CONFIG,HealthService],useFactory:async(config:ApplicationConfig,health:HealthService)=>{const queue=await NatsJetStreamQueue.connect({servers:config.infrastructure.brokerUrl!,clientId:`${config.infrastructure.brokerClientId}-api`,consumerGroup:'faultline-api'});health.register(queue);return queue;}}]),
-=======
     queueProvider,
->>>>>>> 23ba00c84db8d51348561ff0dc55b5dd570cd6c9
     emailProvider,
     ...billingProviders,
     AuditTrail,
@@ -539,6 +542,10 @@ const billingProviders: Provider[] = billingEnabled
     {
       provide: PDF_REPORT_EXPORTER,
       useClass: PdfReportExporter,
+    },
+    {
+      provide: SYSTEM_SUMMARY_PDF_EXPORTER,
+      useClass: SystemSummaryPdfExporter,
     },
     {
       provide: AnalyticsService,

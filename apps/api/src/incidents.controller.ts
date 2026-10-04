@@ -1,12 +1,15 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   ForbiddenException,
   Get,
   Header,
   Inject,
   NotFoundException,
+  Optional,
   Param,
+  Patch,
   Query,
 } from '@nestjs/common';
 import {
@@ -28,6 +31,7 @@ import {
   type TelemetryScopeResolver,
 } from './telemetry-scope';
 import { CurrentUser } from './auth/context';
+import {EVENT_TOPICS,QUEUE,type Queue} from '@faultline/queue';
 
 const statuses = new Set<IncidentStatus>(['OPEN', 'ACTIVE', 'RESOLVED']);
 const severities = new Set<IncidentSeverity>([
@@ -62,6 +66,7 @@ export class IncidentsController {
     private readonly incidents: IncidentRepository,
     @Inject(TELEMETRY_SCOPE_RESOLVER)
     private readonly scopes: TelemetryScopeResolver,
+    @Optional() @Inject(QUEUE) private readonly queue?:Queue,
   ) {}
 
   @Get()
@@ -128,5 +133,22 @@ export class IncidentsController {
     if (!hasProjectAccess(user, incident.clusterId))
       throw new NotFoundException('Incident not found');
     return incident;
+  }
+
+  @Patch(':id/eta')
+  @Header('Cache-Control','no-store')
+  async updateEta(@CurrentUser()user:AuthenticatedUser,@Param('id')id:string,@Body()body:Record<string,unknown>){
+    const incident=await this.incidents.getIncident(id);
+    if(!incident||!hasProjectAccess(user,incident.clusterId))throw new NotFoundException('Incident not found');
+    if(incident.status==='RESOLVED')throw new BadRequestException('A resolved incident cannot receive a restoration estimate');
+    const raw=body?.estimatedRestorationAt;
+    if(typeof raw!=='string'||!raw.trim()||!Number.isFinite(Date.parse(raw)))throw new BadRequestException('estimatedRestorationAt must be an ISO-8601 timestamp');
+    const estimatedRestorationAt=new Date(raw).toISOString();
+    if(Date.parse(estimatedRestorationAt)<=Date.now())throw new BadRequestException('Estimated restoration time must be in the future');
+    const updated=await this.incidents.updateIncident({...incident,estimatedRestorationAt});
+    const occurredAt=new Date().toISOString();
+    if(!this.queue)throw new Error('Incident lifecycle queue is unavailable');
+    await this.queue.publish(EVENT_TOPICS.incidentsLifecycle,{id:`${updated.id}:INCIDENT_ETA_UPDATED:${estimatedRestorationAt}`,payload:{id:`${updated.id}:INCIDENT_ETA_UPDATED:${estimatedRestorationAt}`,type:'INCIDENT_ETA_UPDATED',incident:updated,state:updated.status==='OPEN'?'OPEN':'INVESTIGATING',previousEstimatedRestorationAt:incident.estimatedRestorationAt,occurredAt,changedFields:['estimatedRestorationAt']}});
+    return updated;
   }
 }

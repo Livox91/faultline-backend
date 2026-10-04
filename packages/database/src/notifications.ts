@@ -7,6 +7,7 @@ import type {
   IdempotencyStore, NotificationStatus,
   AcknowledgementTransaction, NotificationProviderStatus, NotificationProviderStatusRepository,
   ExternalTicket, ExternalTicketRepository,
+  EndUserContact, EndUserContactRepository,
   OnCallSchedule,OnCallScheduleRepository,OnCallShift,OnCallShiftRepository,AvailabilityOverride,AvailabilityOverrideRepository,
 } from '@faultline/notifications';
 import { canTransitionNotificationStatus, sanitizeProviderMetadata } from '@faultline/notifications';
@@ -25,6 +26,26 @@ export class PostgresContactRepository extends AggregateRepository<Contact> impl
   override async create(value:Contact){await this.db.pool.query('INSERT INTO notification_contacts (id,organization_id,user_id,aggregate) VALUES ($1,$2,$3,$4)',[value.id,value.organizationId,value.userId??null,JSON.stringify(value)]);return structuredClone(value);}
   override async update(value:Contact){const result=await this.db.pool.query('UPDATE notification_contacts SET organization_id=$2,user_id=$3,aggregate=$4,updated_at=now() WHERE id=$1',[value.id,value.organizationId,value.userId??null,JSON.stringify(value)]);if(!result.rowCount)throw new Error('Entity not found');return structuredClone(value);}
   async findByUserIds(userIds:readonly string[],organizationId:string){if(!userIds.length)return[];const result=await this.db.pool.query<AggregateRow<Contact>>('SELECT aggregate FROM notification_contacts WHERE organization_id=$1 AND user_id=ANY($2::uuid[]) ORDER BY updated_at DESC',[organizationId,[...userIds]]);return result.rows.map(row=>structuredClone(row.aggregate));}
+}
+interface EndUserContactRow extends QueryResultRow {
+  id:string; organization_id:string; cluster_id:string; name:string; email:string;
+  phone_number:string; service:string; enabled:boolean; created_at:Date; updated_at:Date;
+}
+export class PostgresEndUserContactRepository implements EndUserContactRepository {
+  constructor(private readonly db:PostgresConnection){}
+  async upsert(value:EndUserContact){
+    const result=await this.db.pool.query<EndUserContactRow>(`INSERT INTO cluster_end_user_contacts
+      (id,organization_id,cluster_id,name,email,phone_number,service,enabled,created_at,updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      ON CONFLICT(cluster_id,phone_number,service_key) DO UPDATE SET
+        name=EXCLUDED.name,email=EXCLUDED.email,enabled=EXCLUDED.enabled,updated_at=EXCLUDED.updated_at
+      RETURNING *`,[value.id,value.organizationId,value.clusterId,value.name,value.email,value.phoneNumber,value.service,value.enabled,value.createdAt,value.updatedAt]);
+    return this.map(result.rows[0]!);
+  }
+  async get(id:string){const result=await this.db.pool.query<EndUserContactRow>('SELECT * FROM cluster_end_user_contacts WHERE id=$1',[id]);return result.rows[0]?this.map(result.rows[0]):undefined;}
+  async listForCluster(clusterId:string,organizationId:string){const result=await this.db.pool.query<EndUserContactRow>('SELECT * FROM cluster_end_user_contacts WHERE cluster_id=$1 AND organization_id=$2 ORDER BY name,email',[clusterId,organizationId]);return result.rows.map(row=>this.map(row));}
+  async remove(id:string,clusterId:string,organizationId:string){const result=await this.db.pool.query('DELETE FROM cluster_end_user_contacts WHERE id=$1 AND cluster_id=$2 AND organization_id=$3',[id,clusterId,organizationId]);return!!result.rowCount;}
+  private map(row:EndUserContactRow):EndUserContact{return{id:row.id,organizationId:row.organization_id,clusterId:row.cluster_id,name:row.name,email:row.email,phoneNumber:row.phone_number,service:row.service,enabled:row.enabled,createdAt:new Date(row.created_at).toISOString(),updatedAt:new Date(row.updated_at).toISOString()};}
 }
 export class PostgresNotificationGroupRepository extends AggregateRepository<NotificationGroup> implements NotificationGroupRepository { constructor(db: PostgresConnection) { super(db, 'notification_groups'); } }
 export class PostgresOnCallScheduleRepository extends AggregateRepository<OnCallSchedule> implements OnCallScheduleRepository {constructor(db:PostgresConnection){super(db,'on_call_schedules');}override async create(value:OnCallSchedule){await this.db.pool.query('INSERT INTO on_call_schedules (id,organization_id,team_id,aggregate) VALUES ($1,$2,$3,$4)',[value.id,value.organizationId,value.teamId,JSON.stringify(value)]);return structuredClone(value);}override async update(value:OnCallSchedule){const result=await this.db.pool.query('UPDATE on_call_schedules SET organization_id=$2,team_id=$3,aggregate=$4,updated_at=now() WHERE id=$1',[value.id,value.organizationId,value.teamId,JSON.stringify(value)]);if(!result.rowCount)throw new Error('Entity not found');return structuredClone(value);}}

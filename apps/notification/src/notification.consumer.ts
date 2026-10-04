@@ -20,6 +20,7 @@ export class NotificationConsumer implements OnModuleInit, OnModuleDestroy {
             event.incident,
             this.config.organizationId,
           );
+          await this.notifications.handleEndUserLifecycle(event,this.config.organizationId);
           if (event.type === 'INCIDENT_CREATED')
             await this.tickets.createIncidentTicket({
               incidentId: event.incident.id,
@@ -34,6 +35,8 @@ export class NotificationConsumer implements OnModuleInit, OnModuleDestroy {
         { consumerGroup: this.config.consumerGroup },
       ),
     );
+    this.subscriptions.push(await this.queue.subscribe(EVENT_TOPICS.notificationTestCallRequested,async(message)=>{await this.notifications.handleTestCall(message.payload as {requestId:string;organizationId:string;phoneNumber:string});},{consumerGroup:`${this.config.consumerGroup}-test-calls`}));
+    this.subscriptions.push(await this.queue.subscribe(EVENT_TOPICS.notificationTestSmsRequested,async(message)=>{await this.notifications.handleTestSms(message.payload as {requestId:string;organizationId:string;clusterId:string;contactId:string});},{consumerGroup:`${this.config.consumerGroup}-test-sms`}));
     this.subscriptions.push(await this.queue.subscribe(
       EVENT_TOPICS.incidentTicketRequested,
       async (message) => {

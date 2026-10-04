@@ -4,6 +4,8 @@
 
 See [Configure and test the Faultline calling agent](docs/CALLING-AGENT.md) for Retell voice-agent instructions, environment configuration, signed webhook and acknowledgement actions, mocked automated tests, and a controlled real-call checklist.
 
+See [Configure the Faultline Retell SMS agent](docs/SMS-AGENT.md) for chat-agent prompting, SMS-number/A2P setup, cluster contact import formats, consent requirements, and end-to-end verification.
+
 ## First-time BookNest onboarding
 
 Faultline can run on the customer machine while its read-only collectors monitor the

@@ -60,7 +60,9 @@ export interface SystemSummaryReport {
   performance: {
     mttrMs: number | null;
     mttaMs: number | null;
+    resolutionRate: number;
   };
+  incidentsBySeverity: Readonly<Record<string, number>>;
   topAffectedServices: readonly RankedAffectedService[];
   commonIncidentCategories: readonly RankedIncidentCategory[];
   trends: readonly IncidentTrendPoint[];
@@ -112,7 +114,9 @@ export class SystemSummaryService {
       performance: {
         mttrMs: metrics.mttrMs,
         mttaMs: metrics.mttaMs,
+        resolutionRate: metrics.resolutionRate,
       },
+      incidentsBySeverity: metrics.incidentsBySeverity,
       topAffectedServices: rank(
         metrics.incidentsByService,
         this.rankingLimit,

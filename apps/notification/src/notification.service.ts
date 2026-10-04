@@ -5,13 +5,17 @@ import type { ClusterDirectory } from '@faultline/database';
 import {
   COMMUNICATION_PROVIDER,
   IDEMPOTENCY_STORE,
+  END_USER_CONTACT_REPOSITORY,
   INCIDENT_COMMUNICATION_REPOSITORY,
   INCIDENT_NOTIFICATION_STATE_REPOSITORY,
   NOTIFICATION_ATTEMPTS,
   NOTIFICATION_AUDIT_REPOSITORY,
   NOTIFICATION_POLICY,
+  normalizePhoneNumber,
   type CommunicationProvider,
   type IdempotencyStore,
+  type EndUserContactRepository,
+  type IncidentLifecycleEvent,
   type IncidentCommunication,
   type IncidentCommunicationRepository,
   type IncidentNotificationState,
@@ -48,7 +52,46 @@ export class NotificationService {
     private readonly incidents: IncidentRepository,
     @Optional() @Inject(NOTIFICATION_CLUSTER_DIRECTORY)
     private readonly clusters?: ClusterDirectory,
+    @Optional() @Inject(END_USER_CONTACT_REPOSITORY)
+    private readonly endUsers?: EndUserContactRepository,
   ) {}
+
+  async handleEndUserLifecycle(event:IncidentLifecycleEvent,organizationId:string):Promise<void>{
+    if(!this.endUsers)return;
+    const incident=event.incident;
+    const previous=await this.communications.listForIncident(incident.id);
+    const hadInitial=previous.some(item=>item.audience==='END_USER'&&item.communicationType==='INITIAL'&&item.status!=='FAILED'&&item.status!=='SUPPRESSED');
+    const communicationType=event.type==='INCIDENT_CREATED'?'INITIAL':event.type==='INCIDENT_ETA_UPDATED'?'ETA_UPDATE':event.type==='INCIDENT_RESOLVED'?'RESOLUTION':undefined;
+    if(!communicationType)return;
+    if(communicationType==='INITIAL'&&!isCustomerOutage(incident))return;
+    if(communicationType!=='INITIAL'&&!hadInitial)return;
+    const all=await this.endUsers.listForCluster(incident.clusterId,organizationId);
+    const contacts=all.filter(contact=>contact.enabled&&serviceMatches(contact.service,incident));
+    await Promise.all(contacts.map(contact=>this.sendEndUserSms(event,contact,organizationId,communicationType)));
+  }
+
+  async handleTestSms(request:{requestId:string;organizationId:string;clusterId:string;contactId:string}):Promise<void>{
+    if(!this.endUsers)throw new Error('End-user contact repository is unavailable');
+    const contact=await this.endUsers.get(request.contactId);
+    if(!contact||!contact.enabled||contact.organizationId!==request.organizationId||contact.clusterId!==request.clusterId)throw new Error('End-user contact is not available');
+    const key=`test-sms:${request.requestId}`;if(!(await this.idempotency.claim(key)))return;
+    const now=new Date().toISOString(),incidentId=`test-sms:${request.requestId}`,attemptId=randomUUID();
+    let communication:IncidentCommunication={id:randomUUID(),incidentId,organizationId:request.organizationId,audience:'END_USER',channel:'SMS',recipientId:contact.id,communicationType:'TEST',messageVersion:'end-user-sms-v1',status:'PENDING',createdAt:now,dedupeKey:key};
+    let attempt:NotificationAttempt={id:attemptId,incidentId,clusterId:request.clusterId,recipientId:contact.id,recipientSource:'END_USER',channel:'SMS',provider:this.provider.name,status:'PENDING',createdAt:now};
+    await Promise.all([this.communications.save(communication),this.attempts.save(attempt)]);
+    try{const result=await this.provider.sendSms({recipient:{id:contact.id,name:contact.name,phoneNumber:contact.phoneNumber,audience:'END_USER'},message:`This is a Faultline SMS test for ${contact.service}. No service incident has occurred.`,metadata:{testSms:'true',requestId:request.requestId,notificationAttemptId:attemptId,recipientId:contact.id}});attempt={...attempt,providerRequestId:result.requestId,status:result.status,startedAt:now};communication={...communication,providerRequestId:result.requestId,status:'SENT',sentAt:now};await Promise.all([this.attempts.save(attempt),this.communications.save(communication)]);}catch(error){await Promise.all([this.attempts.save({...attempt,status:'FAILED',completedAt:new Date().toISOString(),failureReason:error instanceof Error?error.message:'Provider failure'}),this.communications.save({...communication,status:'FAILED'})]);throw error;}
+  }
+
+  private async sendEndUserSms(event:IncidentLifecycleEvent,contact:import('@faultline/notifications').EndUserContact,organizationId:string,communicationType:import('@faultline/notifications').CommunicationType){
+    const version=event.incident.estimatedRestorationAt??event.incident.resolvedAt??event.occurredAt;
+    const key=`end-user:${event.incident.id}:${contact.id}:${communicationType}:${version}`;
+    if(!(await this.idempotency.claim(key)))return;
+    const now=new Date().toISOString(),attemptId=randomUUID();
+    let attempt:NotificationAttempt={id:attemptId,incidentId:event.incident.id,clusterId:event.incident.clusterId,recipientId:contact.id,recipientSource:'END_USER',channel:'SMS',provider:this.provider.name,status:'PENDING',createdAt:now};
+    let communication:IncidentCommunication={id:randomUUID(),incidentId:event.incident.id,organizationId,audience:'END_USER',channel:'SMS',recipientId:contact.id,communicationType,messageVersion:'end-user-sms-v1',status:'PENDING',createdAt:now,dedupeKey:key};
+    await Promise.all([this.attempts.save(attempt),this.communications.save(communication)]);
+    try{const result=await this.provider.sendSms({recipient:{id:contact.id,name:contact.name,phoneNumber:contact.phoneNumber,audience:'END_USER'},message:this.messages.buildLifecycle(event,'END_USER'),metadata:{incidentId:event.incident.id,notificationAttemptId:attemptId,recipientId:contact.id,clusterId:event.incident.clusterId,communicationType}});attempt={...attempt,providerRequestId:result.requestId,status:result.status,startedAt:now};communication={...communication,providerRequestId:result.requestId,status:'SENT',sentAt:now};await Promise.all([this.attempts.save(attempt),this.communications.save(communication)]);await this.record(event.incident.id,'SMS_REQUESTED',{contactId:contact.id,attemptId});}catch(error){await Promise.all([this.attempts.save({...attempt,status:'FAILED',completedAt:new Date().toISOString(),failureReason:error instanceof Error?error.message:'Provider failure'}),this.communications.save({...communication,status:'FAILED'})]);this.logger.error({event:'end_user_sms_failed',incident_id:event.incident.id,attempt_id:attemptId});}
+  }
 
   async handleIncident(incident: Incident, organizationId: string): Promise<void> {
     if (incident.status === 'RESOLVED') {
@@ -271,20 +314,18 @@ export class NotificationService {
     }
   }
 
-  async handleTestCall(request: { requestId:string; organizationId:string; userId:string }): Promise<void> {
-    const resolution=await this.resolver.resolveAdminUser(request.userId,request.organizationId);
-    const target=resolution.recipients[0];
-    if(!target||!target.channels.includes('VOICE'))throw new Error('Admin does not have a callable voice contact');
+  async handleTestCall(request: { requestId:string; organizationId:string; phoneNumber:string }): Promise<void> {
+    const recipient={id:`test-recipient:${request.requestId}`,name:'Test recipient',phoneNumber:normalizePhoneNumber(request.phoneNumber),audience:'ENGINEERING' as const};
     const key=`test-call:${request.requestId}`;
     if(!(await this.idempotency.claim(key)))return;
     const now=new Date().toISOString();
     const incidentId=`test-call:${request.requestId}`;
-    let attempt:NotificationAttempt={id:randomUUID(),incidentId,clusterId:'TEST',recipientId:target.recipient.id,recipientSource:'ADMIN_FALLBACK',channel:'VOICE',provider:this.provider.name,status:'PENDING',createdAt:now};
+    let attempt:NotificationAttempt={id:randomUUID(),incidentId,clusterId:'TEST',recipientId:recipient.id,recipientSource:'ADMIN_FALLBACK',channel:'VOICE',provider:this.provider.name,status:'PENDING',createdAt:now};
     await this.attempts.save(attempt);
-    let communication:IncidentCommunication={id:randomUUID(),incidentId,organizationId:request.organizationId,audience:'ENGINEERING',channel:'VOICE',recipientId:target.recipient.id,communicationType:'TEST',messageVersion:'retell-test-v1',status:'PENDING',createdAt:now,dedupeKey:key};
+    let communication:IncidentCommunication={id:randomUUID(),incidentId,organizationId:request.organizationId,audience:'ENGINEERING',channel:'VOICE',recipientId:recipient.id,recipientDisplayName:recipient.name,maskedPhoneNumber:maskPhone(recipient.phoneNumber),communicationType:'TEST',messageVersion:'retell-test-v1',status:'PENDING',createdAt:now,dedupeKey:key};
     await this.communications.save(communication);
     try{
-      const result=await this.provider.startVoiceCall({recipient:target.recipient,message:'This is a Faultline test alert. No production incident has occurred.',metadata:{testCall:'true',requestId:request.requestId,notificationAttemptId:attempt.id,recipientId:target.recipient.id},context:{incident_id:incidentId,notification_attempt_id:attempt.id,recipient_id:target.recipient.id,severity:'TEST',affected_service:'Connectivity test',cluster:'TEST',cluster_name:'Voice Agent Test',environment:'test',status:'TEST',incident_status:'TEST'}});
+      const result=await this.provider.startVoiceCall({recipient,message:'This is a Faultline test alert. No production incident has occurred.',metadata:{testCall:'true',requestId:request.requestId,notificationAttemptId:attempt.id,recipientId:recipient.id},context:{incident_id:incidentId,notification_attempt_id:attempt.id,recipient_id:recipient.id,severity:'TEST',affected_service:'Connectivity test',cluster:'TEST',cluster_name:'Voice Agent Test',environment:'test',status:'TEST',incident_status:'TEST'}});
       attempt={...attempt,providerRequestId:result.requestId,status:result.status,startedAt:now};
       communication={...communication,providerRequestId:result.requestId,status:'PENDING'};
       await this.attempts.save(attempt);await this.communications.save(communication);
@@ -308,3 +349,7 @@ export class NotificationService {
     return this.audit.append({ id: randomUUID(), incidentId, type, timestamp: new Date().toISOString(), ...extra });
   }
 }
+
+function isCustomerOutage(incident:Incident):boolean{return incident.status!=='RESOLVED'&&incident.severity==='CRITICAL';}
+function maskPhone(value:string){const digits=value.replace(/\D/g,'');return digits.length<4?'••••':`+${'•'.repeat(Math.max(2,digits.length-4))}${digits.slice(-4)}`;}
+function serviceMatches(service:string,incident:Incident):boolean{const expected=service.trim().toLowerCase();if(expected==='*'||expected==='all')return true;return[incident.logicalService,incident.primaryResource.workload].some(value=>value?.trim().toLowerCase()===expected);}
