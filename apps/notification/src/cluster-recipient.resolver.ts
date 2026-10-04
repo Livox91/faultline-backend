@@ -63,6 +63,17 @@ export class ClusterRecipientResolver {
     if (engineerResult.recipients.length)
       return { ...engineerResult, fallbackUsed: false };
 
+    const adminResult = await this.resolveAdmin(organizationId);
+    return {
+      recipients: adminResult.recipients,
+      skipped: [...engineerResult.skipped, ...adminResult.skipped],
+      fallbackUsed: true,
+    };
+  }
+
+  async resolveAdmin(
+    organizationId: string,
+  ): Promise<Omit<DirectRecipientResolution, 'fallbackUsed'>> {
     const admins = (await this.users.list())
       .filter(
         (user) =>
@@ -75,16 +86,21 @@ export class ClusterRecipientResolver {
           left.createdAt.localeCompare(right.createdAt) ||
           left.id.localeCompare(right.id),
       );
-    const adminResult = await this.resolveUsers(
+    return this.resolveUsers(
       admins.slice(0, 1),
       organizationId,
       'ADMIN_FALLBACK',
     );
-    return {
-      recipients: adminResult.recipients,
-      skipped: [...engineerResult.skipped, ...adminResult.skipped],
-      fallbackUsed: true,
-    };
+  }
+
+  async resolveAdminUser(
+    userId: string,
+    organizationId: string,
+  ): Promise<Omit<DirectRecipientResolution, 'fallbackUsed'>> {
+    const user = await this.users.findById(userId);
+    if (!user || user.organizationId !== organizationId || user.status !== 'active' || user.role !== ROLES.ADMIN)
+      return { recipients: [], skipped: [{ referenceId: userId, reason: 'ADMIN_NOT_AVAILABLE' }] };
+    return this.resolveUsers([user], organizationId, 'ADMIN_FALLBACK');
   }
 
   private async resolveUsers(

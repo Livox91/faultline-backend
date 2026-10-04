@@ -907,10 +907,10 @@ test('Slack thread API failure is contained and remains retryable', async () => 
 });
 
 test('notification lifecycle creates Slack tickets only for incident creation events', async () => {
-  let handler;
+  const handlers = new Map();
   const queue = {
-    async subscribe(_topic, value) {
-      handler = value;
+    async subscribe(topic, value) {
+      handlers.set(topic, value);
       return { async close() {} };
     },
   };
@@ -934,6 +934,7 @@ test('notification lifecycle creates Slack tickets only for incident creation ev
     },
   );
   await consumer.onModuleInit();
+  const handler = handlers.get('incidents.lifecycle');
   const value = incident();
   await handler({
     payload: {

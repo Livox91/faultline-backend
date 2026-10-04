@@ -785,7 +785,8 @@ export function validateEnvironment(
       ...(application === 'processor' && !result.data.REDIS_URL
         ? ['REDIS_URL']
         : []),
-      ...((application === 'ingestion' ||
+      ...((application === 'api' ||
+        application === 'ingestion' ||
         application === 'processor' ||
         application === 'storage' ||
         application === 'notification') &&

@@ -24,6 +24,7 @@ import {
   PostgresNotificationAuditRepository,
   PostgresNotificationAttemptRepository,
   PostgresIncidentCommunicationRepository,
+  PostgresNotificationProviderStatusRepository,
   PostgresOnCallScheduleRepository,PostgresOnCallShiftRepository,PostgresAvailabilityOverrideRepository,
   PostgresIncidentAnalyticsRepository,
   PostgresExternalTicketRepository,
@@ -38,12 +39,14 @@ import {
   InMemoryIncidentAcknowledgementRepository,
   InMemoryNotificationAuditRepository, InMemoryNotificationGroupRepository,
   InMemoryNotificationAttemptRepository,InMemoryIncidentCommunicationRepository,INCIDENT_COMMUNICATION_REPOSITORY,NOTIFICATION_ATTEMPTS,
+  InMemoryNotificationProviderStatusRepository,NOTIFICATION_PROVIDER_STATUS_REPOSITORY,
   NOTIFICATION_AUDIT_REPOSITORY, NOTIFICATION_GROUP_REPOSITORY,
   ON_CALL_SCHEDULE_REPOSITORY,ON_CALL_SHIFT_REPOSITORY,AVAILABILITY_OVERRIDE_REPOSITORY,InMemoryOnCallScheduleRepository,InMemoryOnCallShiftRepository,InMemoryAvailabilityOverrideRepository,
   EXTERNAL_TICKET_REPOSITORY,InMemoryExternalTicketRepository,
   SLACK_INTEGRATION_REPOSITORY,InMemorySlackIntegrationRepository,
   CLUSTER_SRE_ASSIGNMENT_REPOSITORY,InMemoryClusterSreAssignmentRepository,
 } from '@faultline/notifications';
+import { getDevelopmentQueue,NatsJetStreamQueue,QUEUE } from '@faultline/queue';
 import {
   AUDIT_LOG_REPOSITORY,
   PROJECT_ASSIGNMENT_REPOSITORY,
@@ -144,6 +147,7 @@ import { ClusterOnboardingService } from './cluster-onboarding.service';
 import { SlackIntegrationController, SlackIntegrationService } from './slack-integration.controller';
 import { ClusterSlackController } from './cluster-slack.controller';
 import { ClusterSresController } from './cluster-sres.controller';
+import { VoiceAgentController } from './voice-agent.controller';
 import {
   HttpSlackChannelDirectory,
   SLACK_CHANNEL_DIRECTORY,
@@ -187,6 +191,7 @@ const infrastructureProviders: Provider[] =
         { provide: NOTIFICATION_AUDIT_REPOSITORY, useClass: InMemoryNotificationAuditRepository },
         { provide: NOTIFICATION_ATTEMPTS, useClass: InMemoryNotificationAttemptRepository },
         { provide: INCIDENT_COMMUNICATION_REPOSITORY, useClass: InMemoryIncidentCommunicationRepository },
+        { provide: NOTIFICATION_PROVIDER_STATUS_REPOSITORY, useClass: InMemoryNotificationProviderStatusRepository },
         { provide: ON_CALL_SCHEDULE_REPOSITORY, useClass: InMemoryOnCallScheduleRepository },
         { provide: ON_CALL_SHIFT_REPOSITORY, useClass: InMemoryOnCallShiftRepository },
         { provide: AVAILABILITY_OVERRIDE_REPOSITORY, useClass: InMemoryAvailabilityOverrideRepository },
@@ -259,6 +264,7 @@ const infrastructureProviders: Provider[] =
         { provide: NOTIFICATION_AUDIT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationAuditRepository(database) },
         { provide: NOTIFICATION_ATTEMPTS, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationAttemptRepository(database) },
         { provide: INCIDENT_COMMUNICATION_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentCommunicationRepository(database) },
+        { provide: NOTIFICATION_PROVIDER_STATUS_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationProviderStatusRepository(database) },
         { provide: ON_CALL_SCHEDULE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresOnCallScheduleRepository(database) },
         { provide: ON_CALL_SHIFT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresOnCallShiftRepository(database) },
         { provide: AVAILABILITY_OVERRIDE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresAvailabilityOverrideRepository(database) },
@@ -463,9 +469,11 @@ const billingProviders: Provider[] = billingEnabled
     SlackIntegrationController,
     ClusterSlackController,
     ClusterSresController,
+    VoiceAgentController,
   ],
   providers: [
     ...infrastructureProviders,
+    ...(process.env.NODE_ENV==='test'?[{provide:QUEUE,useFactory:getDevelopmentQueue}]:[{provide:QUEUE,inject:[APPLICATION_CONFIG,HealthService],useFactory:async(config:ApplicationConfig,health:HealthService)=>{const queue=await NatsJetStreamQueue.connect({servers:config.infrastructure.brokerUrl!,clientId:`${config.infrastructure.brokerClientId}-api`,consumerGroup:'faultline-api'});health.register(queue);return queue;}}]),
     emailProvider,
     ...billingProviders,
     AuditTrail,
