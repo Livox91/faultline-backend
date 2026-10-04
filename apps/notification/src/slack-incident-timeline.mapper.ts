@@ -62,11 +62,22 @@ export class SlackIncidentTimelineMapper {
       id: `incident-timeline:${entry.id}`,
       timestamp: entry.timestamp,
       title: entry.type === 'ANOMALY_RESOLVED'
-        ? 'Significant signal recovered'
-        : 'Significant anomaly detected',
+        ? `Anomaly recovered · Type: ${signalLabel(entry.classification)}`
+        : `Anomaly detected · Type: ${signalLabel(entry.classification)}`,
       summary: entry.summary,
     }];
   }
+}
+
+function signalLabel(classification: string): string {
+  if (classification === 'OOM_KILLED') return 'OOM Killed';
+  if (classification === 'DATABASE_CONNECTIVITY')
+    return 'Database Connectivity Issue';
+  return classification
+    .toLowerCase()
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 function update(

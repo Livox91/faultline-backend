@@ -22,7 +22,11 @@ export const EVENT_TOPICS = {
   anomaliesResolved: 'anomalies.resolved',
   incidentsUpdated: 'incidents.updated',
   incidentsLifecycle: 'incidents.lifecycle',
+<<<<<<< HEAD
   notificationTestCallRequested: 'notifications.test-call.requested',
+=======
+  incidentTicketRequested: 'incidents.ticket.requested',
+>>>>>>> 23ba00c84db8d51348561ff0dc55b5dd570cd6c9
 } as const;
 export const DEAD_LETTER_PREFIX = 'deadletter';
 

@@ -5,6 +5,7 @@ import type {
   AnomalySource,
   AnomalyStatus,
   Incident,
+  IncidentResourceSnapshot,
   IncidentRepository,
   IncidentTimelineEntry,
 } from '@faultline/incidents';
@@ -87,6 +88,7 @@ export interface IncidentTechnicalReport {
     rootCause: string | null;
   };
   anomalies: IncidentAnomalyStatistics;
+  resourceSnapshots: readonly IncidentResourceSnapshot[];
   codeAnalysis: {
     totalFindings: number;
     criticalFindings: number;
@@ -156,6 +158,7 @@ export class IncidentReportBuilder {
         rootCause: incident.confirmedRootCause ?? null,
       },
       anomalies: anomalyStatistics(incident),
+      resourceSnapshots: incident.resourceSnapshots ?? [],
       codeAnalysis: {
         totalFindings: findings.length,
         criticalFindings: findings.filter((finding) => finding.severity === 'CRITICAL').length,
