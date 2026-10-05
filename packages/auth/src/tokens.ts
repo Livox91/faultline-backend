@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
 /**
  * Access tokens: HS256 JWTs, issued and verified here.
@@ -23,6 +23,8 @@ export interface AccessTokenClaims {
   iss: string;
   iat: number;
   exp: number;
+  /** Server-tracked session identifier, used for immediate revocation. */
+  jti: string;
   /** Set once a second factor has been satisfied; absent when MFA is not in play. */
   amr?: readonly string[];
   /** Compared with the stored user version so password recovery revokes older tokens. */
@@ -50,14 +52,16 @@ function sign(data: string, secret: string): string {
 }
 
 export function issueAccessToken(
-  claims: Omit<AccessTokenClaims, 'iss' | 'iat' | 'exp'>,
+  claims: Omit<AccessTokenClaims, 'iss' | 'iat' | 'exp' | 'jti'> &
+    Partial<Pick<AccessTokenClaims, 'jti'>>,
   settings: TokenSettings,
   now: number = Date.now(),
-): { token: string; expiresAt: string } {
+): { token: string; expiresAt: string; sessionId: string } {
   if (!settings.secret) throw new TokenError('Token secret is not configured');
   const issuedAt = Math.floor(now / 1000);
   const payload: AccessTokenClaims = {
     ...claims,
+    jti: claims.jti ?? randomUUID(),
     iss: settings.issuer,
     iat: issuedAt,
     exp: issuedAt + settings.ttlSeconds,
@@ -65,7 +69,11 @@ export function issueAccessToken(
   const head = encode({ alg: 'HS256', typ: 'JWT' });
   const body = encode(payload);
   const token = `${head}.${body}.${sign(`${head}.${body}`, settings.secret)}`;
-  return { token, expiresAt: new Date(payload.exp * 1000).toISOString() };
+  return {
+    token,
+    expiresAt: new Date(payload.exp * 1000).toISOString(),
+    sessionId: payload.jti,
+  };
 }
 
 /**
@@ -101,10 +109,14 @@ export function verifyAccessToken(
   } catch {
     throw new TokenError('Malformed token');
   }
-  if (header.alg !== 'HS256') throw new TokenError('Unsupported token algorithm');
+  if (header.alg !== 'HS256')
+    throw new TokenError('Unsupported token algorithm');
   if (!claims || typeof claims.sub !== 'string' || !claims.sub)
     throw new TokenError('Token has no subject');
-  if (claims.iss !== settings.issuer) throw new TokenError('Unexpected token issuer');
+  if (typeof claims.jti !== 'string' || !claims.jti)
+    throw new TokenError('Token has no session');
+  if (claims.iss !== settings.issuer)
+    throw new TokenError('Unexpected token issuer');
   if (typeof claims.exp !== 'number' || claims.exp * 1000 <= now)
     throw new TokenError('Token has expired');
   return claims;
@@ -115,4 +127,19 @@ export function readBearerToken(header: unknown): string | undefined {
   if (typeof header !== 'string') return undefined;
   const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
   return match?.[1];
+}
+
+/** Pulls a named value from a Cookie header without adding an HTTP-framework dependency. */
+export function readCookie(header: unknown, name: string): string | undefined {
+  if (typeof header !== 'string') return undefined;
+  for (const part of header.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0 || part.slice(0, separator).trim() !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(separator + 1).trim());
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }

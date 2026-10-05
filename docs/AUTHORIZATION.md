@@ -82,7 +82,7 @@ users ──┬─< project_users >── clusters      (project_users is the ma
   second place to grant it: no per-user flag, no per-project override. Its
   `environments text[]` column is the seam for environment-level access; empty means
   "every environment", so today's rows keep working when it starts being enforced.
-  Migration `0020` adds a database trigger requiring the target user, project, and
+  Migration `0025` adds a database trigger requiring the target user, project, and
   assigning administrator to belong to the same organization.
 - `clusters.environment` — advisory today, read by those checks when they land.
 - `audit_log` — append-only **at the table**:
@@ -101,6 +101,12 @@ change metadata. This includes user creation and profile edits; role, status, pa
 and MFA changes; project assignment changes; incident acknowledgements; and manual Slack
 ticket requests. Incident acknowledgement also remains in the notification event trail,
 where it participates in the operational incident timeline.
+
+Migration `0021_audit_integrity.sql` adds an HMAC-SHA-256 hash chain. Each new row
+signs its canonical contents and the preceding hash while an advisory transaction lock
+serializes writers. `/admin/audit/verify` verifies the chain. This is tamper evidence;
+deployments requiring third-party non-repudiation should externally sign retained head
+hashes with an independently held asymmetric key.
 
 ## Endpoints
 
@@ -134,6 +140,7 @@ where it participates in the operational incident timeline.
 | `PATCH`                     | `/admin/users/:id`                     | name, role, status, password, MFA                                             |
 | `PUT` / `DELETE`            | `/admin/users/:id/projects/:projectId` | assign / unassign                                                             |
 | `GET`                       | `/admin/audit`                         | read-only; filter by `action`, `outcome`, `userId`, `since`, `until`, `limit` |
+| `GET`                       | `/admin/audit/verify`                  | verify the signed audit chain                                               |
 
 ## Configuration
 
@@ -149,6 +156,8 @@ every request 500s.
 | `AUTH_PASSWORD_RESET_TTL_SECONDS` | `1800`      | Single-use reset-link lifetime; 300–86400                                   |
 | `AUTH_MFA_REQUIRED`               | `false`     | Confines unenrolled accounts to authenticator setup when true               |
 | `AUTH_MFA_ENCRYPTION_KEY`         | JWT-derived | Separate ≥32-character TOTP encryption key; recommended                     |
+| `AUDIT_INTEGRITY_KEY`             | dev-derived | ≥32 chars; required explicitly for the production API                       |
+| `AUDIT_INTEGRITY_KEY_ID`          | `primary`   | Identifier stored with each signed record                                   |
 | `AUTH_BOOTSTRAP_ADMIN_EMAIL`      | —           | Seeds the first Admin, only while `users` is empty                          |
 | `AUTH_BOOTSTRAP_ADMIN_PASSWORD`   | —           | Both or neither; 12–128 chars with uppercase, lowercase, number, and symbol |
 
@@ -226,30 +235,19 @@ log for local testing.
 
 ## Known limitations
 
-1. **Ordinary logout does not revoke a token before expiry.** Password recovery does
-   revoke all older tokens through `session_version`; disabling a user or revoking an
-   assignment also takes effect immediately because the guard re-reads storage. A
-   denylist behind `/auth/logout` would provide per-token revocation; the default TTL is
-   1 hour to bound the current behaviour.
-2. **The token is in `sessionStorage`**, readable by any script on the origin — the known
-   cost of a bearer token in a SPA. The backend is written so an httpOnly session cookie
-   can replace it without touching the rest of the app.
-3. **Login throttling is per-process** (8 attempts / 15 min / email). It raises the cost
-   of online guessing against one pod; a scaled-out deployment wants a shared limiter at
-   the edge.
-4. **Audit storage is fail-closed.** A failed audit write is logged at `error` level and
+1. **Audit storage is fail-closed.** A failed audit write is logged at `error` level and
    propagated, so the API never reports an audited action as allowed without its audit
    evidence. Records tied to a known account carry `organization_id`, and the admin
    audit endpoint always applies the authenticated administrator's organization scope.
-5. **The API enables no CORS.** The frontend must be same-origin; in development Vite
-   proxies `/api`. Serving it from another origin needs CORS _and_ a re-think of (2).
-6. **Environment-level access is modelled, not enforced.** `project_users.environments`
+2. **The API enables no CORS.** The frontend must be same-origin; in development Vite
+   proxies `/api`. Serving it from another origin needs an explicit cookie/CORS policy.
+3. **Environment-level access is modelled, not enforced.** `project_users.environments`
    and `clusters.environment` are read and written; no check consults them yet, and
    `hasEnvironmentAccess` already sits on the path for when one should.
-7. **Passwords use Node's `scrypt`**, not argon2id — no native toolchain required, and
+4. **Passwords use Node's `scrypt`**, not argon2id — no native toolchain required, and
    the cost parameters are stored in each hash so they can be raised without
    invalidating existing passwords.
-8. **`/system/info` is authenticated**, which is why the foundation boot test asserts
+5. **`/system/info` is authenticated**, which is why the foundation boot test asserts
    `401` for it. That assertion is the end-to-end proof that the global guard is wired.
 
 ## Tests

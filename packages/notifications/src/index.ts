@@ -14,13 +14,30 @@ export interface ContactMethod { phoneNumber: string; smsEnabled: boolean; voice
 export interface Contact extends ContactMethod {
   id: string; organizationId: string; userId?: string; name: string; role: ContactRole; enabled: boolean; createdAt: string; updatedAt: string;
 }
+export interface EndUserContact {
+  id:string; organizationId:string; clusterId:string; name:string; email:string;
+  phoneNumber:string; service:string; enabled:boolean; createdAt:string; updatedAt:string;
+}
+export interface EndUserContactRepository {
+  upsert(contact:EndUserContact):Promise<EndUserContact>;
+  get(id:string):Promise<EndUserContact|undefined>;
+  listForCluster(clusterId:string,organizationId:string):Promise<readonly EndUserContact[]>;
+  remove(id:string,clusterId:string,organizationId:string):Promise<boolean>;
+}
+export class InMemoryEndUserContactRepository implements EndUserContactRepository {
+  private readonly values=new Map<string,EndUserContact>();
+  async upsert(value:EndUserContact){const duplicate=[...this.values.values()].find(item=>item.clusterId===value.clusterId&&item.phoneNumber===value.phoneNumber&&item.service.toLowerCase()===value.service.toLowerCase());const saved=duplicate?{...value,id:duplicate.id,createdAt:duplicate.createdAt}:value;this.values.set(saved.id,structuredClone(saved));return structuredClone(saved);}
+  async get(id:string){const value=this.values.get(id);return value?structuredClone(value):undefined;}
+  async listForCluster(clusterId:string,organizationId:string){return[...this.values.values()].filter(value=>value.clusterId===clusterId&&value.organizationId===organizationId).map(value=>structuredClone(value));}
+  async remove(id:string,clusterId:string,organizationId:string){const value=this.values.get(id);return!!value&&value.clusterId===clusterId&&value.organizationId===organizationId&&this.values.delete(id);}
+}
 export interface NotificationGroup {
   id: string; organizationId: string; name: string; contactIds: readonly string[]; enabled: boolean; createdAt: string; updatedAt: string;
 }
 export type IncidentCommunicationState = 'OPEN'|'ACKNOWLEDGED'|'INVESTIGATING'|'IDENTIFIED'|'MITIGATING'|'MONITORING'|'RESOLVED';
 export type IncidentLifecycleEventType = 'INCIDENT_CREATED'|'INCIDENT_ACKNOWLEDGED'|'INCIDENT_STATUS_CHANGED'|'INCIDENT_SEVERITY_CHANGED'|'INCIDENT_ETA_UPDATED'|'INCIDENT_RESOLVED';
 export interface IncidentLifecycleEvent { id:string; type:IncidentLifecycleEventType; incident:Incident; state:IncidentCommunicationState; previousState?:IncidentCommunicationState; previousSeverity?:Incident['severity']; previousEstimatedRestorationAt?:string; occurredAt:string; changedFields:readonly string[]; }
-export type CommunicationType = 'INITIAL'|'STATUS_UPDATE'|'ETA_UPDATE'|'RESOLUTION';
+export type CommunicationType = 'INITIAL'|'STATUS_UPDATE'|'ETA_UPDATE'|'RESOLUTION'|'TEST';
 
 export interface NotificationRecipient {
   id: string;
@@ -29,16 +46,21 @@ export interface NotificationRecipient {
   audience: NotificationAudience;
 }
 
-export interface IncidentCommunication { id:string; incidentId:string; audience:NotificationAudience; channel:NotificationChannel; recipientId:string; communicationType:CommunicationType; messageVersion:string; status:'PENDING'|'SENT'|'FAILED'|'SUPPRESSED'; createdAt:string; sentAt?:string; providerRequestId?:string; dedupeKey:string; }
-export interface IncidentCommunicationRepository { save(value:IncidentCommunication):Promise<IncidentCommunication>; findByDedupeKey(key:string):Promise<IncidentCommunication|undefined>; listForIncident(incidentId:string):Promise<readonly IncidentCommunication[]>; }
-export class InMemoryIncidentCommunicationRepository implements IncidentCommunicationRepository { private readonly values=new Map<string,IncidentCommunication>();async save(value:IncidentCommunication){this.values.set(value.id,structuredClone(value));return structuredClone(value);}async findByDedupeKey(key:string){const value=[...this.values.values()].find((item)=>item.dedupeKey===key);return value?structuredClone(value):undefined;}async listForIncident(id:string){return[...this.values.values()].filter((item)=>item.incidentId===id).map((item)=>structuredClone(item));}}
+export type IncidentCommunicationStatus = NotificationStatus | 'SUPPRESSED';
+export interface IncidentCommunication { id:string; incidentId:string; organizationId:string; audience:NotificationAudience; channel:NotificationChannel; recipientId:string; recipientDisplayName?:string; maskedPhoneNumber?:string; communicationType:CommunicationType; messageVersion:string; status:IncidentCommunicationStatus; createdAt:string; sentAt?:string; providerRequestId?:string; dedupeKey:string; }
+export interface IncidentCommunicationRepository { save(value:IncidentCommunication):Promise<IncidentCommunication>; findByDedupeKey(key:string):Promise<IncidentCommunication|undefined>; findByProviderRequestId(id:string):Promise<IncidentCommunication|undefined>; listForIncident(incidentId:string):Promise<readonly IncidentCommunication[]>; listRecent(organizationId:string,limit:number):Promise<readonly IncidentCommunication[]>; }
+export class InMemoryIncidentCommunicationRepository implements IncidentCommunicationRepository { private readonly values=new Map<string,IncidentCommunication>();async save(value:IncidentCommunication){this.values.set(value.id,structuredClone(value));return structuredClone(value);}async findByDedupeKey(key:string){const value=[...this.values.values()].find((item)=>item.dedupeKey===key);return value?structuredClone(value):undefined;}async findByProviderRequestId(id:string){const value=[...this.values.values()].find((item)=>item.providerRequestId===id);return value?structuredClone(value):undefined;}async listForIncident(id:string){return[...this.values.values()].filter((item)=>item.incidentId===id).map((item)=>structuredClone(item));}async listRecent(organizationId:string,limit:number){return[...this.values.values()].filter((item)=>item.organizationId===organizationId).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,limit).map((item)=>structuredClone(item));}}
+
+export interface NotificationProviderStatus { organizationId:string; provider:'retell'; configured:boolean; connected:boolean; maskedFromNumber?:string; voiceAgentConfigured:boolean; smsAgentConfigured:boolean; checkedAt:string; message:string; }
+export interface NotificationProviderStatusRepository { save(value:NotificationProviderStatus):Promise<NotificationProviderStatus>; get(organizationId:string):Promise<NotificationProviderStatus|undefined>; }
+export class InMemoryNotificationProviderStatusRepository implements NotificationProviderStatusRepository {private readonly values=new Map<string,NotificationProviderStatus>();async save(value:NotificationProviderStatus){this.values.set(value.organizationId,structuredClone(value));return structuredClone(value);}async get(id:string){const value=this.values.get(id);return value?structuredClone(value):undefined;}}
 
 export interface NotificationAttempt {
   id: string;
   incidentId: string;
   recipientId: string;
   clusterId: string;
-  recipientSource: 'ASSIGNED_SRE' | 'ADMIN_FALLBACK';
+  recipientSource: 'ASSIGNED_SRE' | 'ADMIN_FALLBACK' | 'END_USER';
   channel: NotificationChannel;
   provider: string;
   providerRequestId?: string;
@@ -67,7 +89,7 @@ export interface IncidentNotificationState { incidentId:string; clusterId:string
 export interface IncidentNotificationStateRepository { save(value:IncidentNotificationState):Promise<IncidentNotificationState>; get(incidentId:string):Promise<IncidentNotificationState|undefined>; }
 export interface IncidentAcknowledgement { incidentId: string; acknowledgedBy: string; acknowledgedAt: string; notificationAttemptId?: string; providerCallId?: string; channel?: 'VOICE'; note?: string; }
 export interface IncidentAcknowledgementRepository { save(value: IncidentAcknowledgement): Promise<IncidentAcknowledgement>; get(incidentId: string): Promise<IncidentAcknowledgement | undefined>; }
-export interface AcknowledgementTransaction { acknowledge(input:{acknowledgement:IncidentAcknowledgement;state:IncidentNotificationState;attempt?:NotificationAttempt;events:readonly NotificationAuditEvent[]}):Promise<void>; }
+export interface AcknowledgementTransaction { acknowledge(input:{acknowledgement:IncidentAcknowledgement;state:IncidentNotificationState;attempt?:NotificationAttempt;communication?:IncidentCommunication;events:readonly NotificationAuditEvent[]}):Promise<void>; }
 export type NotificationAuditEventType = 'DIRECT_NOTIFICATION_STARTED' | 'RECIPIENT_RESOLVED' | 'ADMIN_FALLBACK_USED' | 'CONTACT_SKIPPED' | 'CALL_REQUESTED' | 'SMS_REQUESTED' | 'CALL_ANSWERED' | 'VOICE_CALL_ANSWERED' | 'ACKNOWLEDGEMENT_REQUESTED' | 'CALL_FAILED' | 'INCIDENT_ACKNOWLEDGED' | 'INCIDENT_DECLINED' | 'ACKNOWLEDGEMENT_REJECTED' | 'NOTIFICATION_STOPPED' | 'INCIDENT_RESOLVED';
 export interface NotificationAuditEvent { id: string; incidentId: string; type: NotificationAuditEventType; timestamp: string; contactId?: string; attemptId?: string; details?: Readonly<Record<string, unknown>>; }
 export interface NotificationAuditRepository { append(event: NotificationAuditEvent): Promise<void>; list(incidentId: string): Promise<readonly NotificationAuditEvent[]>; purge(before:string):Promise<number>; }
@@ -346,9 +368,11 @@ export const CLUSTER_SRE_ASSIGNMENT_REPOSITORY = Symbol(
   'faultline.cluster-sre-assignment-repository',
 );
 export const CONTACT_REPOSITORY = Symbol('faultline.contact-repository');
+export const END_USER_CONTACT_REPOSITORY = Symbol('faultline.end-user-contact-repository');
 export const NOTIFICATION_GROUP_REPOSITORY = Symbol('faultline.notification-group-repository');
 export const INCIDENT_NOTIFICATION_STATE_REPOSITORY = Symbol('faultline.incident-notification-state-repository');
 export const INCIDENT_ACKNOWLEDGEMENTS = Symbol('faultline.incident-acknowledgements');
 export const NOTIFICATION_AUDIT_REPOSITORY = Symbol('faultline.notification-audit-repository');
 export const INCIDENT_COMMUNICATION_REPOSITORY = Symbol('faultline.incident-communication-repository');
 export const ACKNOWLEDGEMENT_TRANSACTION = Symbol('faultline.acknowledgement-transaction');
+export const NOTIFICATION_PROVIDER_STATUS_REPOSITORY = Symbol('faultline.notification-provider-status-repository');

@@ -18,12 +18,14 @@ import {
   PostgresConnection,
   PostgresIncidentRepository,
   PostgresContactRepository,
+  PostgresEndUserContactRepository,
   PostgresNotificationGroupRepository,
   PostgresIncidentNotificationStateRepository,
   PostgresIncidentAcknowledgementRepository,
   PostgresNotificationAuditRepository,
   PostgresNotificationAttemptRepository,
   PostgresIncidentCommunicationRepository,
+  PostgresNotificationProviderStatusRepository,
   PostgresOnCallScheduleRepository,PostgresOnCallShiftRepository,PostgresAvailabilityOverrideRepository,
   PostgresIncidentAnalyticsRepository,
   PostgresExternalTicketRepository,
@@ -34,10 +36,12 @@ import {
 } from '@faultline/database';
 import {
   CONTACT_REPOSITORY, INCIDENT_NOTIFICATION_STATE_REPOSITORY,
+  END_USER_CONTACT_REPOSITORY, InMemoryEndUserContactRepository,
   INCIDENT_ACKNOWLEDGEMENTS, InMemoryContactRepository, InMemoryIncidentNotificationStateRepository,
   InMemoryIncidentAcknowledgementRepository,
   InMemoryNotificationAuditRepository, InMemoryNotificationGroupRepository,
   InMemoryNotificationAttemptRepository,InMemoryIncidentCommunicationRepository,INCIDENT_COMMUNICATION_REPOSITORY,NOTIFICATION_ATTEMPTS,
+  InMemoryNotificationProviderStatusRepository,NOTIFICATION_PROVIDER_STATUS_REPOSITORY,
   NOTIFICATION_AUDIT_REPOSITORY, NOTIFICATION_GROUP_REPOSITORY,
   ON_CALL_SCHEDULE_REPOSITORY,ON_CALL_SHIFT_REPOSITORY,AVAILABILITY_OVERRIDE_REPOSITORY,InMemoryOnCallScheduleRepository,InMemoryOnCallShiftRepository,InMemoryAvailabilityOverrideRepository,
   EXTERNAL_TICKET_REPOSITORY,InMemoryExternalTicketRepository,
@@ -118,6 +122,8 @@ import {
   JsonReportExporter,
   PDF_REPORT_EXPORTER,
   PdfReportExporter,
+  SYSTEM_SUMMARY_PDF_EXPORTER,
+  SystemSummaryPdfExporter,
   SystemSummaryService,
   type IncidentAnalyticsRepository,
 } from '@faultline/reporting';
@@ -137,6 +143,7 @@ import {
   PasswordResetController,
   PasswordResetThrottle,
 } from './auth/password-reset.controller';
+import { AuthSecurityStore } from './auth/security-store';
 import { BillingController } from './billing/billing.controller';
 import { EntitlementsController } from './billing/entitlements.controller';
 import { EntitlementsGuard, PlanEntitlements } from './billing/entitlements';
@@ -149,6 +156,8 @@ import { ClusterOnboardingService } from './cluster-onboarding.service';
 import { SlackIntegrationController, SlackIntegrationService } from './slack-integration.controller';
 import { ClusterSlackController } from './cluster-slack.controller';
 import { ClusterSresController } from './cluster-sres.controller';
+import { VoiceAgentController } from './voice-agent.controller';
+import { EndUserSmsController } from './end-user-sms.controller';
 import {
   getDevelopmentQueue,
   NatsJetStreamQueue,
@@ -184,6 +193,7 @@ const infrastructureProviders: Provider[] =
           useFactory: getDevelopmentBaselineRepository,
         },
         { provide: CONTACT_REPOSITORY, useClass: InMemoryContactRepository },
+        { provide: END_USER_CONTACT_REPOSITORY, useClass: InMemoryEndUserContactRepository },
         { provide: NOTIFICATION_GROUP_REPOSITORY, useClass: InMemoryNotificationGroupRepository },
         { provide: INCIDENT_NOTIFICATION_STATE_REPOSITORY, useClass: InMemoryIncidentNotificationStateRepository },
         { provide: INCIDENT_ACKNOWLEDGEMENTS, useClass: InMemoryIncidentAcknowledgementRepository },
@@ -197,6 +207,7 @@ const infrastructureProviders: Provider[] =
         { provide: NOTIFICATION_AUDIT_REPOSITORY, useClass: InMemoryNotificationAuditRepository },
         { provide: NOTIFICATION_ATTEMPTS, useClass: InMemoryNotificationAttemptRepository },
         { provide: INCIDENT_COMMUNICATION_REPOSITORY, useClass: InMemoryIncidentCommunicationRepository },
+        { provide: NOTIFICATION_PROVIDER_STATUS_REPOSITORY, useClass: InMemoryNotificationProviderStatusRepository },
         { provide: ON_CALL_SCHEDULE_REPOSITORY, useClass: InMemoryOnCallScheduleRepository },
         { provide: ON_CALL_SHIFT_REPOSITORY, useClass: InMemoryOnCallShiftRepository },
         { provide: AVAILABILITY_OVERRIDE_REPOSITORY, useClass: InMemoryAvailabilityOverrideRepository },
@@ -263,12 +274,14 @@ const infrastructureProviders: Provider[] =
             new PostgresIncidentAnalyticsRepository(database),
         },
         { provide: CONTACT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresContactRepository(database) },
+        { provide: END_USER_CONTACT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresEndUserContactRepository(database) },
         { provide: NOTIFICATION_GROUP_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationGroupRepository(database) },
         { provide: INCIDENT_NOTIFICATION_STATE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentNotificationStateRepository(database) },
         { provide: INCIDENT_ACKNOWLEDGEMENTS, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentAcknowledgementRepository(database) },
         { provide: NOTIFICATION_AUDIT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationAuditRepository(database) },
         { provide: NOTIFICATION_ATTEMPTS, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationAttemptRepository(database) },
         { provide: INCIDENT_COMMUNICATION_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresIncidentCommunicationRepository(database) },
+        { provide: NOTIFICATION_PROVIDER_STATUS_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresNotificationProviderStatusRepository(database) },
         { provide: ON_CALL_SCHEDULE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresOnCallScheduleRepository(database) },
         { provide: ON_CALL_SHIFT_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresOnCallShiftRepository(database) },
         { provide: AVAILABILITY_OVERRIDE_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresAvailabilityOverrideRepository(database) },
@@ -289,9 +302,16 @@ const infrastructureProviders: Provider[] =
         },
         {
           provide: AUDIT_LOG_REPOSITORY,
-          inject: [DATABASE],
-          useFactory: (database: PostgresConnection) =>
-            new PostgresAuditLogRepository(database),
+          inject: [DATABASE, APPLICATION_CONFIG],
+          useFactory: (
+            database: PostgresConnection,
+            config: ApplicationConfig,
+          ) =>
+            new PostgresAuditLogRepository(
+              database,
+              config.audit.integrityKey!,
+              config.audit.integrityKeyId,
+            ),
         },
         {
           provide: SUBSCRIPTION_REPOSITORY,
@@ -498,6 +518,8 @@ const billingProviders: Provider[] = billingEnabled
     SlackIntegrationController,
     ClusterSlackController,
     ClusterSresController,
+    VoiceAgentController,
+    EndUserSmsController,
   ],
   providers: [
     ...infrastructureProviders,
@@ -506,6 +528,7 @@ const billingProviders: Provider[] = billingEnabled
     ...billingProviders,
     AuditTrail,
     PlanEntitlements,
+    AuthSecurityStore,
     LoginThrottle,
     PasswordResetThrottle,
     AdminBootstrap,
@@ -536,6 +559,10 @@ const billingProviders: Provider[] = billingEnabled
     {
       provide: PDF_REPORT_EXPORTER,
       useClass: PdfReportExporter,
+    },
+    {
+      provide: SYSTEM_SUMMARY_PDF_EXPORTER,
+      useClass: SystemSummaryPdfExporter,
     },
     {
       provide: AnalyticsService,

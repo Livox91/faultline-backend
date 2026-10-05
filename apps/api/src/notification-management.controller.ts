@@ -1,8 +1,30 @@
 import { randomUUID } from 'node:crypto';
-import { BadRequestException, Body, Controller, Get, Header, Inject, NotFoundException, Param, Patch, Post } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Header,
+  Inject,
+  NotFoundException,
+  Param,
+  Patch,
+  Post,
+  Req,
+} from '@nestjs/common';
 import { FEATURES } from '@faultline/billing';
-import { RequiresFeature } from './auth/context';
-import { ROLES, USER_REPOSITORY, type UserRepository } from '@faultline/auth';
+import {
+  CurrentUser,
+  RequiresFeature,
+  type RequestWithUser,
+} from './auth/context';
+import {
+  AUDIT_ACTIONS,
+  ROLES,
+  USER_REPOSITORY,
+  type AuthenticatedUser,
+  type UserRepository,
+} from '@faultline/auth';
 import {
   CONTACT_REPOSITORY,
   NOTIFICATION_GROUP_REPOSITORY,
@@ -13,10 +35,11 @@ import {
 } from '@faultline/notifications';
 import { z } from 'zod';
 import { ENGINEER_CONTACT_RULE, isCallable } from './engineer-contact';
+import { AuditTrail } from './auth/audit-trail';
 
 const id = z.string().trim().min(1).max(128);
 const contactInput = z.object({
-  organizationId: id,
+  organizationId: id.optional(),
   userId: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(200),
   role: z.enum(['ENGINEER', 'SENIOR_ENGINEER', 'TEAM_LEAD', 'MANAGER', 'STAKEHOLDER', 'END_USER']),
@@ -26,7 +49,7 @@ const contactInput = z.object({
   enabled: z.boolean().default(true),
 });
 const groupInput = z.object({
-  organizationId: id,
+  organizationId: id.optional(),
   name: z.string().trim().min(1).max(200),
   contactIds: z.array(id).max(1000),
   enabled: z.boolean().default(true),
@@ -48,12 +71,18 @@ export class ContactsController {
   constructor(
     @Inject(CONTACT_REPOSITORY) private readonly contacts: ContactRepository,
     @Inject(USER_REPOSITORY) private readonly users: UserRepository,
+    private readonly audit: AuditTrail,
   ) {}
 
   @Post()
-  async create(@Body() body: unknown) {
+  async create(
+    @Body() body: unknown,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: RequestWithUser,
+  ) {
     const input = parse(contactInput, body);
-    await this.validateUser(input.userId, input.organizationId);
+    this.assertOrganization(input.organizationId, actor.organizationId);
+    await this.validateUser(input.userId, actor.organizationId);
     const now = new Date().toISOString();
     let phoneNumber: string;
     try {
@@ -64,34 +93,53 @@ export class ContactsController {
     const contact: Contact = {
       id: randomUUID(),
       ...input,
+      organizationId: actor.organizationId,
       phoneNumber,
       createdAt: now,
       updatedAt: now,
     };
     await this.requireCallableEngineer(contact);
-    return this.contacts.create(contact);
+    const created = await this.contacts.create(contact);
+    await this.audit.record({
+      user: actor,
+      action: AUDIT_ACTIONS.CONTACT_CREATED,
+      resourceType: 'contact',
+      resourceId: created.id,
+      request,
+    });
+    return created;
   }
 
   @Get()
   @Header('Cache-Control', 'no-store')
-  list() {
-    return this.contacts.list();
+  list(@CurrentUser() actor: AuthenticatedUser) {
+    return this.contacts.list(actor.organizationId);
   }
 
   @Get(':id')
-  async get(@Param('id') contactId: string) {
+  async get(
+    @Param('id') contactId: string,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
     const value = await this.contacts.get(contactId);
-    if (!value) throw new NotFoundException('Contact not found');
+    if (!value || value.organizationId !== actor.organizationId)
+      throw new NotFoundException('Contact not found');
     return value;
   }
 
   @Patch(':id')
-  async update(@Param('id') contactId: string, @Body() body: unknown) {
+  async update(
+    @Param('id') contactId: string,
+    @Body() body: unknown,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: RequestWithUser,
+  ) {
     const current = await this.contacts.get(contactId);
-    if (!current) throw new NotFoundException('Contact not found');
+    if (!current || current.organizationId !== actor.organizationId)
+      throw new NotFoundException('Contact not found');
     const input = parse(contactInput.partial(), body);
-    const organizationId = input.organizationId ?? current.organizationId;
-    await this.validateUser(input.userId, organizationId);
+    this.assertOrganization(input.organizationId, actor.organizationId);
+    await this.validateUser(input.userId, actor.organizationId);
     let phoneNumber = current.phoneNumber;
     if (input.phoneNumber !== undefined)
       try {
@@ -102,11 +150,20 @@ export class ContactsController {
     const contact: Contact = {
       ...current,
       ...input,
+      organizationId: actor.organizationId,
       phoneNumber,
       updatedAt: new Date().toISOString(),
     };
     await this.requireCallableEngineer(contact);
-    return this.contacts.update(contact);
+    const updated = await this.contacts.update(contact);
+    await this.audit.record({
+      user: actor,
+      action: AUDIT_ACTIONS.CONTACT_UPDATED,
+      resourceType: 'contact',
+      resourceId: updated.id,
+      request,
+    });
+    return updated;
   }
 
   /** An onsite engineer's contact is how Retell reaches them, so it must stay callable. */
@@ -123,6 +180,11 @@ export class ContactsController {
     if (!user || user.organizationId !== organizationId)
       throw new BadRequestException('Linked user does not belong to this organization');
   }
+
+  private assertOrganization(requested: string | undefined, actual: string) {
+    if (requested && requested !== actual)
+      throw new BadRequestException('Organization does not match the authenticated user');
+  }
 }
 
 @Controller('notification-groups')
@@ -131,27 +193,45 @@ export class NotificationGroupsController {
   constructor(
     @Inject(NOTIFICATION_GROUP_REPOSITORY) private readonly groups: NotificationGroupRepository,
     @Inject(CONTACT_REPOSITORY) private readonly contacts: ContactRepository,
+    private readonly audit: AuditTrail,
   ) {}
 
   @Post()
-  async create(@Body() body: unknown) {
+  async create(
+    @Body() body: unknown,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: RequestWithUser,
+  ) {
     const input = parse(groupInput, body);
-    for (const contactId of input.contactIds)
-      if (!(await this.contacts.get(contactId)))
+    if (input.organizationId && input.organizationId !== actor.organizationId)
+      throw new BadRequestException('Organization does not match the authenticated user');
+    for (const contactId of input.contactIds) {
+      const contact = await this.contacts.get(contactId);
+      if (!contact || contact.organizationId !== actor.organizationId)
         throw new BadRequestException(`Unknown contact: ${contactId}`);
+    }
     const now = new Date().toISOString();
-    return this.groups.create({
+    const created = await this.groups.create({
       id: randomUUID(),
       ...input,
+      organizationId: actor.organizationId,
       contactIds: [...new Set(input.contactIds)],
       createdAt: now,
       updatedAt: now,
     });
+    await this.audit.record({
+      user: actor,
+      action: AUDIT_ACTIONS.NOTIFICATION_GROUP_CREATED,
+      resourceType: 'notification-group',
+      resourceId: created.id,
+      request,
+    });
+    return created;
   }
 
   @Get()
   @Header('Cache-Control', 'no-store')
-  list() {
-    return this.groups.list();
+  list(@CurrentUser() actor: AuthenticatedUser) {
+    return this.groups.list(actor.organizationId);
   }
 }

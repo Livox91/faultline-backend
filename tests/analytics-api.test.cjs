@@ -5,6 +5,7 @@ const { Module } = require('@nestjs/common');
 const { NestFactory } = require('@nestjs/core');
 const {
   AnalyticsService,
+  SYSTEM_SUMMARY_PDF_EXPORTER,
   SystemSummaryService,
 } = require('@faultline/reporting');
 const {
@@ -46,7 +47,8 @@ async function harness() {
       unhealthyServices: 0,
     },
     incidents: { total: 2, critical: 1, resolved: 1, unresolved: 1 },
-    performance: { mttrMs: 120000, mttaMs: 30000 },
+    performance: { mttrMs: 120000, mttaMs: 30000, resolutionRate: 0.5 },
+    incidentsBySeverity: { CRITICAL: 1, WARNING: 1 },
     topAffectedServices: [{ service: 'payments', incidentCount: 2 }],
     commonIncidentCategories: [
       { classification: 'MEMORY_EXHAUSTION', incidentCount: 2 },
@@ -75,6 +77,18 @@ async function harness() {
     providers: [
       { provide: AnalyticsService, useValue: analytics },
       { provide: SystemSummaryService, useValue: summaries },
+      {
+        provide: SYSTEM_SUMMARY_PDF_EXPORTER,
+        useValue: {
+          async export() {
+            return {
+              contentType: 'application/pdf',
+              filename: 'faultline-system-summary.pdf',
+              content: Buffer.from('%PDF-test'),
+            };
+          },
+        },
+      },
     ],
   })(AnalyticsApiModule);
   const app = await NestFactory.create(AnalyticsApiModule, { logger: false });
@@ -153,6 +167,20 @@ test('equal range boundaries are accepted as an empty valid interval', async () 
     const response = await fetch(`${h.base}/analytics/incidents/trends?${query}`);
     assert.equal(response.status, 200);
     assert.equal(h.calls[0].input.from.getTime(), h.calls[0].input.to.getTime());
+  } finally {
+    await h.app.close();
+  }
+});
+
+test('system summary PDF export returns an attachment for the selected range', async () => {
+  const h = await harness();
+  try {
+    const query = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    const response = await fetch(`${h.base}/reports/system-summary/export?${query}`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'application/pdf');
+    assert.match(response.headers.get('content-disposition'), /faultline-system-summary\.pdf/);
+    assert.equal(Buffer.from(await response.arrayBuffer()).toString(), '%PDF-test');
   } finally {
     await h.app.close();
   }

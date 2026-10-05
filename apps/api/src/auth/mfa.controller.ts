@@ -9,6 +9,7 @@ import {
   Inject,
   Post,
   Req,
+  Res,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
@@ -42,6 +43,8 @@ import {
 } from '@faultline/auth';
 import { AuditTrail } from './audit-trail';
 import { LoginThrottle } from './auth.controller';
+import { AuthSecurityStore } from './security-store';
+import { setSessionCookie, type CookieResponse } from './session-cookie';
 import {
   AllowWhileMfaEnrollmentPending,
   CurrentUser,
@@ -62,6 +65,7 @@ export class MfaController {
   private readonly masterSecret: string;
   private readonly issuer: string;
   private readonly required: boolean;
+  private readonly secureCookies: boolean;
 
   constructor(
     @Inject(USER_REPOSITORY) private readonly users: UserRepository,
@@ -70,10 +74,12 @@ export class MfaController {
     @Inject(APPLICATION_CONFIG) config: ApplicationConfig,
     private readonly audit: AuditTrail,
     private readonly throttle: LoginThrottle,
+    private readonly security: AuthSecurityStore,
   ) {
     this.masterSecret = config.auth.mfaEncryptionKey ?? config.auth.jwtSecret ?? '';
     this.issuer = config.applicationName;
     this.required = config.auth.mfaRequired;
+    this.secureCookies = config.environment === 'production';
     this.tokens = {
       // MFA challenge/enrollment material is protected with the dedicated MFA key,
       // but the completed login must issue an ordinary access token. Every other
@@ -89,7 +95,11 @@ export class MfaController {
   @Post('verify')
   @HttpCode(200)
   @Header('Cache-Control', 'no-store')
-  async verifyLogin(@Body() body: MfaBody, @Req() request: RequestWithUser) {
+  async verifyLogin(
+    @Body() body: MfaBody,
+    @Req() request: RequestWithUser,
+    @Res({ passthrough: true }) response: CookieResponse,
+  ) {
     const challengeToken = requiredText(body?.challengeToken, 'MFA challenge token');
     const code = requiredText(body?.code, 'Authenticator or recovery code');
     let challenge: ReturnType<typeof verifyMfaChallengeToken>;
@@ -100,14 +110,14 @@ export class MfaController {
     }
 
     const throttleKey = `mfa:${challenge.userId}`;
-    this.throttle.check(throttleKey);
+    await this.throttle.check(throttleKey);
     const user = await this.users.findById(challenge.userId);
     if (!user || user.status !== 'active' || !user.mfaEnabled || !user.mfaSecretCiphertext)
       throw new UnauthorizedException('Invalid or expired MFA challenge');
 
     const factor = await this.verifyAndConsumeFactor(user, code);
     if (!factor) {
-      this.throttle.fail(throttleKey);
+      await this.throttle.fail(throttleKey);
       await this.audit.record({
         userId: user.id,
         organizationId: user.organizationId,
@@ -124,11 +134,11 @@ export class MfaController {
 
     if (!(await this.users.consumeMfaChallenge(challenge.challengeId, user.id)))
       throw new UnauthorizedException('Invalid or expired MFA challenge');
-    this.throttle.succeed(throttleKey);
+    await this.throttle.succeed(throttleKey);
 
     const assignments = await this.assignments.listForUser(user.id);
     const authenticated = this.authenticated(user, assignments);
-    const { token, expiresAt } = issueAccessToken(
+    const { token, expiresAt, sessionId } = issueAccessToken(
       {
         sub: user.id,
         email: user.email,
@@ -138,6 +148,8 @@ export class MfaController {
       },
       this.tokens,
     );
+    await this.security.createSession(sessionId, user.id, this.tokens.ttlSeconds);
+    setSessionCookie(response, token, this.tokens.ttlSeconds, this.secureCookies);
     await this.audit.record({
       user: authenticated,
       action: AUDIT_ACTIONS.LOGIN_SUCCEEDED,
@@ -324,12 +336,12 @@ export class MfaController {
   }
 
   private async requirePassword(user: UserRecord, password: string, throttleKey: string) {
-    this.throttle.check(throttleKey);
+    await this.throttle.check(throttleKey);
     if (!(await verifyPassword(password, user.passwordHash ?? null))) {
-      this.throttle.fail(throttleKey);
+      await this.throttle.fail(throttleKey);
       throw new UnauthorizedException('Current password is incorrect');
     }
-    this.throttle.succeed(throttleKey);
+    await this.throttle.succeed(throttleKey);
   }
 
   private async verifyAndConsumeFactor(

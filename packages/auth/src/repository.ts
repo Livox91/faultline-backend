@@ -7,7 +7,13 @@ import type {
   AuditFilter,
   AuditLogRepository,
   AuditRecord,
+  AuditIntegrityReport,
 } from './audit';
+import {
+  AUDIT_INTEGRITY_ALGORITHM,
+  auditHashesEqual,
+  computeAuditHash,
+} from './audit-integrity';
 
 /** A stored user. `passwordHash` never leaves the repository layer. */
 export interface UserRecord {
@@ -430,10 +436,17 @@ export class InMemoryProjectAssignmentRepository
 export class InMemoryAuditLogRepository implements AuditLogRepository {
   private readonly records: AuditRecord[] = [];
 
+  constructor(
+    private readonly integrityKey = 'faultline-test-audit-integrity-key',
+    private readonly keyId = 'test',
+  ) {}
+
   async record(entry: AuditEntry): Promise<AuditRecord> {
-    const record: AuditRecord = {
+    const base = {
       id: entry.id ?? randomUUID(),
-      occurredAt: entry.occurredAt ?? new Date().toISOString(),
+      occurredAt: entry.occurredAt
+        ? new Date(entry.occurredAt).toISOString()
+        : new Date().toISOString(),
       organizationId: entry.organizationId,
       userId: entry.userId,
       actor: entry.actor,
@@ -444,6 +457,25 @@ export class InMemoryAuditLogRepository implements AuditLogRepository {
       ip: entry.ip,
       userAgent: entry.userAgent,
       metadata: entry.metadata,
+    };
+    const previousHash = this.records.at(-1)?.integrity?.hash ?? null;
+    const sequence = this.records.length + 1;
+    const hash = computeAuditHash(
+      base,
+      sequence,
+      previousHash,
+      this.keyId,
+      this.integrityKey,
+    );
+    const record: AuditRecord = {
+      ...base,
+      integrity: {
+        algorithm: AUDIT_INTEGRITY_ALGORITHM,
+        keyId: this.keyId,
+        sequence,
+        previousHash,
+        hash,
+      },
     };
     this.records.push(record);
     return record;
@@ -465,6 +497,42 @@ export class InMemoryAuditLogRepository implements AuditLogRepository {
       )
       .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
       .slice(0, filter.limit ?? 200);
+  }
+
+  async verifyIntegrity(): Promise<AuditIntegrityReport> {
+    let previousHash: string | null = null;
+    let checkedRecords = 0;
+    for (const record of this.records) {
+      const integrity = record.integrity;
+      if (!integrity) continue;
+      const { integrity: _integrity, ...base } = record;
+      const expected = computeAuditHash(
+        base,
+        integrity.sequence,
+        previousHash,
+        integrity.keyId,
+        this.integrityKey,
+      );
+      if (
+        integrity.previousHash !== previousHash ||
+        !auditHashesEqual(integrity.hash, expected)
+      )
+        return {
+          valid: false,
+          checkedRecords,
+          unsignedRecords: this.records.length - checkedRecords,
+          headHash: previousHash,
+          firstInvalidRecordId: record.id,
+        };
+      previousHash = integrity.hash;
+      checkedRecords += 1;
+    }
+    return {
+      valid: true,
+      checkedRecords,
+      unsignedRecords: this.records.length - checkedRecords,
+      headHash: previousHash,
+    };
   }
 }
 

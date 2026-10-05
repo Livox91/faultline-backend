@@ -10,6 +10,8 @@ import type { PlanFeature } from '@faultline/billing';
  */
 export interface RequestWithUser {
   user?: AuthenticatedUser;
+  /** Verified server-side session id associated with the current credential. */
+  sessionId?: string;
   headers: Record<string, string | string[] | undefined>;
   params?: Record<string, string>;
   query?: Record<string, unknown>;

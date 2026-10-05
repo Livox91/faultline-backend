@@ -35,9 +35,12 @@ try {
   });
   if (migrationOutput) console.log(migrationOutput);
 } catch (error) {
-  const detail = error.detail || error.message || '';
-  if (!/password authentication failed|authentication failed for user|28P01/i.test(detail))
-    throw new Error(`PostgreSQL migration failed.\n${detail}`);
+  const detail = `${error?.detail ?? error?.message ?? ''}`;
+  const credentialFailure =
+    /password authentication failed|authentication failed for user|role .* does not exist|database .* does not exist|28P01/i.test(
+      detail,
+    );
+  if (!credentialFailure) throw error;
   throw new Error(
     [
       'PostgreSQL rejected the credentials in .env.infrastructure.',
@@ -48,6 +51,7 @@ try {
       'npm run setup',
       'npm run faultline:start',
     ].join('\n'),
+    { cause: error },
   );
 }
 run('npm', ['run', 'telemetry:schema'], {

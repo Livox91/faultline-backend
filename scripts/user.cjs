@@ -26,6 +26,7 @@ const {
   parseRole,
   ROLES,
 } = require('@faultline/auth');
+const { revokeAllSessions } = require('./auth-sessions.cjs');
 const { normalizePhoneNumber } = require('@faultline/notifications');
 
 const root = resolve(__dirname, '..');
@@ -323,6 +324,8 @@ const commands = {
       await client.query('ROLLBACK');
       throw error;
     }
+    const env = parseEnv(resolve(root, 'apps/api/.env'));
+    await revokeAllSessions(process.env.REDIS_URL || env.REDIS_URL, user.id);
     await audit(client, 'user.modified', 'user', user.id, { field: 'password' });
     console.log(`Password updated for ${email}`);
   },
@@ -341,6 +344,10 @@ async function setStatus(client, args, status) {
     );
     if (admins.rows[0].count <= 1)
       throw new Error('This is the last active Admin and cannot be disabled.');
+  }
+  if (status === 'disabled') {
+    const env = parseEnv(resolve(root, 'apps/api/.env'));
+    await revokeAllSessions(process.env.REDIS_URL || env.REDIS_URL, user.id);
   }
   await client.query('UPDATE users SET status = $2, updated_at = now() WHERE id = $1', [
     user.id,

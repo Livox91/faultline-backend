@@ -21,11 +21,13 @@ const { AuthController, LoginThrottle } = require('../apps/api/dist/auth/auth.co
 const { MfaController } = require('../apps/api/dist/auth/mfa.controller');
 const { AuthorizationGuard } = require('../apps/api/dist/auth/authorization.guard');
 const { MFA_ENROLLMENT_EXEMPT } = require('../apps/api/dist/auth/context');
+const { AuthSecurityStore } = require('../apps/api/dist/auth/security-store');
 
 const masterSecret = 'mfa-test-master-secret-that-is-at-least-32-characters';
 const jwtSecret = 'jwt-test-signing-secret-that-is-distinct-and-long-enough';
 const config = {
   applicationName: 'Faultline Test',
+  environment: 'test',
   auth: {
     jwtSecret,
     mfaEncryptionKey: masterSecret,
@@ -36,6 +38,7 @@ const config = {
 };
 
 const request = () => ({ headers: {}, ip: '127.0.0.1', method: 'POST', url: '/test' });
+const response = () => ({ append() {} });
 
 function decodeBase32(value) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -79,8 +82,12 @@ test('MFA secrets are encrypted with authenticated encryption', () => {
   const encrypted = encryptMfaSecret(secret, masterSecret);
   assert.notEqual(encrypted, secret);
   assert.equal(decryptMfaSecret(encrypted, masterSecret), secret);
+  const parts = encrypted.split('.');
+  const ciphertext = Buffer.from(parts[3], 'base64url');
+  ciphertext[0] ^= 1;
+  parts[3] = ciphertext.toString('base64url');
   assert.throws(
-    () => decryptMfaSecret(encrypted.slice(0, -1) + 'A', masterSecret),
+    () => decryptMfaSecret(parts.join('.'), masterSecret),
     /cannot be decrypted/,
   );
 });
@@ -109,9 +116,10 @@ test('enrollment creates a real factor and login requires a one-time second fact
   const assignments = new InMemoryProjectAssignmentRepository();
   const auditEntries = [];
   const audit = { record: async (entry) => auditEntries.push(entry) };
-  const throttle = new LoginThrottle();
-  const auth = new AuthController(users, assignments, config, audit, throttle);
-  const mfa = new MfaController(users, assignments, config, audit, throttle);
+  const security = new AuthSecurityStore(config);
+  const throttle = new LoginThrottle(security);
+  const auth = new AuthController(users, assignments, config, audit, throttle, security);
+  const mfa = new MfaController(users, assignments, config, audit, throttle, security);
   const password = 'Correct-horse-battery1!';
   const stored = await users.create({
     organizationId: 'org-1',
@@ -158,6 +166,7 @@ test('enrollment creates a real factor and login requires a one-time second fact
   const firstStep = await auth.login(
     { email: stored.email, password },
     request(),
+    response(),
   );
   assert.equal(firstStep.mfaRequired, true);
   assert.equal(firstStep.accessToken, undefined);
@@ -165,6 +174,7 @@ test('enrollment creates a real factor and login requires a one-time second fact
   const session = await mfa.verifyLogin(
     { challengeToken: firstStep.challengeToken, code: completed.recoveryCodes[0] },
     request(),
+    response(),
   );
   assert.ok(session.accessToken);
   assert.deepEqual(
@@ -181,6 +191,7 @@ test('enrollment creates a real factor and login requires a one-time second fact
     mfa.verifyLogin(
       { challengeToken: firstStep.challengeToken, code: completed.recoveryCodes[0] },
       request(),
+      response(),
     ),
     /Invalid authenticator or recovery code|Invalid or expired MFA challenge/,
   );

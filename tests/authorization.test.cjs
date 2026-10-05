@@ -14,6 +14,7 @@ const {
   hashPassword,
   passwordPolicyError,
   verifyPassword,
+  InMemoryAuditLogRepository,
 } = require('@faultline/auth');
 const {
   CLUSTER_DIRECTORY,
@@ -272,6 +273,36 @@ test('a tampered, foreign-issued or expired token is refused', () => {
     Date.now() - 3_600_000,
   ).token;
   assert.throws(() => verifyAccessToken(expired, settings), /expired/i);
+});
+
+test('audit records form a verifiable cryptographic chain', async () => {
+  const audit = new InMemoryAuditLogRepository('audit-integrity-secret-at-least-32-bytes', 'test-key');
+  const entry = (action) => ({
+    userId: null,
+    actor: 'security@faultline.test',
+    action,
+    resourceType: 'test',
+    resourceId: null,
+    outcome: 'allowed',
+    ip: null,
+    userAgent: null,
+    metadata: {},
+  });
+  const first = await audit.record(entry('test.first'));
+  const second = await audit.record(entry('test.second'));
+  assert.equal(first.integrity.previousHash, null);
+  assert.equal(second.integrity.previousHash, first.integrity.hash);
+  assert.deepEqual(await audit.verifyIntegrity(), {
+    valid: true,
+    checkedRecords: 2,
+    unsignedRecords: 0,
+    headHash: second.integrity.hash,
+  });
+
+  audit.records[0].actor = 'tampered@faultline.test';
+  const verification = await audit.verifyIntegrity();
+  assert.equal(verification.valid, false);
+  assert.equal(verification.firstInvalidRecordId, first.id);
 });
 
 test('an anonymous caller reaches nothing', async () => {
@@ -854,6 +885,7 @@ test('login issues a token that the guards accept, and refuses everything else',
     assert.equal(ok.status, 200);
     const session = await ok.json();
     assert.ok(session.accessToken);
+    assert.match(ok.headers.get('set-cookie'), /fl_session=.*HttpOnly.*SameSite=Strict/i);
     assert.equal(session.user.role, ROLES.ONSITE_ENGINEER);
     assert.deepEqual(session.user.projectIds, [PROJECT_A]);
     assert.equal(session.user.passwordHash, undefined);
@@ -872,6 +904,11 @@ test('login issues a token that the guards accept, and refuses everything else',
     const me = await call(base, session.accessToken, '/auth/me');
     assert.equal(me.status, 200);
     assert.equal((await me.json()).email, 'ahmed2@faultline.test');
+
+    const cookieMe = await fetch(`${base}/auth/me`, {
+      headers: { Cookie: `fl_session=${encodeURIComponent(session.accessToken)}` },
+    });
+    assert.equal(cookieMe.status, 200, 'the HttpOnly cookie authenticates browser calls');
 
     // Both outcomes are on the record.
     const failures = await audit.list({ action: 'auth.login.failed' });

@@ -15,10 +15,12 @@ const {
 } = require('../apps/api/dist/auth/password-reset.controller');
 const { AuthController, LoginThrottle } = require('../apps/api/dist/auth/auth.controller');
 const { AuthenticationGuard } = require('../apps/api/dist/auth/authentication.guard');
+const { AuthSecurityStore } = require('../apps/api/dist/auth/security-store');
 
 const jwtSecret = 'password-reset-test-jwt-secret-that-is-long-enough';
 const config = {
   applicationName: 'Faultline Test',
+  environment: 'test',
   publicUrl: 'http://localhost:5173',
   auth: {
     jwtSecret,
@@ -35,6 +37,7 @@ const request = () => ({
   method: 'POST',
   url: '/auth/forgot-password',
 });
+const response = () => ({ append() {} });
 
 function resetToken(message) {
   const link = message.text.match(/http:\/\/localhost:5173\/reset-password\?token=([^\s]+)/);
@@ -151,6 +154,7 @@ test('a successful reset revokes old JWTs and the new password can sign in', asy
   const assignments = new InMemoryProjectAssignmentRepository();
   const email = new RecordingEmailSender();
   const audit = { record: async () => undefined };
+  const security = new AuthSecurityStore(config);
   const controller = new PasswordResetController(
     users,
     email,
@@ -164,10 +168,12 @@ test('a successful reset revokes old JWTs and the new password can sign in', asy
     role: ROLES.ADMIN,
     password: 'Original-password1!',
   });
-  const oldToken = issueAccessToken(
+  const oldSession = issueAccessToken(
     { sub: user.id, email: user.email, role: user.role, sv: user.sessionVersion },
     { secret: jwtSecret, issuer: config.auth.issuer, ttlSeconds: 3600 },
-  ).token;
+  );
+  const oldToken = oldSession.token;
+  await security.createSession(oldSession.sessionId, user.id, 3600);
   await controller.forgotPassword({ email: user.email }, request());
   await controller.resetPassword(
     {
@@ -188,18 +194,30 @@ test('a successful reset revokes old JWTs and the new password can sign in', asy
   };
   const reflector = { getAllAndOverride: () => undefined };
   await assert.rejects(
-    new AuthenticationGuard(reflector, users, assignments, config).canActivate(context),
+    new AuthenticationGuard(reflector, users, assignments, config, security).canActivate(context),
     /Invalid or expired credentials/,
   );
 
-  const auth = new AuthController(users, assignments, config, audit, new LoginThrottle());
+  const auth = new AuthController(
+    users,
+    assignments,
+    config,
+    audit,
+    new LoginThrottle(security),
+    security,
+  );
   await assert.rejects(
-    auth.login({ email: user.email, password: 'Original-password1!' }, request()),
+    auth.login(
+      { email: user.email, password: 'Original-password1!' },
+      request(),
+      response(),
+    ),
     /Invalid email or password/,
   );
   const session = await auth.login(
     { email: user.email, password: 'A-new-secure-password2!' },
     request(),
+    response(),
   );
   assert.ok(session.accessToken);
 });

@@ -168,6 +168,11 @@ const usableSharedSecret = (value) =>
   typeof value === 'string' &&
   value.length >= 32 &&
   !/replace-with|change-me|<generated/i.test(value);
+const auditIntegrityKey = usableSharedSecret(
+  existingApiConfiguration.AUDIT_INTEGRITY_KEY,
+)
+  ? existingApiConfiguration.AUDIT_INTEGRITY_KEY
+  : secret();
 const slackTokenEncryptionKey =
   (usableSharedSecret(existingApiConfiguration.SLACK_TOKEN_ENCRYPTION_KEY)
     ? existingApiConfiguration.SLACK_TOKEN_ENCRYPTION_KEY
@@ -183,7 +188,7 @@ const bootstrapAdminPassword = strongPassword();
 const common =
   'NODE_ENV=development\nAPP_VERSION=0.1.0\nHOST=0.0.0.0\nLOG_LEVEL=log\n';
 const files = {
-  'apps/api/.env': `${common}PORT=3000\nDATABASE_URL=${databaseUrl}\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\nAUTH_JWT_SECRET=${authJwtSecret}\nSLACK_TOKEN_ENCRYPTION_KEY=${slackTokenEncryptionKey}\nAUTH_BOOTSTRAP_ADMIN_EMAIL=${bootstrapAdminEmail}\nAUTH_BOOTSTRAP_ADMIN_PASSWORD=${bootstrapAdminPassword}\n`,
+  'apps/api/.env': `${common}PORT=3000\nDATABASE_URL=${databaseUrl}\nREDIS_URL=redis://127.0.0.1:${redisPort}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\nAUTH_JWT_SECRET=${authJwtSecret}\nAUDIT_INTEGRITY_KEY=${auditIntegrityKey}\nAUDIT_INTEGRITY_KEY_ID=primary\nAUDIT_STRICT=true\nSLACK_TOKEN_ENCRYPTION_KEY=${slackTokenEncryptionKey}\nAUTH_BOOTSTRAP_ADMIN_EMAIL=${bootstrapAdminEmail}\nAUTH_BOOTSTRAP_ADMIN_PASSWORD=${bootstrapAdminPassword}\n`,
   'apps/ingestion/.env': `${common}PORT=3001\nFAULTLINE_DEV_AGENT_TOKEN=${token}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\n`,
   'apps/processor/.env': `${common}PORT=3002\nDATABASE_URL=${databaseUrl}\nREDIS_URL=redis://127.0.0.1:${redisPort}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\nLOG_CLASSIFIER_ENABLED=true\n`,
   'apps/storage/.env': `${common}PORT=3003\nDATABASE_URL=${databaseUrl}\nBROKER_URL=nats://127.0.0.1:${natsPort}\nBROKER_CLIENT_ID=faultline\nBROKER_CONSUMER_GROUP=faultline-processors\nTELEMETRY_STORAGE_CONSUMER_GROUP=faultline-telemetry-storage\nCLICKHOUSE_URL=${clickhouseUrl}\nCLICKHOUSE_DATABASE=${infrastructure.CLICKHOUSE_DB || 'faultline'}\nCLICKHOUSE_USERNAME=${infrastructure.CLICKHOUSE_USER}\nCLICKHOUSE_PASSWORD=${infrastructure.CLICKHOUSE_PASSWORD}\n`,
@@ -234,9 +239,25 @@ const bootstrapConfigured =
   !!existingApi.AUTH_BOOTSTRAP_ADMIN_PASSWORD;
 const requiredLocalFields = {
   'apps/api/.env': {
+    BROKER_URL: {
+      value: `nats://127.0.0.1:${natsPort}`,
+      valid: (value) => !!value,
+    },
     AUTH_JWT_SECRET: {
       value: authJwtSecret,
       valid: (value) => typeof value === 'string' && value.length >= 32,
+    },
+    AUDIT_INTEGRITY_KEY: {
+      value: auditIntegrityKey,
+      valid: usableSharedSecret,
+    },
+    AUDIT_INTEGRITY_KEY_ID: {
+      value: 'primary',
+      valid: (value) => typeof value === 'string' && value.length > 0,
+    },
+    AUDIT_STRICT: {
+      value: 'true',
+      valid: (value) => value === 'true' || value === 'false',
     },
     SLACK_TOKEN_ENCRYPTION_KEY: {
       value: slackTokenEncryptionKey,

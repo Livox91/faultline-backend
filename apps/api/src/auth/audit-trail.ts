@@ -14,7 +14,8 @@ import { clientAddress, userAgent, type RequestWithUser } from './context';
 @Injectable()
 export class AuditTrail {
   constructor(
-    @Inject(AUDIT_LOG_REPOSITORY) private readonly repository: AuditLogRepository,
+    @Inject(AUDIT_LOG_REPOSITORY)
+    private readonly repository: AuditLogRepository,
     private readonly logger: ApplicationLogger,
   ) {}
 

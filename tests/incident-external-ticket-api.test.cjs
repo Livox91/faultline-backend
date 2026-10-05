@@ -4,6 +4,7 @@ const test = require('node:test');
 const { Module } = require('@nestjs/common');
 const { APP_GUARD, NestFactory } = require('@nestjs/core');
 const {
+  AUDIT_ACTIONS,
   AUDIT_LOG_REPOSITORY,
   InMemoryAuditLogRepository,
 } = require('@faultline/auth');
@@ -18,9 +19,9 @@ const {
 const {
   IncidentExternalTicketController,
 } = require('../apps/api/dist/incident-external-ticket.controller');
+const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
 const { EVENT_TOPICS, QUEUE } = require('@faultline/queue');
 const { ApplicationLogger } = require('@faultline/platform');
-const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
 
 const incidentId = '11111111-1111-4111-8111-111111111111';
 
@@ -174,7 +175,7 @@ test('Slack ticket endpoint queues manual creation when automatic creation did n
     assert.equal(published[0].topic, EVENT_TOPICS.incidentTicketRequested);
     assert.deepEqual(published[0].message.payload, { incidentId });
     const entries = await app.get(AUDIT_LOG_REPOSITORY).list({
-      action: 'incident.external-ticket.slack.requested',
+      action: AUDIT_ACTIONS.SLACK_TICKET_REQUESTED,
     });
     assert.equal(entries.length, 1);
     assert.equal(entries[0].actor, 'operator@faultline.test');
@@ -212,7 +213,7 @@ test('Slack ticket queue failures are audited as denied attempts', async () => {
     );
     assert.equal(response.status, 503);
     const entries = await app.get(AUDIT_LOG_REPOSITORY).list({
-      action: 'incident.external-ticket.slack.requested',
+      action: AUDIT_ACTIONS.SLACK_TICKET_REQUESTED,
     });
     assert.equal(entries.length, 1);
     assert.equal(entries[0].outcome, 'denied');

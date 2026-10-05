@@ -146,11 +146,11 @@ test('Slack-only configuration does not require Retell credentials', () => {
   assert.equal(value.slack.enabled, true);
 });
 
-test('partial Retell configuration still fails closed', () => {
-  assert.throws(
-    () => loadNotificationConfig({ RETELL_API_KEY: 'retell-test' }),
-    /RETELL_FROM_NUMBER|RETELL_VOICE_AGENT_ID/,
-  );
+test('partial Retell configuration remains observable but delivery fails closed', () => {
+  const value = loadNotificationConfig({ RETELL_API_KEY: 'retell-test' });
+  assert.equal(value.apiKey, 'retell-test');
+  assert.equal(value.fromNumber, undefined);
+  assert.equal(value.voiceAgentId, undefined);
 });
 
 test('Slack channel resolver prefers a service-specific mapping', () => {
@@ -907,7 +907,7 @@ test('Slack thread API failure is contained and remains retryable', async () => 
   assert.equal(calls.posts.length, 0);
 });
 
-test('notification lifecycle creates automatic tickets and accepts manual fallback requests', async () => {
+test('notification lifecycle creates Slack tickets only for incident creation events', async () => {
   const handlers = new Map();
   const queue = {
     async subscribe(topic, value) {
@@ -921,7 +921,7 @@ test('notification lifecycle creates automatic tickets and accepts manual fallba
   const consumer = new NotificationConsumer(
     queue,
     config(),
-    { async handleIncident() {} },
+    { async handleIncident() {}, async handleEndUserLifecycle() {}, async handleTestCall() {}, async handleTestSms() {} },
     {
       async createIncidentTicket(value) {
         ticketCalls.push(value);

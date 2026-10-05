@@ -39,6 +39,7 @@ const {
   AuthorizationGuard,
 } = require('../apps/api/dist/auth/authorization.guard');
 const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
+const { AuthSecurityStore } = require('../apps/api/dist/auth/security-store');
 const {
   EntitlementsGuard,
   PlanEntitlements,
@@ -159,6 +160,7 @@ async function bootWithRealGuards({
       { provide: Reflector, useValue: new Reflector() },
       { provide: require('@faultline/platform').ApplicationLogger, useValue: silentLogger },
       AuditTrail,
+      AuthSecurityStore,
       PlanEntitlements,
       { provide: APP_GUARD, useClass: AuthenticationGuard },
       { provide: APP_GUARD, useClass: AuthorizationGuard },

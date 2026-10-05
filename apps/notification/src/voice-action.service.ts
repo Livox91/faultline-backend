@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { INCIDENT_REPOSITORY, type IncidentRepository } from '@faultline/incidents';
-import { ACKNOWLEDGEMENT_TRANSACTION, INCIDENT_NOTIFICATION_STATE_REPOSITORY, IDEMPOTENCY_STORE, INCIDENT_ACKNOWLEDGEMENTS, NOTIFICATION_ATTEMPTS, NOTIFICATION_AUDIT_REPOSITORY,
+import { ACKNOWLEDGEMENT_TRANSACTION, INCIDENT_COMMUNICATION_REPOSITORY, INCIDENT_NOTIFICATION_STATE_REPOSITORY, IDEMPOTENCY_STORE, INCIDENT_ACKNOWLEDGEMENTS, NOTIFICATION_ATTEMPTS, NOTIFICATION_AUDIT_REPOSITORY,
   type AcknowledgementTransaction,
-  type IncidentNotificationStateRepository, type IdempotencyStore, type IncidentAcknowledgementRepository, type NotificationAttempt,
+  type IncidentCommunicationRepository, type IncidentNotificationStateRepository, type IdempotencyStore, type IncidentAcknowledgementRepository, type NotificationAttempt,
   type NotificationAttemptRepository, type NotificationAuditRepository, type VoiceActionRequest } from '@faultline/notifications';
 import { EVENT_TOPICS, QUEUE, type Queue } from '@faultline/queue';
+import { NotificationService } from './notification.service';
 
 export interface VoiceActionResult { outcome: 'ACKNOWLEDGED'|'DECLINED'|'UNKNOWN'|'ALREADY_ACKNOWLEDGED'|'NO_LONGER_REQUIRED'; message: string; processed: boolean; }
 @Injectable()
@@ -17,7 +18,15 @@ export class VoiceActionService {
     @Inject(NOTIFICATION_AUDIT_REPOSITORY) private readonly audit: NotificationAuditRepository,
     @Inject(IDEMPOTENCY_STORE) private readonly idempotency: IdempotencyStore,
     @Inject(QUEUE) private readonly queue:Queue,
+    @Inject(INCIDENT_COMMUNICATION_REPOSITORY) private readonly communications:IncidentCommunicationRepository,
+    private readonly notifications:NotificationService,
     @Optional() @Inject(ACKNOWLEDGEMENT_TRANSACTION)private readonly acknowledgementTransaction?:AcknowledgementTransaction) {}
+
+  async processProviderResponse(providerCallId:string,action:VoiceActionRequest['action'],timestamp:string):Promise<VoiceActionResult|undefined>{
+    const attempt=await this.attempts.findByProviderRequestId(providerCallId);
+    if(!attempt||attempt.channel!=='VOICE')return undefined;
+    return this.process({incidentId:attempt.incidentId,notificationAttemptId:attempt.id,recipientId:attempt.recipientId,providerCallId,action,timestamp});
+  }
 
   async process(action: VoiceActionRequest): Promise<VoiceActionResult> {
     const incident = await this.incidents.getIncident(action.incidentId);
@@ -46,19 +55,24 @@ export class VoiceActionService {
       ? { outcome:'ALREADY_ACKNOWLEDGED',message:'This acknowledgement was already processed.',processed:false }
       : { outcome:'DECLINED',message:'This decline was already processed.',processed:false };
     const now=new Date().toISOString();
+    const communication=await this.communications.findByProviderRequestId(action.providerCallId);
     if (action.action === 'ACKNOWLEDGE_INCIDENT') {
       const acknowledgement={ incidentId:incident.id,acknowledgedBy:attempt.recipientId,acknowledgedAt:now,notificationAttemptId:attempt.id,providerCallId:action.providerCallId,channel:'VOICE' as const };
       const stopped={...state,status:'ACKNOWLEDGED' as const,completedAt:now,updatedAt:now};
       const completed={...attempt,status:'ACKNOWLEDGED' as const,completedAt:now};
+      const acknowledgedCommunication=communication?{...communication,status:'ACKNOWLEDGED' as const,sentAt:communication.sentAt??now}:undefined;
       const events=[{id:randomUUID(),incidentId:incident.id,type:'INCIDENT_ACKNOWLEDGED' as const,timestamp:now,attemptId:attempt.id,contactId:attempt.recipientId,details:{providerCallId:action.providerCallId,action:action.action}},{id:randomUUID(),incidentId:incident.id,type:'NOTIFICATION_STOPPED' as const,timestamp:now,attemptId:attempt.id,contactId:attempt.recipientId,details:{reason:'ACKNOWLEDGED'}}];
-      if(this.acknowledgementTransaction)await this.acknowledgementTransaction.acknowledge({acknowledgement,state:stopped,attempt:completed,events});
-      else{await this.acknowledgements.save(acknowledgement);await this.states.save(stopped);await this.attempts.save(completed);for(const event of events)await this.audit.append(event);}
+      if(this.acknowledgementTransaction)await this.acknowledgementTransaction.acknowledge({acknowledgement,state:stopped,attempt:completed,communication:acknowledgedCommunication,events});
+      else{await this.acknowledgements.save(acknowledgement);await this.states.save(stopped);await this.attempts.save(completed);if(acknowledgedCommunication)await this.communications.save(acknowledgedCommunication);for(const event of events)await this.audit.append(event);}
       await this.queue.publish(EVENT_TOPICS.incidentsLifecycle,{id:`${incident.id}:INCIDENT_ACKNOWLEDGED:${now}`,payload:{id:`${incident.id}:INCIDENT_ACKNOWLEDGED:${now}`,type:'INCIDENT_ACKNOWLEDGED',incident,state:'ACKNOWLEDGED',occurredAt:now,changedFields:['acknowledgement']}}).catch(()=>undefined);
       return { outcome:'ACKNOWLEDGED',message:'The incident has been acknowledged. Further notification will stop.',processed:true };
     }
     const declined={ ...attempt,status:'DECLINED' as const,completedAt:now };
-    await this.attempts.save(declined); await this.event(incident.id,'INCIDENT_DECLINED',attempt,{ providerCallId:action.providerCallId,action:action.action });
-    return { outcome:'DECLINED',message:'Your response was recorded. Other assigned engineers have already been notified.',processed:true };
+    await this.attempts.save(declined);
+    if(communication)await this.communications.save({...communication,status:'DECLINED'});
+    await this.event(incident.id,'INCIDENT_DECLINED',attempt,{ providerCallId:action.providerCallId,action:action.action });
+    await this.notifications.fallbackToAdmin(incident.id,'SRE_DECLINED');
+    return { outcome:'DECLINED',message:'Your response was recorded. The primary administrator is being notified.',processed:true };
   }
   private rejected(action:VoiceActionRequest,attempt:NotificationAttempt,reason:string){return this.event(action.incidentId,'ACKNOWLEDGEMENT_REJECTED',attempt,{reason,action:action.action,providerCallId:action.providerCallId});}
   private event(incidentId:string,type:'INCIDENT_ACKNOWLEDGED'|'INCIDENT_DECLINED'|'ACKNOWLEDGEMENT_REJECTED'|'NOTIFICATION_STOPPED',attempt:NotificationAttempt,details:Record<string,unknown>){return this.audit.append({id:randomUUID(),incidentId,type,timestamp:new Date().toISOString(),attemptId:attempt.id,contactId:attempt.recipientId,details});}

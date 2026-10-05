@@ -62,6 +62,7 @@ import {
   type RequestWithUser,
 } from './context';
 import { CLUSTER_DIRECTORY } from '../clusters.controller';
+import { AuthSecurityStore } from './security-store';
 import { ENGINEER_CONTACT_RULE, e164, isCallable } from '../engineer-contact';
 
 /** Never exposes a password hash, whoever is asking. */
@@ -116,6 +117,7 @@ export class AdminUsersController {
     @Inject(EMAIL_SENDER) private readonly email: EmailSender,
     @Inject(APPLICATION_CONFIG) private readonly config: ApplicationConfig,
     private readonly audit: AuditTrail,
+    private readonly security: AuthSecurityStore,
   ) {}
 
   @Get()
@@ -313,6 +315,9 @@ export class AdminUsersController {
       ...(password !== undefined ? { password } : {}),
       ...(body?.mfaEnabled !== undefined ? { mfaEnabled: false } : {}),
     };
+    if (password !== undefined || nextStatus === 'disabled' || body?.mfaEnabled === false)
+      await this.security.revokeAllSessions(id);
+
     const updated = await this.users.updateInOrganization(
       id,
       actor.organizationId,
@@ -377,6 +382,29 @@ export class AdminUsersController {
       updated,
       assignments.map((a) => a.projectId),
     );
+  }
+
+  /** Immediately signs a potentially compromised account out on every device. */
+  @Post(':id/revoke-sessions')
+  @HttpCode(204)
+  @RequirePermission(PERMISSIONS.USER_MANAGE)
+  @Header('Cache-Control', 'no-store')
+  async revokeSessions(
+    @Param('id') id: string,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: RequestWithUser,
+  ): Promise<void> {
+    const user = await this.users.findByIdInOrganization(id, actor.organizationId);
+    if (!user) throw new NotFoundException('User not found');
+    await this.security.revokeAllSessions(id);
+    await this.audit.record({
+      user: actor,
+      action: AUDIT_ACTIONS.SESSIONS_REVOKED,
+      resourceType: 'user',
+      resourceId: id,
+      request,
+      metadata: { reason: 'suspected_compromise' },
+    });
   }
 
   @Put(':id/projects/:projectId')

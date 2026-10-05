@@ -536,6 +536,11 @@ test('the emailed credentials sign in, and the account is then locked to the pas
       (await call(base, token, '/auth/logout', { method: 'POST' })).status,
       204,
     );
+    assert.equal(
+      (await call(base, token, '/auth/me')).status,
+      401,
+      'logout revokes the server-side session immediately',
+    );
   } finally {
     await app.close();
   }
@@ -606,13 +611,13 @@ test('changing the password lifts the lock and retires the temporary credential'
       'and no longer signs in',
     );
 
-    // Step 10: normal Admin access, on the refreshed token and the original one alike.
+    // Step 10: normal Admin access continues only on the replacement session.
     assert.equal((await call(base, refreshed.accessToken, '/projects')).status, 200);
     assert.equal((await call(base, refreshed.accessToken, '/admin/users')).status, 200);
     assert.equal(
       (await call(base, token, '/projects')).status,
-      200,
-      'the lock is read from storage, so the pre-change token is freed too',
+      401,
+      'password changes revoke the pre-change session',
     );
   } finally {
     await app.close();

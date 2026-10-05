@@ -317,10 +317,5 @@ The real `StripeGateway` is exercised against signatures produced by Stripe's ow
 3. **The webhook is the only provisioning path.** If webhooks are misconfigured, nobody
    is provisioned — `npm run subscriptions:pending` will show nothing, because without
    the webhook there is no subscription row either. Verify the endpoint after deploying.
-4. **Tokens are not revocable before expiry** (unchanged from the RBAC work). Changing a
-   password does not invalidate tokens already issued to that user; the confinement lifts
-   for them too, which is correct, but a stolen token remains valid for its TTL.
-5. **Login throttling is per-process**, and the password-change endpoint is throttled per
-   user id. A scaled-out deployment wants a shared limiter at the edge.
-6. **`RecordingEmailSender` keeps messages in memory** for the life of the process when
+4. **`RecordingEmailSender` keeps messages in memory** for the life of the process when
    `EMAIL_TRANSPORT=log`. Development only, and production configuration forbids it.

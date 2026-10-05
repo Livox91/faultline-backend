@@ -16,6 +16,7 @@ import { sanitizeSensitiveContent } from '@faultline/platform';
 
 export * from './analytics';
 export * from './system-summary';
+export * from './system-summary-pdf-exporter';
 export * from './exporter';
 export * from './pdf-exporter';
 

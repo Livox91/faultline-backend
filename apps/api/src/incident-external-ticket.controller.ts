@@ -55,8 +55,10 @@ export class IncidentExternalTicketController {
   @Header('Cache-Control', 'no-store')
   async getSlackTicket(
     @Param('incidentId', new ParseUUIDPipe()) incidentId: string,
+    @CurrentUser() actor: AuthenticatedUser,
   ): Promise<{ ticket: SlackTicketView | null }> {
-    if (!(await this.incidents.getIncident(incidentId)))
+    const incident = await this.incidents.getIncident(incidentId);
+    if (!incident || !hasProjectAccess(actor, incident.clusterId))
       throw new NotFoundException('Incident not found');
     const ticket = await this.tickets.findByIncidentAndProvider(
       incidentId,
@@ -98,7 +100,7 @@ export class IncidentExternalTicketController {
     } catch {
       await this.audit.record({
         user: actor,
-        action: AUDIT_ACTIONS.INCIDENT_SLACK_TICKET_REQUESTED,
+        action: AUDIT_ACTIONS.SLACK_TICKET_REQUESTED,
         resourceType: 'incident',
         resourceId: incidentId,
         outcome: 'denied',
@@ -114,7 +116,7 @@ export class IncidentExternalTicketController {
     }
     await this.audit.record({
       user: actor,
-      action: AUDIT_ACTIONS.INCIDENT_SLACK_TICKET_REQUESTED,
+      action: AUDIT_ACTIONS.SLACK_TICKET_REQUESTED,
       resourceType: 'incident',
       resourceId: incidentId,
       request,

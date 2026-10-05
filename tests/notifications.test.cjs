@@ -8,7 +8,7 @@ const { ApplicationLogger } = require('@faultline/platform');
 const { ClusterRecipientResolver } = require('../apps/notification/dist/cluster-recipient.resolver.js');
 const { IncidentMessageBuilder } = require('../apps/notification/dist/message-builder.js');
 const { NotificationService } = require('../apps/notification/dist/notification.service.js');
-const { RetellCommunicationProvider } = require('../apps/notification/dist/retell.provider.js');
+const { RetellCommunicationProvider, mapRetellStatus } = require('../apps/notification/dist/retell.provider.js');
 const { RetellWebhookController } = require('../apps/notification/dist/webhook.controller.js');
 const { VoiceActionController } = require('../apps/notification/dist/voice-action.controller.js');
 const { VoiceActionService } = require('../apps/notification/dist/voice-action.service.js');
@@ -54,6 +54,8 @@ function contact(id, userId, overrides = {}) {
 }
 
 async function harness(options = {}) {
+  const incidents = new InMemoryIncidentRepository();
+  await incidents.createIncident(incident());
   const users = new A.InMemoryUserRepository();
   const assignments = new N.InMemoryClusterSreAssignmentRepository();
   const contacts = new N.InMemoryContactRepository();
@@ -71,6 +73,7 @@ async function harness(options = {}) {
   const attempts = new N.InMemoryNotificationAttemptRepository();
   const states = new N.InMemoryIncidentNotificationStateRepository();
   const audit = new N.InMemoryNotificationAuditRepository();
+  const communications = new N.InMemoryIncidentCommunicationRepository();
   const calls = [];
   const provider = {
     name: 'mock',
@@ -96,8 +99,11 @@ async function harness(options = {}) {
     new N.InMemoryIdempotencyStore(),
     new IncidentMessageBuilder(),
     new ApplicationLogger('notification', 'fatal'),
+    communications,
+    incidents,
+    { async get(id) { return id === 'production' ? { id, name: 'Production EU' } : undefined; } },
   );
-  return { service, users, assignments, contacts, admin, engineers, attempts, states, audit, calls };
+  return { service, incidents, users, assignments, contacts, admin, engineers, attempts, states, audit, communications, calls };
 }
 
 test('contact creation normalizes E.164 and user lookup is organization scoped', async () => {
@@ -117,6 +123,13 @@ test('assigned SRE is contacted immediately on every enabled channel', async () 
   const state = await h.states.get('inc-1');
   assert.deepEqual(state.recipientIds, ['sre-contact-0']);
   assert.equal(state.fallbackUsed, false);
+  const communications = await h.communications.listForIncident('inc-1');
+  assert.equal(communications.length, 2);
+  const voice = communications.find((value) => value.channel === 'VOICE');
+  assert.equal(voice.status, 'PENDING');
+  assert.equal(voice.providerRequestId, 'call-1');
+  assert.equal(h.calls.find((value) => value.channel === 'VOICE').input.context.cluster_name, 'Production EU');
+  assert.equal(h.calls.find((value) => value.channel === 'VOICE').input.context.incident_status, 'ACTIVE');
 });
 
 test('all assigned SREs are contacted in one dispatch pass', async () => {
@@ -154,13 +167,15 @@ test('high incidents remain disabled unless the high-severity switch is enabled'
   assert.equal(h.calls.length, 0);
 });
 
-test('provider failure is recorded without delayed escalation or retry', async () => {
+test('provider request failure is recorded and immediately falls back to admin', async () => {
   const h = await harness({ contactOverrides: { smsEnabled: false }, provider: { async startVoiceCall() { throw new Error('offline'); } } });
   await h.service.handleIncident(incident(), 'org');
   const attempts = await h.attempts.listForIncident('inc-1');
-  assert.equal(attempts.length, 1);
-  assert.equal(attempts[0].status, 'FAILED');
-  assert.equal(attempts[0].failureReason, 'offline');
+  const sreAttempt = attempts.find((value) => value.recipientSource === 'ASSIGNED_SRE');
+  assert.equal(sreAttempt.status, 'FAILED');
+  assert.equal(sreAttempt.failureReason, 'offline');
+  assert.ok(attempts.some((value) => value.recipientSource === 'ADMIN_FALLBACK'));
+  assert.equal((await h.communications.findByDedupeKey(`direct:inc-1:sre-contact-0:VOICE`)).status, 'FAILED');
   assert.ok((await h.audit.list('inc-1')).some((value) => value.type === 'CALL_FAILED'));
 });
 
@@ -170,7 +185,18 @@ test('provider callbacks remain idempotent and preserve attempt history', async 
   await h.service.processProviderEvent({ requestId: 'call-1', status: 'ANSWERED' });
   await h.service.processProviderEvent({ requestId: 'call-1', status: 'ANSWERED' });
   assert.equal((await h.attempts.listForIncident('inc-1'))[0].status, 'ANSWERED');
+  assert.equal((await h.communications.listForIncident('inc-1'))[0].status, 'ANSWERED');
   assert.equal((await h.audit.list('inc-1')).filter((value) => value.type === 'VOICE_CALL_ANSWERED').length, 1);
+});
+
+test('failed provider callback falls back to admin once and preserves the final outcome', async () => {
+  const h = await harness({ contactOverrides: { smsEnabled: false } });
+  await h.service.handleIncident(incident(), 'org');
+  await h.service.processProviderEvent({ requestId: 'call-1', status: 'NO_ANSWER' });
+  await h.service.processProviderEvent({ requestId: 'call-1', status: 'NO_ANSWER' });
+  assert.equal((await h.communications.findByProviderRequestId('call-1')).status, 'NO_ANSWER');
+  assert.equal(h.calls.filter((call) => call.input.recipient.id === 'admin-contact').length, 2);
+  assert.equal((await h.audit.list('inc-1')).filter((value) => value.type === 'ADMIN_FALLBACK_USED').length, 1);
 });
 
 test('resolved incidents close direct notification state without new delivery', async () => {
@@ -183,37 +209,67 @@ test('resolved incidents close direct notification state without new delivery', 
 
 test('Retell request and signed webhook use provider boundary', async () => {
   const config = { apiKey: 'secret', fromNumber: '+15550000000', voiceAgentId: 'agent' };
-  const provider = new RetellCommunicationProvider(config);
-  const original = global.fetch;
-  global.fetch = async () => new Response(JSON.stringify({ call_id: 'retell-call' }), { status: 200 });
-  try {
-    assert.equal((await provider.startVoiceCall({ recipient: { id: 'p', name: 'P', phoneNumber: '+15550000001', audience: 'ENGINEERING' }, message: 'Alert', context: {}, metadata: {} })).requestId, 'retell-call');
-    let received;
-    const controller = new RetellWebhookController(provider, { async processProviderEvent(event) { received = event; } });
-    const body = { event: 'call_ended', call: { call_id: 'retell-call', call_status: 'ended', disconnection_reason: 'dial_no_answer' } };
-    const rawBody = Buffer.from(JSON.stringify(body));
-    await controller.receive({ rawBody, body }, await sign(rawBody.toString(), 'secret'));
-    assert.equal(received.status, 'NO_ANSWER');
-  } finally {
-    global.fetch = original;
-  }
+  const requests = [];
+  const provider = new RetellCommunicationProvider(config, {
+    call: {
+      async createPhoneCall(body) {
+        requests.push(body);
+        return { call_id: 'retell-call', call_status: 'registered' };
+      },
+      async retrieve() {
+        return { call_id: 'retell-call', call_status: 'ongoing' };
+      },
+    },
+  });
+  const input = {
+    recipient: { id: 'p', name: 'P', phoneNumber: '+15550000001', audience: 'ENGINEERING' },
+    message: 'Critical alert',
+    context: { cluster_name: 'Production EU', incident_status: 'ACTIVE' },
+    metadata: { incidentId: 'inc-1' },
+  };
+  assert.equal((await provider.startVoiceCall(input)).requestId, 'retell-call');
+  assert.deepEqual(requests[0], {
+    from_number: '+15550000000',
+    to_number: '+15550000001',
+    override_agent_id: 'agent',
+    metadata: { incidentId: 'inc-1' },
+    retell_llm_dynamic_variables: {
+      cluster_name: 'Production EU',
+      incident_status: 'ACTIVE',
+      notification_message: 'Critical alert',
+      voice_script: 'This is the Faultline incident notification system. Critical alert Would you like to acknowledge this incident?',
+      caller_identity: 'Faultline incident notification system',
+      acknowledgement_prompt: 'Would you like to acknowledge this incident?',
+      acknowledgement_confirmation: 'The incident has been acknowledged. Further notification will stop.',
+      allowed_actions: 'ACKNOWLEDGE_INCIDENT,DECLINE_INCIDENT,UNKNOWN',
+    },
+  });
+  assert.equal((await provider.getCallStatus('retell-call')).status, 'IN_PROGRESS');
+  let received;
+  const controller = new RetellWebhookController(provider, { async processProviderEvent(event) { received = event; } }, { async processProviderResponse() {} });
+  const body = { event: 'call_ended', call: { call_id: 'retell-call', call_status: 'ended', disconnection_reason: 'dial_no_answer' } };
+  const rawBody = Buffer.from(JSON.stringify(body));
+  await controller.receive({ rawBody, body }, await sign(rawBody.toString(), 'secret'));
+  assert.equal(received.status, 'NO_ANSWER');
+  assert.equal(mapRetellStatus('ended', 'registered_call_timeout'), 'FAILED');
+  assert.equal(mapRetellStatus('ended', 'user_declined'), 'DECLINED');
 });
 
 async function voiceHarness() {
   const h = await harness({ contactOverrides: { smsEnabled: false } });
-  const incidents = new InMemoryIncidentRepository();
   const acknowledgements = new N.InMemoryIncidentAcknowledgementRepository();
-  await incidents.createIncident(incident());
   await h.service.handleIncident(incident(), 'org');
   const attempt = (await h.attempts.listForIncident('inc-1'))[0];
   const actions = new VoiceActionService(
-    incidents,
+    h.incidents,
     h.attempts,
     h.states,
     acknowledgements,
     h.audit,
     new N.InMemoryIdempotencyStore(),
     { async publish() {}, async subscribe() { return { async close() {} }; }, async close() {} },
+    h.communications,
+    h.service,
   );
   const request = {
     incidentId: 'inc-1',
@@ -223,7 +279,7 @@ async function voiceHarness() {
     providerCallId: attempt.providerRequestId,
     timestamp: new Date().toISOString(),
   };
-  return { ...h, incidents, acknowledgements, actions, request };
+  return { ...h, acknowledgements, actions, request };
 }
 
 test('voice acknowledgement preserves webhook validation and stops notification state', async () => {
@@ -232,14 +288,55 @@ test('voice acknowledgement preserves webhook validation and stops notification 
   assert.equal(result.outcome, 'ACKNOWLEDGED');
   assert.equal((await h.states.get('inc-1')).status, 'ACKNOWLEDGED');
   assert.equal((await h.attempts.get(h.request.notificationAttemptId)).status, 'ACKNOWLEDGED');
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'ACKNOWLEDGED');
   assert.equal((await h.acknowledgements.get('inc-1')).acknowledgedBy, 'sre-contact-0');
 });
 
-test('decline records the response without starting another delivery', async () => {
+test('decline records the response and immediately contacts the primary admin', async () => {
   const h = await voiceHarness();
   const result = await h.actions.process({ ...h.request, action: 'DECLINE_INCIDENT' });
   assert.equal(result.outcome, 'DECLINED');
-  assert.equal(h.calls.length, 1);
+  assert.ok(h.calls.some((call) => call.input.recipient.id === 'admin-contact'));
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'DECLINED');
+  assert.equal((await h.states.get('inc-1')).status, 'ACTIVE');
+});
+
+test('signed Retell end-of-call transcript acknowledges the incident', async () => {
+  const h = await voiceHarness();
+  const provider = new RetellCommunicationProvider({ apiKey: 'secret', fromNumber: '+15550000000', voiceAgentId: 'agent' });
+  const controller = new RetellWebhookController(provider, h.service, h.actions);
+  const body = { event: 'call_ended', call: { call_id: h.request.providerCallId, call_status: 'ended', transcript_object: [
+    { role: 'agent', content: 'Will you acknowledge this incident?' },
+    { role: 'user', content: 'Yes, I acknowledge the incident.' },
+  ] } };
+  const rawBody = Buffer.from(JSON.stringify(body));
+  await controller.receive({ rawBody, body }, await sign(rawBody.toString(), 'secret'));
+  assert.equal((await h.states.get('inc-1')).status, 'ACKNOWLEDGED');
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'ACKNOWLEDGED');
+});
+
+test('signed Retell tool decision declines and starts the admin fallback', async () => {
+  const h = await voiceHarness();
+  const provider = new RetellCommunicationProvider({ apiKey: 'secret', fromNumber: '+15550000000', voiceAgentId: 'agent' });
+  const controller = new RetellWebhookController(provider, h.service, h.actions);
+  const body = { event: 'call_analyzed', call: { call_id: h.request.providerCallId, call_status: 'ended', transcript_with_tool_calls: [
+    { role: 'tool', name: 'record_incident_response', arguments: JSON.stringify({ action: 'DECLINE_INCIDENT' }) },
+  ] } };
+  const rawBody = Buffer.from(JSON.stringify(body));
+  await controller.receive({ rawBody, body }, await sign(rawBody.toString(), 'secret'));
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'DECLINED');
+  assert.ok(h.calls.some((call) => call.input.recipient.id === 'admin-contact'));
+});
+
+test('Retell webhook rejects an invalid signature before processing an event', async () => {
+  const h = await voiceHarness();
+  const provider = new RetellCommunicationProvider({ apiKey: 'secret', fromNumber: '+15550000000', voiceAgentId: 'agent' });
+  const controller = new RetellWebhookController(provider, h.service, h.actions);
+  const body = { event: 'call_ended', call: { call_id: h.request.providerCallId, call_status: 'ended' } };
+  await assert.rejects(
+    () => controller.receive({ rawBody: Buffer.from(JSON.stringify(body)), body }, 'invalid'),
+    /Invalid webhook signature/,
+  );
   assert.equal((await h.states.get('inc-1')).status, 'ACTIVE');
 });
 
@@ -250,6 +347,15 @@ test('duplicate voice acknowledgement is side-effect free', async () => {
   const duplicate = await h.actions.process(h.request);
   assert.equal(duplicate.processed, false);
   assert.equal((await h.audit.list('inc-1')).length, before);
+});
+
+test('late failure events cannot overwrite an acknowledged call or start fallback', async () => {
+  const h = await voiceHarness();
+  await h.actions.process(h.request);
+  await h.service.processProviderEvent({ requestId: h.request.providerCallId, status: 'FAILED' });
+  assert.equal((await h.attempts.get(h.request.notificationAttemptId)).status, 'ACKNOWLEDGED');
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'ACKNOWLEDGED');
+  assert.equal(h.calls.filter((call) => call.input.recipient.id === 'admin-contact').length, 0);
 });
 
 test('voice action endpoint rejects invalid provider authentication', async () => {
@@ -264,4 +370,35 @@ test('message builder keeps engineering and end-user detail separated', () => {
   const builder = new IncidentMessageBuilder();
   assert.match(builder.build(incident(), 'ENGINEERING'), /Critical incident/);
   assert.doesNotMatch(builder.build(incident(), 'END_USER'), /container|namespace|Kubernetes/i);
+});
+
+test('Admin test call uses the normal Retell tracking path and is idempotent', async () => {
+  const h = await harness({ contactOverrides: { smsEnabled: false } });
+  await h.service.handleTestCall({ requestId: 'test-request-1', organizationId: 'org', phoneNumber: '+15559876543' });
+  await h.service.handleTestCall({ requestId: 'test-request-1', organizationId: 'org', phoneNumber: '+15559876543' });
+  const testCalls = h.calls.filter((call) => call.input.metadata.testCall === 'true');
+  assert.equal(testCalls.length, 1);
+  assert.equal(testCalls[0].input.recipient.id, 'test-recipient:test-request-1');
+  assert.equal(testCalls[0].input.recipient.phoneNumber, '+15559876543');
+  const recent = await h.communications.listRecent('org', 10);
+  const communication = recent.find((item) => item.communicationType === 'TEST');
+  assert.equal(communication.incidentId, 'test-call:test-request-1');
+  assert.equal(communication.status, 'PENDING');
+  assert.equal(communication.maskedPhoneNumber.endsWith('6543'), true);
+  assert.doesNotMatch(JSON.stringify(communication),/15559876543/);
+});
+
+test('Retell connection check masks the outbound number and never returns credentials', async () => {
+  const provider = new RetellCommunicationProvider(
+    { apiKey: 'super-secret', fromNumber: '+15551234567', voiceAgentId: 'agent', smsAgentId: 'sms' },
+    {
+      call: { async createPhoneCall() {}, async retrieve() {} },
+      agent: { async retrieve() { return { agent_id: 'agent' }; } },
+      phoneNumber: { async retrieve() { return { phone_number: '+15551234567' }; } },
+    },
+  );
+  const result = await provider.checkConnection();
+  assert.equal(result.connected, true);
+  assert.equal(result.maskedFromNumber.endsWith('4567'), true);
+  assert.doesNotMatch(JSON.stringify(result), /super-secret|15551234567/);
 });
