@@ -106,7 +106,7 @@ test('direct notification migration compares retained text incident ids safely',
 
 test('project assignments enforce tenant ownership in PostgreSQL', () => {
   const migration = read(
-    'packages/database/migrations/0020_project_assignment_organization_guard.sql',
+    'packages/database/migrations/0025_project_assignment_organization_guard.sql',
   );
   assert.match(migration, /BEFORE INSERT OR UPDATE[\s\S]*ON project_users/);
   assert.match(
