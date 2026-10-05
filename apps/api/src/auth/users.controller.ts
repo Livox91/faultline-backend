@@ -24,10 +24,7 @@ import {
   USER_REPOSITORY,
   parseRole,
   permissionsFor,
-<<<<<<< HEAD
-=======
   hasProjectAccess,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   type AuthenticatedUser,
   type ProjectAssignmentRepository,
   type UserChanges,
@@ -44,6 +41,7 @@ import {
   type RequestWithUser,
 } from './context';
 import { CLUSTER_DIRECTORY } from '../clusters.controller';
+import { AuthSecurityStore } from './security-store';
 
 /** Never exposes a password hash, whoever is asking. */
 const present = (user: UserRecord, projectIds: readonly string[]) => ({
@@ -54,13 +52,7 @@ const present = (user: UserRecord, projectIds: readonly string[]) => ({
   status: user.status,
   mfaEnabled: user.mfaEnabled,
   permissions: permissionsFor(user.role),
-<<<<<<< HEAD
-  // An Admin reaches every project, so listing projects against one would misrepresent
-  // their access as a finite set. Null says "not scoped by assignment".
-  projectIds: user.role === ROLES.ADMIN ? null : projectIds,
-=======
   projectIds,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   external: !!user.externalSubject,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
@@ -99,35 +91,25 @@ export class AdminUsersController {
     private readonly assignments: ProjectAssignmentRepository,
     @Inject(CLUSTER_DIRECTORY) private readonly projects: ClusterDirectory,
     private readonly audit: AuditTrail,
+    private readonly security: AuthSecurityStore,
   ) {}
 
   @Get()
   @RequirePermission(PERMISSIONS.USER_VIEW)
   @Header('Cache-Control', 'no-store')
-<<<<<<< HEAD
-  async list() {
-=======
   async list(@CurrentUser() actor: AuthenticatedUser) {
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     const users = await this.users.list();
     const assignments = await this.assignments.listForUsers(
       users.map((user) => user.id),
     );
-<<<<<<< HEAD
-=======
     const visibleProjects = new Set(actor.assignments.map((a) => a.projectId));
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     return {
       items: users.map((user) =>
         present(
           user,
-<<<<<<< HEAD
-          (assignments.get(user.id) ?? []).map((a) => a.projectId),
-=======
           (assignments.get(user.id) ?? [])
             .map((a) => a.projectId)
             .filter((id) => visibleProjects.has(id)),
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
         ),
       ),
       count: users.length,
@@ -153,10 +135,7 @@ export class AdminUsersController {
     let created: UserRecord;
     try {
       created = await this.users.create({
-<<<<<<< HEAD
-=======
         organizationId: actor.organizationId,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
         email,
         name,
         role,
@@ -229,6 +208,9 @@ export class AdminUsersController {
         ? { mfaEnabled: body.mfaEnabled === true }
         : {}),
     };
+    if (password !== undefined || nextStatus === 'disabled')
+      await this.security.revokeAllSessions(id);
+
     const updated = await this.users.update(id, changes);
     if (!updated) throw new NotFoundException('User not found');
 
@@ -252,18 +234,37 @@ export class AdminUsersController {
         metadata: { from: existing.role, to: role },
       });
 
-<<<<<<< HEAD
-    const assignments = await this.assignments.listForUser(id);
-=======
     const visibleProjects = new Set(actor.assignments.map((a) => a.projectId));
     const assignments = (await this.assignments.listForUser(id)).filter((a) =>
       visibleProjects.has(a.projectId),
     );
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     return present(
       updated,
       assignments.map((a) => a.projectId),
     );
+  }
+
+  /** Immediately signs a potentially compromised account out on every device. */
+  @Post(':id/revoke-sessions')
+  @HttpCode(204)
+  @RequirePermission(PERMISSIONS.USER_MANAGE)
+  @Header('Cache-Control', 'no-store')
+  async revokeSessions(
+    @Param('id') id: string,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: RequestWithUser,
+  ): Promise<void> {
+    const user = await this.users.findById(id);
+    if (!user) throw new NotFoundException('User not found');
+    await this.security.revokeAllSessions(id);
+    await this.audit.record({
+      user: actor,
+      action: AUDIT_ACTIONS.SESSIONS_REVOKED,
+      resourceType: 'user',
+      resourceId: id,
+      request,
+      metadata: { reason: 'suspected_compromise' },
+    });
   }
 
   @Put(':id/projects/:projectId')
@@ -278,11 +279,8 @@ export class AdminUsersController {
   ) {
     const user = await this.users.findById(id);
     if (!user) throw new NotFoundException('User not found');
-<<<<<<< HEAD
-=======
     if (!hasProjectAccess(actor, projectId))
       throw new NotFoundException('Project not found');
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     if (!(await this.projects.get(projectId)))
       throw new NotFoundException('Project not found');
 
@@ -319,11 +317,8 @@ export class AdminUsersController {
     @CurrentUser() actor: AuthenticatedUser,
     @Req() request: RequestWithUser,
   ): Promise<void> {
-<<<<<<< HEAD
-=======
     if (!hasProjectAccess(actor, projectId))
       throw new NotFoundException('Assignment not found');
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     const removed = await this.assignments.remove(id, projectId);
     if (!removed) throw new NotFoundException('Assignment not found');
     await this.audit.record({
@@ -348,11 +343,8 @@ export class AdminUsersController {
     );
     const assigned: string[] = [];
     for (const projectId of ids) {
-<<<<<<< HEAD
-=======
       if (!hasProjectAccess(actor, projectId))
         throw new NotFoundException(`Project not found: ${projectId}`);
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       if (!(await this.projects.get(projectId)))
         throw new NotFoundException(`Project not found: ${projectId}`);
       await this.assignments.assign(userId, projectId, actor.id, []);

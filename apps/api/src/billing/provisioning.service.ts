@@ -1,8 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-<<<<<<< HEAD
-=======
 import { randomUUID } from 'node:crypto';
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 import {
   APPLICATION_CONFIG,
   ApplicationLogger,
@@ -152,10 +149,7 @@ export class SubscriptionProvisioningService {
     let created: UserRecord;
     try {
       created = await this.users.create({
-<<<<<<< HEAD
-=======
         organizationId: randomUUID(),
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
         email: payment.email,
         username,
         name: payment.fullName?.trim() || payment.email.split('@')[0]!,

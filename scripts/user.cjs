@@ -20,6 +20,7 @@ const { readFileSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { Client } = require('pg');
 const { hashPassword, parseRole, ROLES } = require('@faultline/auth');
+const { revokeAllSessions } = require('./auth-sessions.cjs');
 
 const root = resolve(__dirname, '..');
 
@@ -249,6 +250,8 @@ const commands = {
       throw new Error('Pass --password with at least 12 characters');
     const user = await findUser(client, email);
     if (!user) throw new Error(`No such user: ${email}`);
+    const env = parseEnv(resolve(root, 'apps/api/.env'));
+    await revokeAllSessions(process.env.REDIS_URL || env.REDIS_URL, user.id);
     await client.query(
       'UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1',
       [user.id, await hashPassword(args.password)],
@@ -271,6 +274,10 @@ async function setStatus(client, args, status) {
     );
     if (admins.rows[0].count <= 1)
       throw new Error('This is the last active Admin and cannot be disabled.');
+  }
+  if (status === 'disabled') {
+    const env = parseEnv(resolve(root, 'apps/api/.env'));
+    await revokeAllSessions(process.env.REDIS_URL || env.REDIS_URL, user.id);
   }
   await client.query('UPDATE users SET status = $2, updated_at = now() WHERE id = $1', [
     user.id,

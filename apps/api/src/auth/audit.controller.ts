@@ -31,6 +31,13 @@ export class AdminAuditController {
     private readonly audit: AuditLogRepository,
   ) {}
 
+  @Get('verify')
+  @RequirePermission(PERMISSIONS.AUDIT_VIEW)
+  @Header('Cache-Control', 'no-store')
+  verifyIntegrity() {
+    return this.audit.verifyIntegrity();
+  }
+
   @Get()
   @RequirePermission(PERMISSIONS.AUDIT_VIEW)
   @Header('Cache-Control', 'no-store')
@@ -52,7 +59,8 @@ export class AdminAuditController {
 
 function optional(field: string, value: unknown) {
   if (value === undefined || value === '') return {};
-  if (typeof value !== 'string') throw new BadRequestException(`Invalid ${field}`);
+  if (typeof value !== 'string')
+    throw new BadRequestException(`Invalid ${field}`);
   return { [field]: value.trim() };
 }
 

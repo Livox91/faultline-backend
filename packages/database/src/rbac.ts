@@ -2,11 +2,15 @@ import { randomUUID } from 'node:crypto';
 import {
   DuplicateEmailError,
   DuplicateUsernameError,
+  AUDIT_INTEGRITY_ALGORITHM,
+  auditHashesEqual,
+  computeAuditHash,
   hashPassword,
   type AuditEntry,
   type AuditFilter,
   type AuditLogRepository,
   type AuditRecord,
+  type AuditIntegrityReport,
   type NewUser,
   type ProjectAssignment,
   type ProjectAssignmentRepository,
@@ -20,10 +24,7 @@ import type { PostgresConnection } from './index';
 
 interface UserRow {
   id: string;
-<<<<<<< HEAD
-=======
   organization_id: string;
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   email: string;
   username: string | null;
   name: string;
@@ -39,10 +40,7 @@ interface UserRow {
 
 const toUser = (row: UserRow): UserRecord => ({
   id: row.id,
-<<<<<<< HEAD
-=======
   organizationId: row.organization_id,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   email: row.email,
   username: row.username,
   name: row.name,
@@ -56,11 +54,7 @@ const toUser = (row: UserRow): UserRecord => ({
   updatedAt: row.updated_at.toISOString(),
 });
 
-<<<<<<< HEAD
-const columns = `id, email, username, name, role, password_hash, external_subject, status, mfa_enabled, must_change_password, created_at, updated_at`;
-=======
 const columns = `id, organization_id, email, username, name, role, password_hash, external_subject, status, mfa_enabled, must_change_password, created_at, updated_at`;
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 
 /** Raised distinctly so the API can answer 409 rather than 500. */
 const isUniqueViolation = (error: unknown): boolean =>
@@ -124,14 +118,6 @@ export class PostgresUserRepository implements UserRepository {
       ? await hashPassword(user.password)
       : null;
     try {
-<<<<<<< HEAD
-      const result = await this.connection.pool.query<UserRow>(
-        `INSERT INTO users (id, email, username, name, role, password_hash, external_subject, status, mfa_enabled, must_change_password)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING ${columns}`,
-        [
-          randomUUID(),
-=======
       const organizationId = user.organizationId ?? 'default';
       await this.connection.pool.query(
         `INSERT INTO organizations (id, name) VALUES ($1, $2)
@@ -145,7 +131,6 @@ export class PostgresUserRepository implements UserRepository {
         [
           randomUUID(),
           organizationId,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
           user.email.trim().toLowerCase(),
           user.username ?? null,
           user.name.trim(),
@@ -310,6 +295,11 @@ interface AuditRow {
   user_agent: string | null;
   metadata: Record<string, unknown>;
   occurred_at: Date;
+  chain_sequence: string;
+  previous_hash: string | null;
+  record_hash: string | null;
+  integrity_version: number | null;
+  integrity_key_id: string | null;
 }
 
 const toAudit = (row: AuditRow): AuditRecord => ({
@@ -324,6 +314,17 @@ const toAudit = (row: AuditRow): AuditRecord => ({
   userAgent: row.user_agent,
   metadata: row.metadata ?? {},
   occurredAt: row.occurred_at.toISOString(),
+  ...(row.record_hash && row.integrity_version === 1 && row.integrity_key_id
+    ? {
+        integrity: {
+          algorithm: AUDIT_INTEGRITY_ALGORITHM,
+          keyId: row.integrity_key_id,
+          sequence: Number(row.chain_sequence),
+          previousHash: row.previous_hash,
+          hash: row.record_hash,
+        },
+      }
+    : {}),
 });
 
 /**
@@ -333,29 +334,94 @@ const toAudit = (row: AuditRow): AuditRecord => ({
  * migration 0005), so the absence here is a statement rather than an omission.
  */
 export class PostgresAuditLogRepository implements AuditLogRepository {
-  constructor(private readonly connection: PostgresConnection) {}
+  constructor(
+    private readonly connection: PostgresConnection,
+    private readonly integrityKey: string,
+    private readonly keyId = 'primary',
+  ) {}
 
   async record(entry: AuditEntry): Promise<AuditRecord> {
-    const result = await this.connection.pool.query<AuditRow>(
-      `INSERT INTO audit_log
-         (id, user_id, actor, action, resource_type, resource_id, outcome, ip, user_agent, metadata, occurred_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, COALESCE($11::timestamptz, now()))
-       RETURNING id, user_id, actor, action, resource_type, resource_id, outcome, ip, user_agent, metadata, occurred_at`,
-      [
-        entry.id ?? randomUUID(),
-        entry.userId && isUuid(entry.userId) ? entry.userId : null,
-        entry.actor,
-        entry.action,
-        entry.resourceType,
-        entry.resourceId,
-        entry.outcome,
-        entry.ip,
-        entry.userAgent,
-        JSON.stringify(entry.metadata ?? {}),
-        entry.occurredAt ?? null,
-      ],
-    );
-    return toAudit(result.rows[0]!);
+    if (!this.integrityKey)
+      throw new Error('Audit integrity key is not configured');
+    const client = await this.connection.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // One global chain requires a single writer while its head is read and replaced.
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtext('faultline:audit-integrity'))",
+      );
+      const sequence = Number(
+        (
+          await client.query<{ sequence: string }>(
+            "SELECT nextval(pg_get_serial_sequence('audit_log', 'chain_sequence'))::text AS sequence",
+          )
+        ).rows[0]!.sequence,
+      );
+      const previousHash = (
+        await client.query<{ record_hash: string }>(
+          `SELECT record_hash FROM audit_log
+             WHERE record_hash IS NOT NULL
+             ORDER BY chain_sequence DESC LIMIT 1`,
+        )
+      ).rows[0]?.record_hash ?? null;
+      const base = {
+        id: entry.id ?? randomUUID(),
+        userId: entry.userId && isUuid(entry.userId) ? entry.userId : null,
+        actor: entry.actor,
+        action: entry.action,
+        resourceType: entry.resourceType,
+        resourceId: entry.resourceId,
+        outcome: entry.outcome,
+        ip: entry.ip,
+        userAgent: entry.userAgent,
+        metadata: entry.metadata ?? {},
+        occurredAt: entry.occurredAt
+          ? new Date(entry.occurredAt).toISOString()
+          : new Date().toISOString(),
+      };
+      const recordHash = computeAuditHash(
+        base,
+        sequence,
+        previousHash,
+        this.keyId,
+        this.integrityKey,
+      );
+      const result = await client.query<AuditRow>(
+        `INSERT INTO audit_log
+           (id, user_id, actor, action, resource_type, resource_id, outcome, ip,
+            user_agent, metadata, occurred_at, chain_sequence, previous_hash,
+            record_hash, integrity_version, integrity_key_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::timestamptz,
+                 $12, $13, $14, 1, $15)
+         RETURNING id, user_id, actor, action, resource_type, resource_id, outcome,
+                   ip, user_agent, metadata, occurred_at, chain_sequence::text,
+                   previous_hash, record_hash, integrity_version, integrity_key_id`,
+        [
+          base.id,
+          base.userId,
+          base.actor,
+          base.action,
+          base.resourceType,
+          base.resourceId,
+          base.outcome,
+          base.ip,
+          base.userAgent,
+          JSON.stringify(base.metadata),
+          base.occurredAt,
+          sequence,
+          previousHash,
+          recordHash,
+          this.keyId,
+        ],
+      );
+      await client.query('COMMIT');
+      return toAudit(result.rows[0]!);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async list(filter: AuditFilter = {}): Promise<readonly AuditRecord[]> {
@@ -374,7 +440,9 @@ export class PostgresAuditLogRepository implements AuditLogRepository {
     if (filter.until) where('occurred_at <= ?::timestamptz', filter.until);
     values.push(Math.min(Math.max(filter.limit ?? 200, 1), 1000));
     const result = await this.connection.pool.query<AuditRow>(
-      `SELECT id, user_id, actor, action, resource_type, resource_id, outcome, ip, user_agent, metadata, occurred_at
+      `SELECT id, user_id, actor, action, resource_type, resource_id, outcome, ip,
+              user_agent, metadata, occurred_at, chain_sequence::text, previous_hash,
+              record_hash, integrity_version, integrity_key_id
          FROM audit_log
          ${clauses.length ? 'WHERE ' + clauses.join(' AND ') : ''}
          ORDER BY occurred_at DESC
@@ -382,6 +450,54 @@ export class PostgresAuditLogRepository implements AuditLogRepository {
       values,
     );
     return result.rows.map(toAudit);
+  }
+
+  async verifyIntegrity(): Promise<AuditIntegrityReport> {
+    if (!this.integrityKey)
+      throw new Error('Audit integrity key is not configured');
+    const rows = (
+      await this.connection.pool.query<AuditRow>(
+        `SELECT id, user_id, actor, action, resource_type, resource_id, outcome, ip,
+                user_agent, metadata, occurred_at, chain_sequence::text, previous_hash,
+                record_hash, integrity_version, integrity_key_id
+           FROM audit_log ORDER BY chain_sequence ASC`,
+      )
+    ).rows;
+    let previousHash: string | null = null;
+    let checkedRecords = 0;
+    const unsignedRecords = rows.filter((row) => !row.record_hash).length;
+    for (const row of rows) {
+      const record = toAudit(row);
+      if (!record.integrity) continue;
+      const { integrity: _integrity, ...base } = record;
+      const expected = computeAuditHash(
+        base,
+        record.integrity.sequence,
+        previousHash,
+        record.integrity.keyId,
+        this.integrityKey,
+      );
+      if (
+        record.integrity.keyId !== this.keyId ||
+        record.integrity.previousHash !== previousHash ||
+        !auditHashesEqual(record.integrity.hash, expected)
+      )
+        return {
+          valid: false,
+          checkedRecords,
+          unsignedRecords,
+          headHash: previousHash,
+          firstInvalidRecordId: record.id,
+        };
+      previousHash = record.integrity.hash;
+      checkedRecords += 1;
+    }
+    return {
+      valid: true,
+      checkedRecords,
+      unsignedRecords,
+      headHash: previousHash,
+    };
   }
 }
 

@@ -280,11 +280,7 @@ test('incident API lists, filters and retrieves repository incidents', async () 
       { provide: INCIDENT_REPOSITORY, useValue: repository },
       // An Admin, so this test keeps asserting filtering and retrieval; project-level
       // isolation is covered separately in authorization.test.cjs.
-<<<<<<< HEAD
-      actingAs(admin()),
-=======
       actingAs(admin({ assignments: [{ projectId: 'production-01' }] })),
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       {
         provide: TELEMETRY_SCOPE_RESOLVER,
         useValue: {

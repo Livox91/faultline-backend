@@ -1,5 +1,9 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { ApplicationLogger } from '@faultline/platform';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  APPLICATION_CONFIG,
+  ApplicationLogger,
+  type ApplicationConfig,
+} from '@faultline/platform';
 import {
   AUDIT_LOG_REPOSITORY,
   type AuditAction,
@@ -12,19 +16,22 @@ import { clientAddress, userAgent, type RequestWithUser } from './context';
 /**
  * Writes the audit trail.
  *
- * Recording never fails the operation it describes: an audit write that throws would
- * turn a successful login into a 500 and, worse, would make the trail a denial-of-
- * service surface. A failure is logged at error level instead, where alerting can see
- * it. The trade is deliberate and worth stating: this favours availability of the
- * system over guaranteed completeness of the trail. Deployments that need the opposite
- * should make `record` rethrow.
+ * Every failure is logged. Deployments with `AUDIT_STRICT=true` also receive the error,
+ * making an unavailable integrity trail fail the request; other deployments retain the
+ * previous availability-first behavior.
  */
 @Injectable()
 export class AuditTrail {
   constructor(
-    @Inject(AUDIT_LOG_REPOSITORY) private readonly repository: AuditLogRepository,
+    @Inject(AUDIT_LOG_REPOSITORY)
+    private readonly repository: AuditLogRepository,
     private readonly logger: ApplicationLogger,
-  ) {}
+    @Optional() @Inject(APPLICATION_CONFIG) config?: ApplicationConfig,
+  ) {
+    this.strict = config?.audit?.strict ?? false;
+  }
+
+  private readonly strict: boolean;
 
   async record(entry: {
     user?: AuthenticatedUser | null;
@@ -55,6 +62,7 @@ export class AuditTrail {
         action: entry.action,
         reason: error instanceof Error ? error.message : 'unknown',
       });
+      if (this.strict) throw error;
     }
   }
 }

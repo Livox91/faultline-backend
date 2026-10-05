@@ -118,11 +118,7 @@ The current password is required even though the caller is authenticated: a toke
 is not proof of knowing the password, and without that check a stolen token becomes
 permanent ownership.
 
-<<<<<<< HEAD
-## Schema (`0006_subscriptions_and_provisioning.sql`)
-=======
 ## Schema (`0011_subscriptions_and_provisioning.sql`)
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 
 ```
 users  + username (unique, nullable)       -- provisioned admins sign in with either
@@ -132,11 +128,7 @@ subscriptions        -- one per purchase; user_id nullable until provisioned
 processed_payment_events  -- event_id PRIMARY KEY; the idempotency ledger
 ```
 
-<<<<<<< HEAD
-`0007_audit_log_user_reference.sql` drops `audit_log.user_id`'s foreign key. Migration
-=======
 `0012_audit_log_user_reference.sql` drops `audit_log.user_id`'s foreign key. Migration
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 0005 gave it `ON DELETE SET NULL` *and* made the table append-only; PostgreSQL implements
 SET NULL as an UPDATE, the append-only rule discards it, and deleting any user with audit
 history failed outright. The trail keeps `actor` precisely so it survives a user's
@@ -301,10 +293,5 @@ The real `StripeGateway` is exercised against signatures produced by Stripe's ow
 3. **The webhook is the only provisioning path.** If webhooks are misconfigured, nobody
    is provisioned — `npm run subscriptions:pending` will show nothing, because without
    the webhook there is no subscription row either. Verify the endpoint after deploying.
-4. **Tokens are not revocable before expiry** (unchanged from the RBAC work). Changing a
-   password does not invalidate tokens already issued to that user; the confinement lifts
-   for them too, which is correct, but a stolen token remains valid for its TTL.
-5. **Login throttling is per-process**, and the password-change endpoint is throttled per
-   user id. A scaled-out deployment wants a shared limiter at the edge.
-6. **`RecordingEmailSender` keeps messages in memory** for the life of the process when
+4. **`RecordingEmailSender` keeps messages in memory** for the life of the process when
    `EMAIL_TRANSPORT=log`. Development only, and production configuration forbids it.

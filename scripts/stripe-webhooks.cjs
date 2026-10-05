@@ -80,9 +80,6 @@ function setEnvValue(path, key, value) {
  * though the command works perfectly in a terminal. `STRIPE_CLI` overrides the whole
  * question for anyone with it installed somewhere unusual.
  */
-<<<<<<< HEAD
-const STRIPE_BIN = process.env.STRIPE_CLI || 'stripe';
-=======
 // The npm-installed Windows launcher is a `.cmd` file whose Node shim waits on the
 // native CLI. When Faultline's startup console closes, that process chain receives
 // CTRL_CLOSE_EVENT and the listener exits with 0xC000013A. Prefer the bundled native
@@ -114,7 +111,6 @@ const STRIPE_BIN =
   process.env.STRIPE_CLI ||
   (existsSync(LOCAL_STRIPE_BIN) ? LOCAL_STRIPE_BIN : undefined) ||
   (NPM_STRIPE_EXE && existsSync(NPM_STRIPE_EXE) ? NPM_STRIPE_EXE : 'stripe');
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 const NEEDS_SHELL = process.platform === 'win32' && !/\.exe$/i.test(STRIPE_BIN);
 
 /**
@@ -130,11 +126,6 @@ const stripeSync = (args, options = {}) =>
     ? spawnSync([STRIPE_BIN, ...args].join(' '), {
         encoding: 'utf8',
         shell: true,
-<<<<<<< HEAD
-        ...options,
-      })
-    : spawnSync(STRIPE_BIN, args, { encoding: 'utf8', ...options });
-=======
         env: stripeEnvironment(),
         ...options,
       })
@@ -157,7 +148,6 @@ function stripeEnvironment() {
     readEnvFile(API_ENV).STRIPE_SECRET_KEY;
   return apiKey ? { ...process.env, STRIPE_API_KEY: apiKey } : process.env;
 }
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 
 function stripeAvailable() {
   const probe = stripeSync(['--version']);
@@ -192,12 +182,7 @@ function printSecret() {
  */
 function ensureWebhookSecret() {
   const env = readEnvFile(API_ENV);
-<<<<<<< HEAD
-  if (env.BILLING_ENABLED !== 'true')
-    return { skipped: 'billing_disabled' };
-=======
   if (env.BILLING_ENABLED !== 'true') return { skipped: 'billing_disabled' };
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   if (!stripeAvailable()) return { skipped: 'stripe_cli_not_installed' };
 
   const { secret, error } = printSecret();
@@ -222,17 +207,12 @@ function startForwarder({ port = 3000, events = FORWARDED_EVENTS } = {}) {
     ? spawn([STRIPE_BIN, ...args].join(' '), {
         stdio: ['ignore', 'inherit', 'inherit'],
         shell: true,
-<<<<<<< HEAD
-      })
-    : spawn(STRIPE_BIN, args, { stdio: ['ignore', 'inherit', 'inherit'] });
-=======
         env: stripeEnvironment(),
       })
     : spawn(STRIPE_BIN, args, {
         stdio: ['ignore', 'inherit', 'inherit'],
         env: stripeEnvironment(),
       });
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 
   child.on('error', (error) =>
     log('stripe_listener_failed', { reason: error.message }),
@@ -273,13 +253,8 @@ function startWebhookForwarding({ port = 3000 } = {}) {
           'test purchases will complete at Stripe but provision no account',
         remedy:
           outcome.skipped === 'stripe_cli_not_installed'
-<<<<<<< HEAD
-            ? 'install the Stripe CLI: https://stripe.com/docs/stripe-cli'
-            : 'run: stripe login',
-=======
             ? 'run: npm install, then npm run setup'
             : 'run: npm exec -- stripe login',
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       });
     return () => {};
   }
@@ -304,10 +279,7 @@ module.exports = {
   ensureWebhookSecret,
   startForwarder,
   startWebhookForwarding,
-<<<<<<< HEAD
-=======
   stripeAvailable,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   FORWARDED_EVENTS,
 };
 

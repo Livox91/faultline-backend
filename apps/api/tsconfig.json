@@ -34,15 +34,12 @@
       "path": "../../packages/baselines"
     },
     {
-<<<<<<< HEAD
-=======
       "path": "../../packages/notifications"
     },
     {
       "path": "../../packages/reporting"
     },
     {
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       "path": "../../packages/auth"
     },
     {

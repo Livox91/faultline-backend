@@ -17,12 +17,6 @@ import {
   PostgresClusterDirectory,
   PostgresConnection,
   PostgresIncidentRepository,
-<<<<<<< HEAD
-  PostgresProjectAssignmentRepository,
-  PostgresUserRepository,
-} from '@faultline/database';
-import {
-=======
   PostgresContactRepository,
   PostgresNotificationGroupRepository,
   PostgresEscalationPolicyRepository,
@@ -50,7 +44,6 @@ import {
   SLACK_INTEGRATION_REPOSITORY,InMemorySlackIntegrationRepository,
 } from '@faultline/notifications';
 import {
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   AUDIT_LOG_REPOSITORY,
   PROJECT_ASSIGNMENT_REPOSITORY,
   USER_REPOSITORY,
@@ -101,9 +94,6 @@ import {
   TELEMETRY_SCOPE_RESOLVER,
   UserTelemetryScopeResolver,
 } from './telemetry-scope';
-<<<<<<< HEAD
-import { CLUSTER_DIRECTORY, ClustersController } from './clusters.controller';
-=======
 import {
   CLUSTER_DIRECTORY,
   ClustersController,
@@ -135,13 +125,13 @@ import {
   SystemSummaryController,
 } from './analytics.controller';
 import { IncidentExternalTicketController } from './incident-external-ticket.controller';
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 import { IS_PUBLIC } from './auth/context';
 import { AuthenticationGuard } from './auth/authentication.guard';
 import { AuthorizationGuard } from './auth/authorization.guard';
 import { AuditTrail } from './auth/audit-trail';
 import { AdminBootstrap } from './auth/bootstrap';
 import { AuthController, LoginThrottle } from './auth/auth.controller';
+import { AuthSecurityStore } from './auth/security-store';
 import { BillingController } from './billing/billing.controller';
 import { EntitlementsController } from './billing/entitlements.controller';
 import { EntitlementsGuard, PlanEntitlements } from './billing/entitlements';
@@ -149,12 +139,9 @@ import { SubscriptionProvisioningService } from './billing/provisioning.service'
 import { PAYMENT_GATEWAY, StripeGateway } from './billing/stripe.gateway';
 import { AdminUsersController } from './auth/users.controller';
 import { AdminAuditController } from './auth/audit.controller';
-<<<<<<< HEAD
-=======
 import { ClusterOnboardingController } from './cluster-onboarding.controller';
 import { ClusterOnboardingService } from './cluster-onboarding.service';
 import { SlackIntegrationController, SlackIntegrationService } from './slack-integration.controller';
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 
 export const CLICKHOUSE_CONNECTION = Symbol('faultline.clickhouse-connection');
 
@@ -180,8 +167,6 @@ const infrastructureProviders: Provider[] =
           provide: BASELINE_REPOSITORY,
           useFactory: getDevelopmentBaselineRepository,
         },
-<<<<<<< HEAD
-=======
         { provide: CONTACT_REPOSITORY, useClass: InMemoryContactRepository },
         { provide: NOTIFICATION_GROUP_REPOSITORY, useClass: InMemoryNotificationGroupRepository },
         { provide: ESCALATION_POLICY_REPOSITORY, useClass: InMemoryEscalationPolicyRepository },
@@ -202,7 +187,6 @@ const infrastructureProviders: Provider[] =
         { provide: AVAILABILITY_OVERRIDE_REPOSITORY, useClass: InMemoryAvailabilityOverrideRepository },
         { provide: EXTERNAL_TICKET_REPOSITORY, useClass: InMemoryExternalTicketRepository },
         { provide: SLACK_INTEGRATION_REPOSITORY, useClass: InMemorySlackIntegrationRepository },
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
         { provide: USER_REPOSITORY, useFactory: getDevelopmentUserRepository },
         {
           provide: PROJECT_ASSIGNMENT_REPOSITORY,
@@ -256,8 +240,6 @@ const infrastructureProviders: Provider[] =
             new PostgresIncidentRepository(database),
         },
         {
-<<<<<<< HEAD
-=======
           provide: INCIDENT_ANALYTICS_REPOSITORY,
           inject: [DATABASE],
           useFactory: (database: PostgresConnection) =>
@@ -277,7 +259,6 @@ const infrastructureProviders: Provider[] =
         { provide: EXTERNAL_TICKET_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresExternalTicketRepository(database) },
         { provide: SLACK_INTEGRATION_REPOSITORY, inject: [DATABASE], useFactory: (database: PostgresConnection) => new PostgresSlackIntegrationRepository(database, readEnvFlag('SLACK_TOKEN_ENCRYPTION_KEY')) },
         {
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
           provide: USER_REPOSITORY,
           inject: [DATABASE],
           useFactory: (database: PostgresConnection) =>
@@ -291,9 +272,16 @@ const infrastructureProviders: Provider[] =
         },
         {
           provide: AUDIT_LOG_REPOSITORY,
-          inject: [DATABASE],
-          useFactory: (database: PostgresConnection) =>
-            new PostgresAuditLogRepository(database),
+          inject: [DATABASE, APPLICATION_CONFIG],
+          useFactory: (
+            database: PostgresConnection,
+            config: ApplicationConfig,
+          ) =>
+            new PostgresAuditLogRepository(
+              database,
+              config.audit.integrityKey!,
+              config.audit.integrityKeyId,
+            ),
         },
         {
           provide: SUBSCRIPTION_REPOSITORY,
@@ -481,19 +469,15 @@ const billingProviders: Provider[] = billingEnabled
     ...billingProviders,
     AuditTrail,
     PlanEntitlements,
+    AuthSecurityStore,
     LoginThrottle,
     AdminBootstrap,
-<<<<<<< HEAD
-=======
     ClusterOnboardingService,
     SlackIntegrationService,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     {
       provide: TELEMETRY_SCOPE_RESOLVER,
       useClass: UserTelemetryScopeResolver,
     },
-<<<<<<< HEAD
-=======
     {
       provide: INCIDENT_REPORT_BUILDER,
       inject: [INCIDENT_REPOSITORY, INCIDENT_ACKNOWLEDGEMENTS],
@@ -528,7 +512,6 @@ const billingProviders: Provider[] = billingEnabled
           health: new CurrentApplicationHealthProvider(health),
         }),
     },
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     // Registered globally and in this order: authentication establishes who is calling
     // and rejects with 401, then authorization decides what they may reach and rejects
     // with 403. Global rather than per-controller so that a route added later is

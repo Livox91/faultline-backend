@@ -19,15 +19,12 @@
       "path": "../log-classification"
     },
     {
-<<<<<<< HEAD
-=======
       "path": "../reporting"
     },
     {
       "path": "../notifications"
     },
     {
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       "path": "../auth"
     },
     {

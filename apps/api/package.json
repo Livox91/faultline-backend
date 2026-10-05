@@ -9,14 +9,6 @@
   "dependencies": {
     "@faultline/auth": "0.1.0",
     "@faultline/baselines": "0.1.0",
-<<<<<<< HEAD
-    "@faultline/clickhouse": "0.1.0",
-    "@faultline/database": "0.1.0",
-    "@faultline/incidents": "0.1.0",
-    "@faultline/kubernetes": "0.1.0",
-    "@faultline/platform": "0.1.0",
-    "@faultline/queue": "0.1.0",
-=======
     "@faultline/billing": "0.1.0",
     "@faultline/clickhouse": "0.1.0",
     "@faultline/database": "0.1.0",
@@ -27,19 +19,14 @@
     "@faultline/platform": "0.1.0",
     "@faultline/queue": "0.1.0",
     "@faultline/reporting": "0.1.0",
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     "@faultline/telemetry": "0.1.0",
     "@nestjs/common": "^11.1.0",
     "@nestjs/core": "^11.1.0",
     "@nestjs/platform-express": "^11.1.0",
     "reflect-metadata": "^0.2.2",
+    "redis": "^6.2.1",
     "rxjs": "^7.8.2",
     "stripe": "^22.6.2",
-<<<<<<< HEAD
-    "@faultline/email": "0.1.0",
-    "@faultline/billing": "0.1.0"
-=======
     "zod": "^4.0.0"
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   }
 }

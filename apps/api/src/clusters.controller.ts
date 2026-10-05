@@ -18,19 +18,13 @@ import {
 import {
   AUDIT_ACTIONS,
   PERMISSIONS,
-<<<<<<< HEAD
-=======
   PROJECT_ASSIGNMENT_REPOSITORY,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   ROLES,
   assignedProjectIds,
   hasProjectAccess,
   isAdmin,
   type AuthenticatedUser,
-<<<<<<< HEAD
-=======
   type ProjectAssignmentRepository,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 } from '@faultline/auth';
 import {
   isForeignKeyViolation,
@@ -100,11 +94,8 @@ function optionalText(value: unknown, field: string): string | undefined {
 export class ClustersController {
   constructor(
     @Inject(CLUSTER_DIRECTORY) private readonly clusters: ClusterDirectory,
-<<<<<<< HEAD
-=======
     @Inject(PROJECT_ASSIGNMENT_REPOSITORY)
     private readonly assignments: ProjectAssignmentRepository,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     private readonly audit: AuditTrail,
   ) {}
 
@@ -113,12 +104,8 @@ export class ClustersController {
   @Header('Cache-Control', 'no-store')
   async list(@CurrentUser() user: AuthenticatedUser) {
     const projects = await this.clusters.list(
-<<<<<<< HEAD
-      isAdmin(user) ? undefined : assignedProjectIds(user),
-=======
       assignedProjectIds(user),
       user.organizationId,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     );
     return projects.map((project) => present(project, user));
   }
@@ -140,11 +127,7 @@ export class ClustersController {
   ) {
     if (!hasProjectAccess(user, id))
       throw new ForbiddenException('You do not have access to this project');
-<<<<<<< HEAD
-    const project = await this.clusters.get(id);
-=======
     const project = await this.clusters.get(id, user.organizationId);
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     if (!project) throw new NotFoundException('Project not found');
     return present(project, user);
   }
@@ -164,10 +147,7 @@ export class ClustersController {
       const created = await this.clusters.create({
         id,
         name,
-<<<<<<< HEAD
-=======
         organizationId: actor.organizationId,
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
         ...(optionalText(body?.environment, 'environment')
           ? { environment: optionalText(body?.environment, 'environment')! }
           : {}),
@@ -175,10 +155,7 @@ export class ClustersController {
         workloadNamespace: optionalText(body?.workloadNamespace, 'workloadNamespace') ?? null,
         workloadSelector: optionalText(body?.workloadSelector, 'workloadSelector') ?? null,
       });
-<<<<<<< HEAD
-=======
       await this.assignments.assign(actor.id, id, actor.id, []);
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       await this.audit.record({
         user: actor,
         action: AUDIT_ACTIONS.PROJECT_CREATED,

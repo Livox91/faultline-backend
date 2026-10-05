@@ -8,40 +8,53 @@ import {
   Injectable,
   Patch,
   Post,
+  Req,
 } from '@nestjs/common';
 import { z } from 'zod';
-import { ROLES, type AuthenticatedUser } from '@faultline/auth';
+import { AUDIT_ACTIONS, ROLES, type AuthenticatedUser } from '@faultline/auth';
 import {
   SLACK_INTEGRATION_REPOSITORY,
   type SlackIntegration,
   type SlackIntegrationChanges,
   type SlackIntegrationRepository,
 } from '@faultline/notifications';
-import { CurrentUser, Roles } from './auth/context';
+import { AuditTrail } from './auth/audit-trail';
+import { CurrentUser, Roles, type RequestWithUser } from './auth/context';
 
-const channelId = z.string().trim().regex(/^[CGD][A-Z0-9]{8,}$/);
-const serviceChannels = z.record(
-  z.string().trim().min(1).max(128),
-  channelId,
-).transform((mapping) =>
-  Object.fromEntries(
-    Object.entries(mapping).map(([service, channel]) => [
-      service.trim().toLowerCase(),
-      channel,
-    ]),
-  ),
-);
-const changes = z.object({
-  slackEnabled: z.boolean().optional(),
-  // Omit to retain the current secret; null or an empty string explicitly clears it.
-  slackBotToken: z.union([
-    z.string().trim().regex(/^xoxb-[A-Za-z0-9-]{10,}$/),
-    z.literal(''),
-    z.null(),
-  ]).optional(),
-  slackIncidentChannelId: z.union([channelId, z.literal(''), z.null()]).optional(),
-  slackServiceChannels: serviceChannels.optional(),
-}).strict();
+const channelId = z
+  .string()
+  .trim()
+  .regex(/^[CGD][A-Z0-9]{8,}$/);
+const serviceChannels = z
+  .record(z.string().trim().min(1).max(128), channelId)
+  .transform((mapping) =>
+    Object.fromEntries(
+      Object.entries(mapping).map(([service, channel]) => [
+        service.trim().toLowerCase(),
+        channel,
+      ]),
+    ),
+  );
+const changes = z
+  .object({
+    slackEnabled: z.boolean().optional(),
+    // Omit to retain the current secret; null or an empty string explicitly clears it.
+    slackBotToken: z
+      .union([
+        z
+          .string()
+          .trim()
+          .regex(/^xoxb-[A-Za-z0-9-]{10,}$/),
+        z.literal(''),
+        z.null(),
+      ])
+      .optional(),
+    slackIncidentChannelId: z
+      .union([channelId, z.literal(''), z.null()])
+      .optional(),
+    slackServiceChannels: serviceChannels.optional(),
+  })
+  .strict();
 
 export interface SlackIntegrationView {
   slackEnabled: boolean;
@@ -62,7 +75,10 @@ export class SlackIntegrationService {
     return present(await this.integrations.get(organizationId));
   }
 
-  async save(organizationId: string, body: unknown): Promise<SlackIntegrationView> {
+  async save(
+    organizationId: string,
+    body: unknown,
+  ): Promise<SlackIntegrationView> {
     const parsed = changes.safeParse(body);
     if (!parsed.success)
       throw new BadRequestException({
@@ -91,7 +107,10 @@ export class SlackIntegrationService {
 @Controller('integrations/slack')
 @Roles(ROLES.ADMIN)
 export class SlackIntegrationController {
-  constructor(private readonly service: SlackIntegrationService) {}
+  constructor(
+    private readonly service: SlackIntegrationService,
+    private readonly audit: AuditTrail,
+  ) {}
 
   @Get()
   @Header('Cache-Control', 'no-store')
@@ -101,14 +120,46 @@ export class SlackIntegrationController {
 
   @Post()
   @Header('Cache-Control', 'no-store')
-  create(@CurrentUser() user: AuthenticatedUser, @Body() body: unknown) {
-    return this.service.save(user.organizationId, body);
+  async create(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: unknown,
+    @Req() request: RequestWithUser,
+  ) {
+    const saved = await this.service.save(user.organizationId, body);
+    await this.recordChange(user, request, body, 'create');
+    return saved;
   }
 
   @Patch()
   @Header('Cache-Control', 'no-store')
-  update(@CurrentUser() user: AuthenticatedUser, @Body() body: unknown) {
-    return this.service.save(user.organizationId, body);
+  async update(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() body: unknown,
+    @Req() request: RequestWithUser,
+  ) {
+    const saved = await this.service.save(user.organizationId, body);
+    await this.recordChange(user, request, body, 'update');
+    return saved;
+  }
+
+  private recordChange(
+    user: AuthenticatedUser,
+    request: RequestWithUser,
+    body: unknown,
+    operation: 'create' | 'update',
+  ) {
+    const fields =
+      body && typeof body === 'object' && !Array.isArray(body)
+        ? Object.keys(body as Record<string, unknown>)
+        : [];
+    return this.audit.record({
+      user,
+      action: AUDIT_ACTIONS.SLACK_CONFIGURATION_CHANGED,
+      resourceType: 'slack-integration',
+      resourceId: user.organizationId,
+      request,
+      metadata: { operation, fields },
+    });
   }
 }
 

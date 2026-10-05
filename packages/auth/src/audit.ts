@@ -8,6 +8,7 @@ export const AUDIT_ACTIONS = {
   LOGIN_SUCCEEDED: 'auth.login.succeeded',
   LOGIN_FAILED: 'auth.login.failed',
   LOGOUT: 'auth.logout',
+  SESSIONS_REVOKED: 'auth.sessions.revoked',
   PROJECT_CREATED: 'project.created',
   PROJECT_MODIFIED: 'project.modified',
   PROJECT_DELETED: 'project.deleted',
@@ -24,6 +25,19 @@ export const AUDIT_ACTIONS = {
   REMEDIATION_OVERRIDDEN: 'remediation.overridden',
   REMEDIATION_EXECUTED: 'remediation.executed',
   ACCESS_DENIED: 'access.denied',
+  REPORT_EXPORTED: 'report.exported',
+  INCIDENT_ACKNOWLEDGED: 'incident.acknowledged',
+  CONTACT_CREATED: 'contact.created',
+  CONTACT_UPDATED: 'contact.updated',
+  NOTIFICATION_GROUP_CREATED: 'notification.group.created',
+  ESCALATION_POLICY_CREATED: 'notification.policy.created',
+  ESCALATION_POLICY_UPDATED: 'notification.policy.updated',
+  ON_CALL_SCHEDULE_CREATED: 'notification.on-call.schedule.created',
+  ON_CALL_SCHEDULE_UPDATED: 'notification.on-call.schedule.updated',
+  ON_CALL_SHIFT_CREATED: 'notification.on-call.shift.created',
+  AVAILABILITY_OVERRIDE_CREATED: 'notification.on-call.override.created',
+  SLACK_CONFIGURATION_CHANGED: 'integration.slack.changed',
+  SLACK_TICKET_REQUESTED: 'integration.slack.ticket.requested',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -44,9 +58,27 @@ export interface AuditRecord {
   readonly userAgent: string | null;
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly occurredAt: string;
+  /** Absent only on records written before integrity protection was enabled. */
+  readonly integrity?: AuditRecordIntegrity;
 }
 
-export type AuditEntry = Omit<AuditRecord, 'id' | 'occurredAt'> &
+export interface AuditRecordIntegrity {
+  readonly algorithm: 'hmac-sha256-chain-v1';
+  readonly keyId: string;
+  readonly sequence: number;
+  readonly previousHash: string | null;
+  readonly hash: string;
+}
+
+export interface AuditIntegrityReport {
+  readonly valid: boolean;
+  readonly checkedRecords: number;
+  readonly unsignedRecords: number;
+  readonly headHash: string | null;
+  readonly firstInvalidRecordId?: string;
+}
+
+export type AuditEntry = Omit<AuditRecord, 'id' | 'occurredAt' | 'integrity'> &
   Partial<Pick<AuditRecord, 'id' | 'occurredAt'>>;
 
 export interface AuditFilter {
@@ -69,6 +101,7 @@ export interface AuditFilter {
 export interface AuditLogRepository {
   record(entry: AuditEntry): Promise<AuditRecord>;
   list(filter?: AuditFilter): Promise<readonly AuditRecord[]>;
+  verifyIntegrity(): Promise<AuditIntegrityReport>;
 }
 
 export const AUDIT_LOG_REPOSITORY = Symbol('faultline.audit-log-repository');

@@ -92,6 +92,11 @@ const environmentSchema = z
       .default(3600),
     /** When true, a login returns a challenge and the token is issued after the code. */
     AUTH_MFA_REQUIRED: booleanFlag(false),
+    /** HMAC key kept outside PostgreSQL so database-only tampering is detectable. */
+    AUDIT_INTEGRITY_KEY: z.string().min(32).optional(),
+    AUDIT_INTEGRITY_KEY_ID: z.string().trim().min(1).max(64).default('primary'),
+    /** When true, an audit write failure fails the operation being audited. */
+    AUDIT_STRICT: booleanFlag(false),
     /**
      * Public base URL of the web application.
      *
@@ -563,6 +568,7 @@ export interface ApplicationConfig {
   readonly anomalyThresholds: AnomalyThresholds;
   readonly incidentCorrelation: IncidentCorrelationConfig;
   readonly auth: AuthSettings;
+  readonly audit: AuditSettings;
   readonly billing: BillingSettings;
   readonly email: EmailSettings;
   readonly publicUrl: string;
@@ -646,6 +652,12 @@ export interface AuthSettings {
   readonly accessTokenTtlSeconds: number;
   readonly mfaRequired: boolean;
   readonly bootstrapAdmin?: { email: string; password: string };
+}
+
+export interface AuditSettings {
+  readonly integrityKey?: string;
+  readonly integrityKeyId: string;
+  readonly strict: boolean;
 }
 
 /**
@@ -776,17 +788,19 @@ export function validateEnvironment(
       ...(application === 'api' && !result.data.AUTH_JWT_SECRET
         ? ['AUTH_JWT_SECRET']
         : []),
-<<<<<<< HEAD
-      ...((application === 'api' || application === 'processor') &&
-=======
+      ...(application === 'api' &&
+      result.data.NODE_ENV === 'production' &&
+      !result.data.AUDIT_INTEGRITY_KEY
+        ? ['AUDIT_INTEGRITY_KEY']
+        : []),
       ...((application === 'api' ||
         application === 'processor' ||
         application === 'notification') &&
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
       !result.data.DATABASE_URL
         ? ['DATABASE_URL']
         : []),
-      ...(application === 'processor' && !result.data.REDIS_URL
+      ...((application === 'api' || application === 'processor') &&
+      !result.data.REDIS_URL
         ? ['REDIS_URL']
         : []),
       ...((application === 'ingestion' ||

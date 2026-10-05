@@ -14,6 +14,7 @@ const {
 const {
   IncidentExternalTicketController,
 } = require('../apps/api/dist/incident-external-ticket.controller');
+const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
 
 const incidentId = '11111111-1111-4111-8111-111111111111';
 
@@ -70,6 +71,7 @@ async function serve({ withTicket = false, unsafeUrl = false } = {}) {
     providers: [
       { provide: INCIDENT_REPOSITORY, useValue: incidents },
       { provide: EXTERNAL_TICKET_REPOSITORY, useValue: tickets },
+      { provide: AuditTrail, useValue: { record: async () => {} } },
     ],
   })(TicketApiModule);
   const app = await NestFactory.create(TicketApiModule, { logger: false });

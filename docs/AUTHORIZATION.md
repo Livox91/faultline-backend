@@ -3,13 +3,8 @@
 Faultline has two roles, and one rule that matters:
 
 ```
-<<<<<<< HEAD
-Admin            → every project, plus user management and the audit trail
-Onsite Engineer  → only the projects an Admin has assigned to them
-=======
 Admin            → assigned projects, plus user management and the audit trail
 Onsite Engineer  → assigned projects, with a smaller action set
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 ```
 
 **A project is a cluster.** The control plane already keys incidents, baselines and
@@ -38,8 +33,8 @@ one. Only `/health`, `/health/ready` and `POST /auth/login` are public.
 
 ### Why assignments are re-read on every request
 
-A token is valid for its whole lifetime, but an assignment can be revoked a second after
-it is issued. The token therefore carries identity only — `sub`, `email`, `role` — and no
+A session can be revoked while its signed token is still within its expiry. The token
+therefore carries identity and session id only — `sub`, `email`, `role`, `jti` — and no
 authorization decision reads the role claim. Granting or revoking a project, or disabling
 an account, takes effect on the user's **very next request**, with the token they already
 hold. There is nothing to wait out and no need to sign out.
@@ -60,15 +55,9 @@ frontend mirrors it for display only.
 
 | Permission | Admin | Onsite Engineer |
 |---|:--:|:--:|
-<<<<<<< HEAD
-| `project:view` | ✅ | ✅ *(assigned only)* |
-| `incident:view` | ✅ | ✅ *(assigned only)* |
-| `remediation:act` | ✅ | ✅ *(assigned only)* |
-=======
 | `project:view` | ✅ *(assigned only)* | ✅ *(assigned only)* |
 | `incident:view` | ✅ *(assigned only)* | ✅ *(assigned only)* |
 | `remediation:act` | ✅ *(assigned only)* | ✅ *(assigned only)* |
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 | `project:create` / `edit` / `delete` | ✅ | ❌ |
 | `project:assign` | ✅ | ❌ |
 | `user:view` / `user:manage` | ✅ | ❌ |
@@ -79,11 +68,7 @@ A *permission* answers "may this role ever?"; an *assignment* answers "may this 
 here?". They are separate checks, which is why an engineer holds `project:view` and still
 sees only their own projects.
 
-<<<<<<< HEAD
-## Schema (migration `0005_rbac_and_audit.sql`)
-=======
 ## Schema (migration `0010_rbac_and_audit.sql`)
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 
 ```
 users ──┬─< project_users >── clusters      (project_users is the many-to-many)
@@ -93,11 +78,7 @@ users ──┬─< project_users >── clusters      (project_users is the ma
 - `users` — `role` is constrained to `admin` / `onsiteengineer`. `password_hash` is
   nullable, because a user whose identity comes from an external IdP has none.
   `external_subject` is the seam for that IdP.
-<<<<<<< HEAD
-- `project_users` — **the single source of truth** for engineer access. There is no
-=======
 - `project_users` — **the single source of truth** for every user's cluster access. There is no
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   second place to grant it: no per-user flag, no per-project override. Its
   `environments text[]` column is the seam for environment-level access; empty means
   "every environment", so today's rows keep working when it starts being enforced.
@@ -112,6 +93,18 @@ users ──┬─< project_users >── clusters      (project_users is the ma
   Verified: `UPDATE audit_log SET action='tampered'` reports `UPDATE 0` even as the
   database owner. Dropping the trail is a migration, which is reviewable.
 
+  Migration `0014_audit_integrity.sql` adds an HMAC-SHA-256 hash chain. Each new row
+  signs its canonical contents plus the preceding hash while an advisory transaction
+  lock serializes writers. The key stays in `AUDIT_INTEGRITY_KEY`, outside PostgreSQL.
+  Rows predating the migration remain explicitly unsigned rather than receiving a
+  misleading backfilled signature. A `NOT VALID` check constraint permits those legacy
+  rows but requires complete integrity fields on every new row.
+
+  This HMAC chain provides strong tamper evidence, not third-party legal
+  non-repudiation: the service holding the shared key can also produce valid records.
+  Deployments needing independent proof should sign retained head hashes with an
+  asymmetric key held by a separate system or immutable ledger.
+
 ## Endpoints
 
 ### Public
@@ -125,11 +118,7 @@ users ──┬─< project_users >── clusters      (project_users is the ma
 |---|---|---|
 | `GET` | `/auth/me` | own identity |
 | `POST` | `/auth/logout` | records the event |
-<<<<<<< HEAD
-| `GET` | `/projects`, `/clusters` | assigned projects (all, for an Admin) |
-=======
 | `GET` | `/projects`, `/clusters` | assigned projects for every role |
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 | `GET` | `/projects/:id` | `403` unless assigned |
 | `GET` | `/incidents` | bounded by assignment, whatever filter is sent |
 | `GET` | `/incidents/:id` | `404` when outside your projects |
@@ -145,6 +134,7 @@ users ──┬─< project_users >── clusters      (project_users is the ma
 | `PATCH` | `/admin/users/:id` | name, role, status, password, MFA |
 | `PUT` / `DELETE` | `/admin/users/:id/projects/:projectId` | assign / unassign |
 | `GET` | `/admin/audit` | read-only; filter by `action`, `outcome`, `userId`, `since`, `until`, `limit` |
+| `GET` | `/admin/audit/verify` | verifies signed records and reports unsigned legacy rows |
 
 ## Configuration
 
@@ -160,6 +150,9 @@ every request 500s.
 | `AUTH_MFA_REQUIRED` | `false` | See the MFA note below |
 | `AUTH_BOOTSTRAP_ADMIN_EMAIL` | — | Seeds the first Admin, only while `users` is empty |
 | `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | — | Both or neither; ≥12 chars |
+| `AUDIT_INTEGRITY_KEY` | development-derived | ≥32 chars; required explicitly for the production API |
+| `AUDIT_INTEGRITY_KEY_ID` | `primary` | Identifier stored with each signed record |
+| `AUDIT_STRICT` | `false` | Rethrow audit write failures so the request reports failure |
 
 Unset both bootstrap values once you have signed in — an env file is not a credential
 store.
@@ -167,11 +160,7 @@ store.
 ## Getting in
 
 ```bash
-<<<<<<< HEAD
-npm run db:migrate                 # applies 0005_rbac_and_audit
-=======
 npm run db:migrate                 # applies 0010_rbac_and_audit
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 npm run faultline:start            # the bootstrap Admin is seeded on first start
 ```
 
@@ -204,31 +193,32 @@ Not wired, but the shape is deliberate:
   this deployment, and a screen that accepts any six digits is worse than no screen. The
   frontend's `/mfa` page says so instead of pretending to verify.
 
+## Session security
+
+- Every JWT has a `jti` backed by a short-lived Redis session record. Logout deletes
+  that record; password changes and `POST /admin/users/:id/revoke-sessions` delete every
+  session for the account. Disabling an account or replacing its password does the same.
+- Browsers use the `fl_session` cookie with `HttpOnly`, `SameSite=Strict`, path `/`, and
+  `Secure` in production. Bearer tokens remain accepted for non-browser API clients.
+- Login and password-change failures share Redis counters across API instances (8
+  failures per identifier in 15 minutes). Authentication fails closed if Redis is down.
+
 ## Known limitations
 
-1. **Tokens are not revocable before expiry.** Disabling a user or revoking an
-   assignment takes effect immediately (the guard re-reads storage), but a stolen token
-   stays valid for its TTL. A denylist behind `/auth/logout` would close this; the
-   default TTL is 1 hour to bound it.
-2. **The token is in `sessionStorage`**, readable by any script on the origin — the known
-   cost of a bearer token in a SPA. The backend is written so an httpOnly session cookie
-   can replace it without touching the rest of the app.
-3. **Login throttling is per-process** (8 attempts / 15 min / email). It raises the cost
-   of online guessing against one pod; a scaled-out deployment wants a shared limiter at
-   the edge.
-4. **Audit writes never fail the operation they describe.** A failed write is logged at
-   `error` level rather than turning a successful login into a 500 — availability over
-   guaranteed completeness. Deployments needing the opposite should make
-   `AuditTrail.record` rethrow.
-5. **The API enables no CORS.** The frontend must be same-origin; in development Vite
-   proxies `/api`. Serving it from another origin needs CORS *and* a re-think of (2).
-6. **Environment-level access is modelled, not enforced.** `project_users.environments`
+1. **Audit strictness is configurable.** With `AUDIT_STRICT=true`, an audit write error
+   is rethrown and the request fails. With it off, the error is logged and availability
+   is preferred. Strict deployments should monitor and externally retain the head hash
+   returned by `/admin/audit/verify`, which also makes deletion of the newest chain tail
+   detectable outside the database.
+2. **The API enables no CORS.** The frontend must be same-origin; in development Vite
+   proxies `/api`. Serving it from another origin needs an explicit cookie/CORS policy.
+3. **Environment-level access is modelled, not enforced.** `project_users.environments`
    and `clusters.environment` are read and written; no check consults them yet, and
    `hasEnvironmentAccess` already sits on the path for when one should.
-7. **Passwords use Node's `scrypt`**, not argon2id — no native toolchain required, and
+4. **Passwords use Node's `scrypt`**, not argon2id — no native toolchain required, and
    the cost parameters are stored in each hash so they can be raised without
    invalidating existing passwords.
-8. **`/system/info` is authenticated**, which is why the foundation boot test asserts
+5. **`/system/info` is authenticated**, which is why the foundation boot test asserts
    `401` for it. That assertion is the end-to-end proof that the global guard is wired.
 
 ## Tests

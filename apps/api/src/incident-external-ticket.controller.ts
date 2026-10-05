@@ -6,7 +6,9 @@ import {
   NotFoundException,
   Param,
   ParseUUIDPipe,
+  Req,
 } from '@nestjs/common';
+import { AUDIT_ACTIONS, type AuthenticatedUser } from '@faultline/auth';
 import {
   INCIDENT_REPOSITORY,
   type IncidentRepository,
@@ -16,6 +18,8 @@ import {
   type ExternalTicket,
   type ExternalTicketRepository,
 } from '@faultline/notifications';
+import { AuditTrail } from './auth/audit-trail';
+import { CurrentUser, type RequestWithUser } from './auth/context';
 
 export interface SlackTicketView {
   provider: 'slack';
@@ -34,12 +38,15 @@ export class IncidentExternalTicketController {
     private readonly incidents: IncidentRepository,
     @Inject(EXTERNAL_TICKET_REPOSITORY)
     private readonly tickets: ExternalTicketRepository,
+    private readonly audit: AuditTrail,
   ) {}
 
   @Get(':incidentId/external-tickets/slack')
   @Header('Cache-Control', 'no-store')
   async getSlackTicket(
     @Param('incidentId', new ParseUUIDPipe()) incidentId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Req() request: RequestWithUser,
   ): Promise<{ ticket: SlackTicketView | null }> {
     if (!(await this.incidents.getIncident(incidentId)))
       throw new NotFoundException('Incident not found');
@@ -47,6 +54,14 @@ export class IncidentExternalTicketController {
       incidentId,
       'slack',
     );
+    await this.audit.record({
+      user,
+      action: AUDIT_ACTIONS.SLACK_TICKET_REQUESTED,
+      resourceType: 'incident',
+      resourceId: incidentId,
+      request,
+      metadata: { found: !!ticket },
+    });
     return { ticket: ticket ? toView(ticket) : null };
   }
 }

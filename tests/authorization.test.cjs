@@ -13,6 +13,7 @@ const {
   verifyAccessToken,
   hashPassword,
   verifyPassword,
+  InMemoryAuditLogRepository,
 } = require('@faultline/auth');
 const {
   CLUSTER_DIRECTORY,
@@ -145,8 +146,6 @@ async function boot() {
     password: 'correct-horse-battery',
   });
   await context.assignments.assign(
-<<<<<<< HEAD
-=======
     adminRecord.id,
     PROJECT_A,
     adminRecord.id,
@@ -159,7 +158,6 @@ async function boot() {
     [],
   );
   await context.assignments.assign(
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     engineerRecord.id,
     PROJECT_A,
     adminRecord.id,
@@ -188,28 +186,19 @@ const call = (base, token, path, init = {}) =>
 
 /* -------------------------------------------------------------------- tests */
 
-<<<<<<< HEAD
-test('the rules themselves: an admin reaches every project, an engineer only assigned ones', () => {
-  const admin = { role: ROLES.ADMIN, status: 'active', assignments: [] };
-=======
 test('the rules themselves: every role reaches only assigned projects', () => {
   const admin = {
     role: ROLES.ADMIN,
     status: 'active',
     assignments: [{ projectId: PROJECT_A }],
   };
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   const engineer = {
     role: ROLES.ONSITE_ENGINEER,
     status: 'active',
     assignments: [{ projectId: PROJECT_A }],
   };
-<<<<<<< HEAD
-  assert.equal(hasProjectAccess(admin, PROJECT_B), true);
-=======
   assert.equal(hasProjectAccess(admin, PROJECT_A), true);
   assert.equal(hasProjectAccess(admin, PROJECT_B), false);
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   assert.equal(hasProjectAccess(engineer, PROJECT_A), true);
   assert.equal(hasProjectAccess(engineer, PROJECT_B), false);
   // A disabled account reaches nothing, whatever it is assigned to.
@@ -268,6 +257,36 @@ test('a tampered, foreign-issued or expired token is refused', () => {
     Date.now() - 3_600_000,
   ).token;
   assert.throws(() => verifyAccessToken(expired, settings), /expired/i);
+});
+
+test('audit records form a verifiable cryptographic chain', async () => {
+  const audit = new InMemoryAuditLogRepository('audit-integrity-secret-at-least-32-bytes', 'test-key');
+  const entry = (action) => ({
+    userId: null,
+    actor: 'security@faultline.test',
+    action,
+    resourceType: 'test',
+    resourceId: null,
+    outcome: 'allowed',
+    ip: null,
+    userAgent: null,
+    metadata: {},
+  });
+  const first = await audit.record(entry('test.first'));
+  const second = await audit.record(entry('test.second'));
+  assert.equal(first.integrity.previousHash, null);
+  assert.equal(second.integrity.previousHash, first.integrity.hash);
+  assert.deepEqual(await audit.verifyIntegrity(), {
+    valid: true,
+    checkedRecords: 2,
+    unsignedRecords: 0,
+    headHash: second.integrity.hash,
+  });
+
+  audit.records[0].actor = 'tampered@faultline.test';
+  const verification = await audit.verifyIntegrity();
+  assert.equal(verification.valid, false);
+  assert.equal(verification.firstInvalidRecordId, first.id);
 });
 
 test('an anonymous caller reaches nothing', async () => {
@@ -330,8 +349,6 @@ test('an engineer sees only assigned projects, however the request is phrased', 
   }
 });
 
-<<<<<<< HEAD
-=======
 test('one admin cannot see clusters or incidents owned by another admin', async () => {
   const context = await boot();
   const { app, base, users, assignments, adminRecord } = context;
@@ -389,7 +406,6 @@ test('a newly created cluster is assigned to its creating user', async () => {
   }
 });
 
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
 test('incident reads are bounded by assignment, not by the filter the caller sends', async () => {
   const { app, base, engineerToken, adminToken } = await boot();
   try {
@@ -475,16 +491,9 @@ test('an admin manages users and assignments, and access follows immediately', a
     assert.deepEqual(ahmed.projectIds, [PROJECT_A]);
     assert.equal(ahmed.role, ROLES.ONSITE_ENGINEER);
     assert.equal(ahmed.passwordHash, undefined, 'no credential is ever returned');
-<<<<<<< HEAD
-    // An admin is not enumerated against projects: their reach is not a finite list.
-    assert.equal(
-      users.find((user) => user.role === ROLES.ADMIN).projectIds,
-      null,
-=======
     assert.deepEqual(
       users.find((user) => user.role === ROLES.ADMIN).projectIds.sort(),
       [PROJECT_A, PROJECT_B],
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
     );
 
     // Granting project B takes effect on the engineer's very next request, using the
@@ -611,15 +620,11 @@ test('the telemetry scope intersects the deployment scope with the caller assign
   const scoped = new UserTelemetryScopeResolver(
     apiConfig({ queryClusterScope: [PROJECT_A, PROJECT_B] }),
   );
-<<<<<<< HEAD
-  const admin = { role: ROLES.ADMIN, status: 'active', assignments: [] };
-=======
   const admin = {
     role: ROLES.ADMIN,
     status: 'active',
     assignments: [{ projectId: PROJECT_A }, { projectId: PROJECT_B }],
   };
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   const engineer = {
     role: ROLES.ONSITE_ENGINEER,
     status: 'active',
@@ -644,19 +649,11 @@ test('the telemetry scope intersects the deployment scope with the caller assign
     { mode: 'clusters', clusterIds: [] },
   );
 
-<<<<<<< HEAD
-  // An engineer with no assignments gets the empty scope, never the wide one - even in
-  // development, where an Admin would get "all clusters".
-  const development = new UserTelemetryScopeResolver(apiConfig());
-  assert.deepEqual(await development.resolve(admin), {
-    mode: 'all-development-clusters',
-=======
   // Any user with no assignments gets the empty scope, never the wide one.
   const development = new UserTelemetryScopeResolver(apiConfig());
   assert.deepEqual(await development.resolve(admin), {
     mode: 'clusters',
     clusterIds: [PROJECT_A, PROJECT_B],
->>>>>>> 01425fd5b4dfb2cc004e4101afd797c28de32fb9
   });
   assert.deepEqual(
     await development.resolve({ ...engineer, assignments: [] }),
@@ -722,6 +719,7 @@ test('login issues a token that the guards accept, and refuses everything else',
     assert.equal(ok.status, 200);
     const session = await ok.json();
     assert.ok(session.accessToken);
+    assert.match(ok.headers.get('set-cookie'), /fl_session=.*HttpOnly.*SameSite=Strict/i);
     assert.equal(session.user.role, ROLES.ONSITE_ENGINEER);
     assert.deepEqual(session.user.projectIds, [PROJECT_A]);
     assert.equal(session.user.passwordHash, undefined);
@@ -740,6 +738,11 @@ test('login issues a token that the guards accept, and refuses everything else',
     const me = await call(base, session.accessToken, '/auth/me');
     assert.equal(me.status, 200);
     assert.equal((await me.json()).email, 'ahmed2@faultline.test');
+
+    const cookieMe = await fetch(`${base}/auth/me`, {
+      headers: { Cookie: `fl_session=${encodeURIComponent(session.accessToken)}` },
+    });
+    assert.equal(cookieMe.status, 200, 'the HttpOnly cookie authenticates browser calls');
 
     // Both outcomes are on the record.
     const failures = await audit.list({ action: 'auth.login.failed' });

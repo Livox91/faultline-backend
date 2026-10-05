@@ -23,6 +23,7 @@ const {
 } = require('@faultline/auth');
 const { credentialsEmail, SmtpEmailSender } = require('@faultline/email');
 const { PLANS } = require('@faultline/billing');
+const { revokeAllSessions } = require('./auth-sessions.cjs');
 
 const root = resolve(__dirname, '..');
 
@@ -179,6 +180,7 @@ const commands = {
     } else {
       // The account exists. Replacing the password invalidates whatever went out
       // before, which is the point when a credential may have gone astray.
+      await revokeAllSessions(process.env.REDIS_URL || env.REDIS_URL, userId);
       await client.query(
         `UPDATE users SET password_hash = $2, must_change_password = true, updated_at = now()
           WHERE id = $1`,
