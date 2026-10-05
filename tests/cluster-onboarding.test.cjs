@@ -91,6 +91,13 @@ test('existing installation reuses identity only for the same context', () => {
   assert.equal(registrationDefaults('kind-other', prior).clusterId, 'other');
 });
 
+test('web-generated cluster ids are used for new clusters but never replace an installed identity', () => {
+  assert.match(
+    source,
+    /installed\.context === current[\s\S]*\? installed\.clusterId[\s\S]*: args\.id \|\| defaults\.clusterId/,
+  );
+});
+
 test('fresh installation derives a stable beginner-friendly identity', () => {
   assert.deepEqual(registrationDefaults('kind-faultline-demo'), {
     clusterId: 'faultline-demo',
@@ -155,7 +162,15 @@ test('web onboarding assigns the registered cluster to its authenticated owner',
   assert.match(source, /args\['owner-user-id'\]/);
   assert.match(
     source,
+    /SELECT organization_id FROM users WHERE id = \$1[\s\S]*WHERE clusters\.organization_id = EXCLUDED\.organization_id/,
+  );
+  assert.match(
+    source,
     /INSERT INTO project_users \(user_id, project_id, assigned_by\)[\s\S]*ON CONFLICT \(user_id, project_id\) DO NOTHING/,
+  );
+  assert.match(
+    source,
+    /UPDATE clusters c[\s\S]*organization_id='default'[\s\S]*NOT EXISTS \([\s\S]*project_users/,
   );
 });
 
@@ -168,6 +183,9 @@ test('uninstall removes the test namespace and cluster registration', () => {
   assert.match(source, /DELETE FROM metric_baselines WHERE cluster_id = \$1/);
   assert.match(source, /DELETE FROM log_pattern_aggregates WHERE cluster_id = \$1/);
   assert.match(source, /DELETE FROM clusters WHERE id = \$1/);
+  assert.match(source, /incident_notification_states/);
+  assert.match(source, /SELECT to_regclass\(\$1\) AS name/);
+  assert.match(source, /if \(!relation\.rows\[0\]\?\.name\) continue/);
   assert.match(source, /clearState\(\)/);
   assert.match(source, /args\.id && args\.id !== state\.clusterId/);
   assert.match(source, /command === 'uninstall'\) await uninstall\(\)/);

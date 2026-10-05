@@ -9,6 +9,7 @@ import {
   Query,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
 import {
   APPLICATION_CONFIG,
   ApplicationLogger,
@@ -31,7 +32,7 @@ import {
   resolveQueryCluster,
   type TelemetryScopeResolver,
 } from './telemetry-scope';
-import { CurrentUser } from './auth/context';
+import { CurrentUser, RequiresFeature } from './auth/context';
 import type { AuthenticatedUser } from '@faultline/auth';
 
 /**
@@ -42,6 +43,7 @@ import type { AuthenticatedUser } from '@faultline/auth';
  * query, and no endpoint accepts SQL.
  */
 @Controller('telemetry')
+@RequiresFeature(FEATURES.LOG_AGGREGATOR)
 export class TelemetryController {
   private readonly limits: TelemetryQueryLimits;
 
@@ -169,6 +171,7 @@ export class TelemetryController {
  * container or node in a window: "what happened here between 12:00 and 12:15".
  */
 @Controller('resources')
+@RequiresFeature(FEATURES.LOG_AGGREGATOR)
 export class ResourceTimelineController {
   private readonly limits: TelemetryQueryLimits;
 

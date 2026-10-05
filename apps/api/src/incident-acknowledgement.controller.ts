@@ -16,11 +16,11 @@ import {
   type IncidentRepository,
 } from '@faultline/incidents';
 import {
-  ESCALATION_EXECUTION_REPOSITORY,
   INCIDENT_ACKNOWLEDGEMENTS,
+  INCIDENT_NOTIFICATION_STATE_REPOSITORY,
   NOTIFICATION_AUDIT_REPOSITORY,
-  type EscalationExecutionRepository,
   type IncidentAcknowledgementRepository,
+  type IncidentNotificationStateRepository,
   type NotificationAuditRepository,
 } from '@faultline/notifications';
 import { AuditTrail } from './auth/audit-trail';
@@ -36,8 +36,8 @@ export class IncidentAcknowledgementController {
   constructor(
     @Inject(INCIDENT_REPOSITORY)
     private readonly incidents: IncidentRepository,
-    @Inject(ESCALATION_EXECUTION_REPOSITORY)
-    private readonly executions: EscalationExecutionRepository,
+    @Inject(INCIDENT_NOTIFICATION_STATE_REPOSITORY)
+    private readonly states: IncidentNotificationStateRepository,
     @Inject(INCIDENT_ACKNOWLEDGEMENTS)
     private readonly acknowledgements: IncidentAcknowledgementRepository,
     @Inject(NOTIFICATION_AUDIT_REPOSITORY)
@@ -64,19 +64,19 @@ export class IncidentAcknowledgementController {
       ...parsed.data,
       acknowledgedAt: now,
     });
-    const execution = await this.executions.get(incidentId);
-    if (execution?.status === 'ACTIVE')
-      await this.executions.save({
-        ...execution,
+    const state = await this.states.get(incidentId);
+    if (state?.status === 'ACTIVE')
+      await this.states.save({
+        ...state,
         status: 'ACKNOWLEDGED',
         completedAt: now,
+        updatedAt: now,
       });
     await this.notificationAudit.append({
       id: randomUUID(),
       incidentId,
       type: 'INCIDENT_ACKNOWLEDGED',
       timestamp: now,
-      policyId: execution?.policyId,
       details: { acknowledgedBy: parsed.data.acknowledgedBy },
     });
     await this.audit.record({

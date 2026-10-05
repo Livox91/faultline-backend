@@ -5,6 +5,7 @@ import type {
   AnomalySource,
   AnomalyStatus,
   Incident,
+  IncidentResourceSnapshot,
   IncidentRepository,
   IncidentTimelineEntry,
 } from '@faultline/incidents';
@@ -15,6 +16,7 @@ import { sanitizeSensitiveContent } from '@faultline/platform';
 
 export * from './analytics';
 export * from './system-summary';
+export * from './system-summary-pdf-exporter';
 export * from './exporter';
 export * from './pdf-exporter';
 
@@ -87,6 +89,7 @@ export interface IncidentTechnicalReport {
     rootCause: string | null;
   };
   anomalies: IncidentAnomalyStatistics;
+  resourceSnapshots: readonly IncidentResourceSnapshot[];
   codeAnalysis: {
     totalFindings: number;
     criticalFindings: number;
@@ -156,6 +159,7 @@ export class IncidentReportBuilder {
         rootCause: incident.confirmedRootCause ?? null,
       },
       anomalies: anomalyStatistics(incident),
+      resourceSnapshots: incident.resourceSnapshots ?? [],
       codeAnalysis: {
         totalFindings: findings.length,
         criticalFindings: findings.filter((finding) => finding.severity === 'CRITICAL').length,

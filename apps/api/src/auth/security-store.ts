@@ -40,7 +40,9 @@ export class AuthSecurityStore implements OnModuleInit, OnApplicationShutdown {
 
   constructor(@Inject(APPLICATION_CONFIG) config: ApplicationConfig) {
     const url = config.infrastructure?.redisUrl;
-    if (url) {
+    // Test processes may still load a developer .env file. They must remain hermetic
+    // even when that file contains REDIS_URL, as the class contract above promises.
+    if (config.environment !== 'test' && url) {
       this.redis = createClient({ url });
       this.redis.on('error', () => {});
     }

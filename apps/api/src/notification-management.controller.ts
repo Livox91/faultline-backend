@@ -12,97 +12,47 @@ import {
   Post,
   Req,
 } from '@nestjs/common';
-import { z } from 'zod';
-import { AUDIT_ACTIONS, type AuthenticatedUser } from '@faultline/auth';
+import { FEATURES } from '@faultline/billing';
+import {
+  CurrentUser,
+  RequiresFeature,
+  type RequestWithUser,
+} from './auth/context';
+import {
+  AUDIT_ACTIONS,
+  ROLES,
+  USER_REPOSITORY,
+  type AuthenticatedUser,
+  type UserRepository,
+} from '@faultline/auth';
 import {
   CONTACT_REPOSITORY,
-  ESCALATION_POLICY_REPOSITORY,
   NOTIFICATION_GROUP_REPOSITORY,
-  ON_CALL_SCHEDULE_REPOSITORY,
   normalizePhoneNumber,
+  type Contact,
   type ContactRepository,
-  type EscalationPolicy,
-  type EscalationPolicyRepository,
   type NotificationGroupRepository,
-  type OnCallScheduleRepository,
 } from '@faultline/notifications';
+import { z } from 'zod';
+import { ENGINEER_CONTACT_RULE, isCallable } from './engineer-contact';
 import { AuditTrail } from './auth/audit-trail';
-import { CurrentUser, type RequestWithUser } from './auth/context';
 
 const id = z.string().trim().min(1).max(128);
 const contactInput = z.object({
-  organizationId: id,
+  organizationId: id.optional(),
+  userId: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(200),
-  role: z.enum([
-    'ENGINEER',
-    'SENIOR_ENGINEER',
-    'TEAM_LEAD',
-    'MANAGER',
-    'STAKEHOLDER',
-    'END_USER',
-  ]),
+  role: z.enum(['ENGINEER', 'SENIOR_ENGINEER', 'TEAM_LEAD', 'MANAGER', 'STAKEHOLDER', 'END_USER']),
   phoneNumber: z.string(),
   smsEnabled: z.boolean().default(true),
   voiceEnabled: z.boolean().default(true),
   enabled: z.boolean().default(true),
 });
 const groupInput = z.object({
-  organizationId: id,
+  organizationId: id.optional(),
   name: z.string().trim().min(1).max(200),
   contactIds: z.array(id).max(1000),
   enabled: z.boolean().default(true),
-});
-const target = z.object({ type: z.enum(['CONTACT', 'GROUP']), id });
-const escalationTarget = z.object({
-  type: z.enum(['CONTACT', 'GROUP', 'ON_CALL_SCHEDULE']),
-  id,
-});
-const step = z.object({
-  id: id.optional(),
-  order: z.number().int().min(1),
-  target: escalationTarget,
-  channels: z.array(z.enum(['VOICE', 'SMS'])).min(1),
-  maximumAttempts: z.number().int().min(1).max(10),
-  retryDelayMs: z.number().int().min(0).max(86_400_000),
-  waitBeforeNextStepMs: z.number().int().min(0).max(86_400_000),
-});
-const communicationRule = z.object({
-  audience: z.enum(['ENGINEERING', 'STAKEHOLDER', 'END_USER']),
-  target,
-  channels: z.array(z.enum(['VOICE', 'SMS'])).min(1),
-  subscriptions: z
-    .array(z.enum(['INITIAL', 'STATUS_UPDATES', 'RESOLUTION']))
-    .min(1),
-  services: z.array(id).optional(),
-  minimumIntervalMs: z.number().int().min(0).max(86_400_000).optional(),
-});
-const policyInput = z.object({
-  organizationId: id,
-  name: z.string().trim().min(1).max(200),
-  enabled: z.boolean().default(true),
-  sendResolution: z.boolean().default(true),
-  match: z.object({
-    severities: z.array(z.enum(['INFO', 'WARNING', 'HIGH', 'CRITICAL'])).min(1),
-    environments: z.array(id).optional(),
-    services: z.array(id).optional(),
-    classifications: z
-      .array(
-        z.enum([
-          'MEMORY_EXHAUSTION',
-          'RESOURCE_SATURATION',
-          'WORKLOAD_CRASHING',
-          'DEPLOYMENT_DEGRADATION',
-          'NODE_FAILURE',
-          'WORKLOAD_CONFIGURATION_FAILURE',
-          'SCHEDULING_FAILURE',
-          'APPLICATION_DEGRADATION',
-          'APPLICATION_DEPENDENCY_FAILURE',
-        ]),
-      )
-      .optional(),
-  }),
-  steps: z.array(step).min(1),
-  communicationRules: z.array(communicationRule).optional(),
 });
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -116,19 +66,23 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
 }
 
 @Controller('contacts')
+@RequiresFeature(FEATURES.VOICE_AGENT)
 export class ContactsController {
   constructor(
     @Inject(CONTACT_REPOSITORY) private readonly contacts: ContactRepository,
+    @Inject(USER_REPOSITORY) private readonly users: UserRepository,
     private readonly audit: AuditTrail,
   ) {}
 
   @Post()
   async create(
     @Body() body: unknown,
-    @CurrentUser() user: AuthenticatedUser,
+    @CurrentUser() actor: AuthenticatedUser,
     @Req() request: RequestWithUser,
   ) {
     const input = parse(contactInput, body);
+    this.assertOrganization(input.organizationId, actor.organizationId);
+    await this.validateUser(input.userId, actor.organizationId);
     const now = new Date().toISOString();
     let phoneNumber: string;
     try {
@@ -136,34 +90,40 @@ export class ContactsController {
     } catch (error) {
       throw new BadRequestException((error as Error).message);
     }
-    const contact = await this.contacts.create({
+    const contact: Contact = {
       id: randomUUID(),
       ...input,
+      organizationId: actor.organizationId,
       phoneNumber,
       createdAt: now,
       updatedAt: now,
-    });
+    };
+    await this.requireCallableEngineer(contact);
+    const created = await this.contacts.create(contact);
     await this.audit.record({
-      user,
+      user: actor,
       action: AUDIT_ACTIONS.CONTACT_CREATED,
       resourceType: 'contact',
-      resourceId: contact.id,
+      resourceId: created.id,
       request,
-      metadata: { organizationId: contact.organizationId, role: contact.role },
     });
-    return contact;
+    return created;
   }
 
   @Get()
   @Header('Cache-Control', 'no-store')
-  list() {
-    return this.contacts.list();
+  list(@CurrentUser() actor: AuthenticatedUser) {
+    return this.contacts.list(actor.organizationId);
   }
 
   @Get(':id')
-  async get(@Param('id') contactId: string) {
+  async get(
+    @Param('id') contactId: string,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
     const value = await this.contacts.get(contactId);
-    if (!value) throw new NotFoundException('Contact not found');
+    if (!value || value.organizationId !== actor.organizationId)
+      throw new NotFoundException('Contact not found');
     return value;
   }
 
@@ -171,12 +131,15 @@ export class ContactsController {
   async update(
     @Param('id') contactId: string,
     @Body() body: unknown,
-    @CurrentUser() user: AuthenticatedUser,
+    @CurrentUser() actor: AuthenticatedUser,
     @Req() request: RequestWithUser,
   ) {
     const current = await this.contacts.get(contactId);
-    if (!current) throw new NotFoundException('Contact not found');
+    if (!current || current.organizationId !== actor.organizationId)
+      throw new NotFoundException('Contact not found');
     const input = parse(contactInput.partial(), body);
+    this.assertOrganization(input.organizationId, actor.organizationId);
+    await this.validateUser(input.userId, actor.organizationId);
     let phoneNumber = current.phoneNumber;
     if (input.phoneNumber !== undefined)
       try {
@@ -184,30 +147,51 @@ export class ContactsController {
       } catch (error) {
         throw new BadRequestException((error as Error).message);
       }
-    const updated = await this.contacts.update({
+    const contact: Contact = {
       ...current,
       ...input,
+      organizationId: actor.organizationId,
       phoneNumber,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    await this.requireCallableEngineer(contact);
+    const updated = await this.contacts.update(contact);
     await this.audit.record({
-      user,
+      user: actor,
       action: AUDIT_ACTIONS.CONTACT_UPDATED,
       resourceType: 'contact',
-      resourceId: contactId,
+      resourceId: updated.id,
       request,
-      // Field names establish what changed without copying contact values into the log.
-      metadata: { fields: Object.keys(input) },
     });
     return updated;
+  }
+
+  /** An onsite engineer's contact is how Retell reaches them, so it must stay callable. */
+  private async requireCallableEngineer(contact: Contact) {
+    if (!contact.userId) return;
+    const user = await this.users.findById(contact.userId);
+    if (user?.role === ROLES.ONSITE_ENGINEER && !isCallable(contact))
+      throw new BadRequestException(ENGINEER_CONTACT_RULE);
+  }
+
+  private async validateUser(userId: string | undefined, organizationId: string) {
+    if (!userId) return;
+    const user = await this.users.findById(userId);
+    if (!user || user.organizationId !== organizationId)
+      throw new BadRequestException('Linked user does not belong to this organization');
+  }
+
+  private assertOrganization(requested: string | undefined, actual: string) {
+    if (requested && requested !== actual)
+      throw new BadRequestException('Organization does not match the authenticated user');
   }
 }
 
 @Controller('notification-groups')
+@RequiresFeature(FEATURES.VOICE_AGENT)
 export class NotificationGroupsController {
   constructor(
-    @Inject(NOTIFICATION_GROUP_REPOSITORY)
-    private readonly groups: NotificationGroupRepository,
+    @Inject(NOTIFICATION_GROUP_REPOSITORY) private readonly groups: NotificationGroupRepository,
     @Inject(CONTACT_REPOSITORY) private readonly contacts: ContactRepository,
     private readonly audit: AuditTrail,
   ) {}
@@ -215,168 +199,39 @@ export class NotificationGroupsController {
   @Post()
   async create(
     @Body() body: unknown,
-    @CurrentUser() user: AuthenticatedUser,
+    @CurrentUser() actor: AuthenticatedUser,
     @Req() request: RequestWithUser,
   ) {
     const input = parse(groupInput, body);
-    await this.validateContacts(input.contactIds);
+    if (input.organizationId && input.organizationId !== actor.organizationId)
+      throw new BadRequestException('Organization does not match the authenticated user');
+    for (const contactId of input.contactIds) {
+      const contact = await this.contacts.get(contactId);
+      if (!contact || contact.organizationId !== actor.organizationId)
+        throw new BadRequestException(`Unknown contact: ${contactId}`);
+    }
     const now = new Date().toISOString();
-    const group = await this.groups.create({
+    const created = await this.groups.create({
       id: randomUUID(),
       ...input,
+      organizationId: actor.organizationId,
       contactIds: [...new Set(input.contactIds)],
       createdAt: now,
       updatedAt: now,
     });
     await this.audit.record({
-      user,
+      user: actor,
       action: AUDIT_ACTIONS.NOTIFICATION_GROUP_CREATED,
       resourceType: 'notification-group',
-      resourceId: group.id,
+      resourceId: created.id,
       request,
-      metadata: {
-        organizationId: group.organizationId,
-        contacts: group.contactIds.length,
-      },
     });
-    return group;
+    return created;
   }
 
   @Get()
   @Header('Cache-Control', 'no-store')
-  list() {
-    return this.groups.list();
-  }
-
-  private async validateContacts(ids: readonly string[]) {
-    for (const contactId of ids)
-      if (!(await this.contacts.get(contactId)))
-        throw new BadRequestException(`Unknown contact: ${contactId}`);
-  }
-}
-
-@Controller('escalation-policies')
-export class EscalationPoliciesController {
-  constructor(
-    @Inject(ESCALATION_POLICY_REPOSITORY)
-    private readonly policies: EscalationPolicyRepository,
-    @Inject(CONTACT_REPOSITORY) private readonly contacts: ContactRepository,
-    @Inject(NOTIFICATION_GROUP_REPOSITORY)
-    private readonly groups: NotificationGroupRepository,
-    @Inject(ON_CALL_SCHEDULE_REPOSITORY)
-    private readonly schedules: OnCallScheduleRepository,
-    private readonly audit: AuditTrail,
-  ) {}
-
-  @Post()
-  async create(
-    @Body() body: unknown,
-    @CurrentUser() user: AuthenticatedUser,
-    @Req() request: RequestWithUser,
-  ) {
-    const input = parse(policyInput, body);
-    await this.validate(input);
-    const now = new Date().toISOString();
-    const policy = await this.policies.create(
-      this.build(randomUUID(), input, now, now),
-    );
-    await this.audit.record({
-      user,
-      action: AUDIT_ACTIONS.ESCALATION_POLICY_CREATED,
-      resourceType: 'escalation-policy',
-      resourceId: policy.id,
-      request,
-      metadata: {
-        organizationId: policy.organizationId,
-        steps: policy.steps.length,
-      },
-    });
-    return policy;
-  }
-
-  @Get()
-  @Header('Cache-Control', 'no-store')
-  list() {
-    return this.policies.list();
-  }
-
-  @Get(':id')
-  async get(@Param('id') policyId: string) {
-    const value = await this.policies.get(policyId);
-    if (!value) throw new NotFoundException('Escalation policy not found');
-    return value;
-  }
-
-  @Patch(':id')
-  async update(
-    @Param('id') policyId: string,
-    @Body() body: unknown,
-    @CurrentUser() user: AuthenticatedUser,
-    @Req() request: RequestWithUser,
-  ) {
-    const current = await this.policies.get(policyId);
-    if (!current) throw new NotFoundException('Escalation policy not found');
-    const input = parse(policyInput.partial(), body);
-    const steps = input.steps
-      ? input.steps.map((value) => ({ ...value, id: value.id ?? randomUUID() }))
-      : current.steps;
-    const merged: EscalationPolicy = {
-      ...current,
-      ...input,
-      match: input.match ? { ...current.match, ...input.match } : current.match,
-      steps: [...steps].sort((a, b) => a.order - b.order),
-      updatedAt: new Date().toISOString(),
-    };
-    await this.validate(merged);
-    const updated = await this.policies.update(merged);
-    await this.audit.record({
-      user,
-      action: AUDIT_ACTIONS.ESCALATION_POLICY_UPDATED,
-      resourceType: 'escalation-policy',
-      resourceId: policyId,
-      request,
-      metadata: { fields: Object.keys(input) },
-    });
-    return updated;
-  }
-
-  private build(
-    policyId: string,
-    input: z.infer<typeof policyInput>,
-    createdAt: string,
-    updatedAt: string,
-  ): EscalationPolicy {
-    return {
-      ...input,
-      id: policyId,
-      steps: input.steps
-        .map((value) => ({ ...value, id: value.id ?? randomUUID() }))
-        .sort((a, b) => a.order - b.order),
-      createdAt,
-      updatedAt,
-    };
-  }
-
-  private async validate(input: {
-    steps: readonly {
-      order: number;
-      target: { type: 'CONTACT' | 'GROUP' | 'ON_CALL_SCHEDULE'; id: string };
-    }[];
-  }) {
-    const orders = input.steps.map((value) => value.order);
-    if (new Set(orders).size !== orders.length)
-      throw new BadRequestException('Escalation step order must be unique');
-    for (const value of input.steps) {
-      const found =
-        value.target.type === 'CONTACT'
-          ? await this.contacts.get(value.target.id)
-          : value.target.type === 'GROUP'
-            ? await this.groups.get(value.target.id)
-            : await this.schedules.get(value.target.id);
-      if (!found)
-        throw new BadRequestException(
-          `Unknown ${value.target.type.toLowerCase()}: ${value.target.id}`,
-        );
-    }
+  list(@CurrentUser() actor: AuthenticatedUser) {
+    return this.groups.list(actor.organizationId);
   }
 }

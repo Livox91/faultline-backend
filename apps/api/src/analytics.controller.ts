@@ -3,19 +3,27 @@ import {
   Controller,
   Get,
   Header,
+  Inject,
   Query,
+  StreamableFile,
 } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
+import { RequiresFeature } from './auth/context';
 import { timestampSchema } from '@faultline/telemetry';
 import {
   AnalyticsService,
   incidentTrendBuckets,
   SystemSummaryService,
+  SYSTEM_SUMMARY_PDF_EXPORTER,
   type AnalyticsDateRange,
   type IncidentTrendBucket,
+  type ReportExporter,
   type SystemSummaryInput,
+  type SystemSummaryReport,
 } from '@faultline/reporting';
 
 @Controller('analytics/incidents')
+@RequiresFeature(FEATURES.REPORTING)
 export class IncidentAnalyticsController {
   constructor(private readonly analytics: AnalyticsService) {}
 
@@ -37,14 +45,37 @@ export class IncidentAnalyticsController {
 }
 
 @Controller('reports/system-summary')
+@RequiresFeature(FEATURES.REPORTING)
 export class SystemSummaryController {
-  constructor(private readonly summaries: SystemSummaryService) {}
+  constructor(
+    private readonly summaries: SystemSummaryService,
+    @Inject(SYSTEM_SUMMARY_PDF_EXPORTER)
+    private readonly pdfExporter: ReportExporter<SystemSummaryReport>,
+  ) {}
 
   @Get()
   @Header('Cache-Control', 'no-store')
   generate(@Query() query: Record<string, unknown>) {
     return this.summaries.generateSystemSummary(
       parseRange(query, true) as SystemSummaryInput,
+    );
+  }
+
+  @Get('export')
+  @Header('Cache-Control', 'no-store')
+  async export(@Query() query: Record<string, unknown>) {
+    const report = await this.summaries.generateSystemSummary(
+      parseRange(query, true) as SystemSummaryInput,
+    );
+    const result = await this.pdfExporter.export(report);
+    return new StreamableFile(
+      Buffer.isBuffer(result.content)
+        ? result.content
+        : Buffer.from(result.content, 'utf8'),
+      {
+        type: result.contentType,
+        disposition: `attachment; filename="${result.filename ?? 'faultline-system-summary.pdf'}"`,
+      },
     );
   }
 }

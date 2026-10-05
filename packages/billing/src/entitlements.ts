@@ -14,23 +14,41 @@ import { PLANS, planIds, type PlanId } from './plans';
  * still an Admin; there is simply no Voice Call Agent on their plan to administer.
  */
 export const FEATURES = {
-  LOG_AGGREGATOR: 'log-aggregator',
+  // Basic: connect a cluster and follow its incidents.
+  CLUSTERS: 'clusters',
+  CLUSTER_ONBOARDING: 'cluster-onboarding',
+  INCIDENTS: 'incidents',
+  ALERTS: 'alerts',
   INCIDENT_LEDGER: 'incident-ledger',
-  VOICE_AGENT: 'voice-call-agent',
+  // Pro: every other console module.
+  TEAM_MANAGEMENT: 'team-management',
+  INTEGRATIONS: 'integrations',
+  LOG_AGGREGATOR: 'log-aggregator',
   REPORTING: 'reporting',
+  VOICE_AGENT: 'voice-call-agent',
+  // Enterprise.
   AUTO_REMEDIATION: 'auto-remediation',
 } as const;
 
 export type PlanFeature = (typeof FEATURES)[keyof typeof FEATURES];
 
-/** Display names, so the API, the pricing page and a 403 all say the same words. */
+/**
+ * Display names, so the API, the pricing page and a 403 all say the same words. They
+ * match the console's navigation, which is where a customer meets each module.
+ */
 export const FEATURE_LABELS: Readonly<Record<PlanFeature, string>> =
   Object.freeze({
-    [FEATURES.LOG_AGGREGATOR]: 'Log Aggregator',
+    [FEATURES.CLUSTERS]: 'Onboarded Clusters',
+    [FEATURES.CLUSTER_ONBOARDING]: 'Cluster Onboarding',
+    [FEATURES.INCIDENTS]: 'Incidents',
+    [FEATURES.ALERTS]: 'Alerts',
     [FEATURES.INCIDENT_LEDGER]: 'Incident Ledger',
-    [FEATURES.VOICE_AGENT]: 'Voice Call Agent',
-    [FEATURES.REPORTING]: 'Reporting Module',
-    [FEATURES.AUTO_REMEDIATION]: 'Auto Remediation',
+    [FEATURES.TEAM_MANAGEMENT]: 'Team & Roles',
+    [FEATURES.INTEGRATIONS]: 'Integrations',
+    [FEATURES.LOG_AGGREGATOR]: 'Runtime',
+    [FEATURES.REPORTING]: 'Reports',
+    [FEATURES.VOICE_AGENT]: 'Voice Agent',
+    [FEATURES.AUTO_REMEDIATION]: 'Remediation',
   });
 
 /**
@@ -49,10 +67,53 @@ export const PLAN_RANK: Readonly<Record<PlanId, number>> = Object.freeze({
 /** What each tier *introduces*. Everything below it is inherited. */
 const INTRODUCED_BY: Readonly<Record<PlanId, readonly PlanFeature[]>> =
   Object.freeze({
-    basic: Object.freeze([FEATURES.LOG_AGGREGATOR, FEATURES.INCIDENT_LEDGER]),
-    pro: Object.freeze([FEATURES.VOICE_AGENT, FEATURES.REPORTING]),
+    basic: Object.freeze([
+      FEATURES.CLUSTERS,
+      FEATURES.CLUSTER_ONBOARDING,
+      FEATURES.INCIDENTS,
+      FEATURES.ALERTS,
+      FEATURES.INCIDENT_LEDGER,
+    ]),
+    pro: Object.freeze([
+      FEATURES.TEAM_MANAGEMENT,
+      FEATURES.INTEGRATIONS,
+      FEATURES.LOG_AGGREGATOR,
+      FEATURES.REPORTING,
+      FEATURES.VOICE_AGENT,
+    ]),
     enterprise: Object.freeze([FEATURES.AUTO_REMEDIATION]),
   });
+
+/** The modules a tier adds on top of the one below it, for the pricing page. */
+export function featuresIntroducedBy(plan: PlanId): readonly PlanFeature[] {
+  return INTRODUCED_BY[plan];
+}
+
+/**
+ * How many clusters an organization may register on each tier. `null` is unlimited.
+ *
+ * A limit rather than a module: Basic can onboard, just not without end. Counted per
+ * organization, because clusters belong to the organization, not to whoever clicked.
+ */
+const CLUSTER_LIMITS: Readonly<Record<PlanId, number | null>> = Object.freeze({
+  basic: 1,
+  pro: null,
+  enterprise: null,
+});
+
+export function clusterLimitFor(plan: PlanId): number | null {
+  return CLUSTER_LIMITS[plan];
+}
+
+/** The cheapest tier that allows more than `used` clusters, so a refusal can name it. */
+export function planAllowingClusters(used: number): PlanId {
+  return (
+    planIds.find((id) => {
+      const limit = CLUSTER_LIMITS[id];
+      return limit === null || limit > used;
+    }) ?? 'enterprise'
+  );
+}
 
 /**
  * The tier an account falls back to when it has no live subscription.

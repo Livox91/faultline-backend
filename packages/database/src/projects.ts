@@ -15,6 +15,8 @@ export interface RegisteredCluster {
   kubernetesContext?: string;
   workloadNamespace?: string;
   workloadSelector?: string;
+  slackChannelId?: string;
+  slackChannelName?: string;
   createdAt: string;
   updatedAt: string;
   total: number;
@@ -54,6 +56,11 @@ export interface ClusterDirectory {
     id: string,
     changes: ProjectChanges,
   ): Promise<RegisteredCluster | undefined>;
+  updateSlackMapping(
+    id: string,
+    organizationId: string,
+    channel: { id: string; name: string } | null,
+  ): Promise<RegisteredCluster | undefined>;
   remove(id: string): Promise<boolean>;
 }
 
@@ -64,6 +71,8 @@ interface ClusterRow {
   kubernetes_context: string | null;
   workload_namespace: string | null;
   workload_selector: string | null;
+  slack_channel_id: string | null;
+  slack_channel_name: string | null;
   created_at: Date;
   updated_at: Date;
   total: string;
@@ -80,6 +89,8 @@ const present = (row: ClusterRow): RegisteredCluster => ({
   ...(row.kubernetes_context ? { kubernetesContext: row.kubernetes_context } : {}),
   ...(row.workload_namespace ? { workloadNamespace: row.workload_namespace } : {}),
   ...(row.workload_selector ? { workloadSelector: row.workload_selector } : {}),
+  ...(row.slack_channel_id ? { slackChannelId: row.slack_channel_id } : {}),
+  ...(row.slack_channel_name ? { slackChannelName: row.slack_channel_name } : {}),
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
   total: Number(row.total),
@@ -92,6 +103,7 @@ const present = (row: ClusterRow): RegisteredCluster => ({
 const selectClusters = `
   SELECT c.id, COALESCE(c.name, c.id) AS name, c.environment,
          c.kubernetes_context, c.workload_namespace, c.workload_selector,
+         c.slack_channel_id, c.slack_channel_name,
          c.created_at, c.updated_at,
          count(i.id)::text AS total,
          count(i.id) FILTER (WHERE i.status <> 'RESOLVED')::text AS open,
@@ -179,6 +191,22 @@ export class PostgresClusterDirectory implements ClusterDirectory {
       ],
     );
     return (result.rowCount ?? 0) > 0 ? this.get(id) : undefined;
+  }
+
+  async updateSlackMapping(
+    id: string,
+    organizationId: string,
+    channel: { id: string; name: string } | null,
+  ): Promise<RegisteredCluster | undefined> {
+    const result = await this.connection.pool.query(
+      `UPDATE clusters
+          SET slack_channel_id=$3, slack_channel_name=$4, updated_at=now()
+        WHERE id=$1 AND organization_id=$2`,
+      [id, organizationId, channel?.id ?? null, channel?.name ?? null],
+    );
+    return (result.rowCount ?? 0) > 0
+      ? this.get(id, organizationId)
+      : undefined;
   }
 
   /**

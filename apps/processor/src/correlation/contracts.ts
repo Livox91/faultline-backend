@@ -1,4 +1,8 @@
-import type { Anomaly, Incident } from '@faultline/incidents';
+import type {
+  Anomaly,
+  Incident,
+  IncidentResourceSnapshot,
+} from '@faultline/incidents';
 
 export const INCIDENT_CORRELATOR = Symbol('faultline.incident-correlator');
 
@@ -12,7 +16,10 @@ export interface IncidentChange {
 export interface IncidentCorrelator {
   correlate(
     anomaly: Anomaly,
-    options?: { allowCreate?: boolean },
+    options?: {
+      allowCreate?: boolean;
+      resourceSnapshot?: IncidentResourceSnapshot;
+    },
   ): Promise<IncidentChange | undefined>;
   /** Advance stabilization using event time, even when no anomaly was emitted. */
   advance(timestamp: string): Promise<readonly IncidentChange[]>;

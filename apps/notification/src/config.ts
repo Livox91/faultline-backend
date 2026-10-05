@@ -18,7 +18,7 @@ export interface NotificationWorkerConfig {
   fromNumber?: string;
   voiceAgentId?: string;
   smsAgentId?: string;
-  highEscalationEnabled: boolean;
+  highSeverityEnabled: boolean;
   consumerGroup: string;
   organizationId: string;
   schedulerPollMs: number;
@@ -44,13 +44,12 @@ const optionalPhone = z.preprocess(
     .optional(),
 );
 
-const notificationEnvironment = z
-  .object({
+const notificationEnvironment = z.object({
     RETELL_API_KEY: optionalText,
     RETELL_FROM_NUMBER: optionalPhone,
     RETELL_VOICE_AGENT_ID: optionalText,
     RETELL_SMS_AGENT_ID: optionalText,
-    NOTIFICATION_HIGH_ESCALATION_ENABLED: z
+    NOTIFICATION_HIGH_SEVERITY_ENABLED: z
       .enum(['true', 'false'])
       .default('false'),
     NOTIFICATION_CONSUMER_GROUP: z
@@ -91,28 +90,6 @@ const notificationEnvironment = z
     SLACK_SERVICE_CHANNELS: optionalText,
     SLACK_SERVICE_OWNERS: optionalText,
     SLACK_TEAM_CHANNELS: optionalText,
-  })
-  .superRefine((value, context) => {
-    const retellValues = [
-      value.RETELL_API_KEY,
-      value.RETELL_FROM_NUMBER,
-      value.RETELL_VOICE_AGENT_ID,
-    ];
-    const retellRequested =
-      retellValues.some(Boolean) || Boolean(value.RETELL_SMS_AGENT_ID);
-    if (!retellRequested) return;
-    const names = [
-      'RETELL_API_KEY',
-      'RETELL_FROM_NUMBER',
-      'RETELL_VOICE_AGENT_ID',
-    ] as const;
-    for (let index = 0; index < retellValues.length; index++)
-      if (!retellValues[index])
-        context.addIssue({
-          code: 'custom',
-          path: [names[index]!],
-          message: 'is required when Retell is configured',
-        });
   });
 
 /**
@@ -147,8 +124,8 @@ export function loadNotificationConfig(
     fromNumber: value.RETELL_FROM_NUMBER,
     voiceAgentId: value.RETELL_VOICE_AGENT_ID,
     smsAgentId: value.RETELL_SMS_AGENT_ID,
-    highEscalationEnabled:
-      value.NOTIFICATION_HIGH_ESCALATION_ENABLED === 'true',
+    highSeverityEnabled:
+      value.NOTIFICATION_HIGH_SEVERITY_ENABLED === 'true',
     consumerGroup: value.NOTIFICATION_CONSUMER_GROUP,
     organizationId: value.NOTIFICATION_ORGANIZATION_ID,
     schedulerPollMs: value.NOTIFICATION_SCHEDULER_POLL_MS,

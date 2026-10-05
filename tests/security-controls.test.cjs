@@ -14,9 +14,7 @@ const {
 } = require('@faultline/auth');
 const {
   InMemoryContactRepository,
-  InMemoryEscalationPolicyRepository,
   InMemorySlackIntegrationRepository,
-  RepositoryPolicySelector,
 } = require('@faultline/notifications');
 const { AuthController } = require('../apps/api/dist/auth/auth.controller');
 
@@ -210,9 +208,8 @@ test('approval and autonomous execution routes remain closed until their policy 
   assert.match(vocabulary, /REMEDIATION_EXECUTED:\s*'remediation\.executed'/);
 });
 
-test('tenant-scoped notification repositories and policy selection do not mix organizations', async () => {
+test('tenant-scoped notification repositories do not mix organizations', async () => {
   const contacts = new InMemoryContactRepository();
-  const policies = new InMemoryEscalationPolicyRepository();
   const slack = new InMemorySlackIntegrationRepository();
   const now = '2026-10-04T00:00:00.000Z';
 
@@ -227,17 +224,6 @@ test('tenant-scoped notification repositories and policy selection do not mix or
       smsEnabled: true,
       voiceEnabled: true,
       enabled: true,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await policies.create({
-      id: `policy-${organizationId}`,
-      organizationId,
-      name: organizationId,
-      enabled: true,
-      match: { severities: ['CRITICAL'] },
-      steps: [],
-      sendResolution: false,
       createdAt: now,
       updatedAt: now,
     });
@@ -256,22 +242,6 @@ test('tenant-scoped notification repositories and policy selection do not mix or
     ['contact-tenant-b'],
   );
 
-  const incident = {
-    id: 'incident-1',
-    clusterId: 'production',
-    severity: 'CRITICAL',
-    classification: 'APPLICATION_FAILURE',
-    primaryResource: { scope: 'cluster', clusterId: 'production' },
-  };
-  const selector = new RepositoryPolicySelector(policies);
-  assert.equal(
-    (await selector.select(incident, 'tenant-a')).id,
-    'policy-tenant-a',
-  );
-  assert.equal(
-    (await selector.select(incident, 'tenant-b')).id,
-    'policy-tenant-b',
-  );
   assert.equal((await slack.get('tenant-a')).incidentChannelId, 'CA');
   assert.equal((await slack.get('tenant-b')).incidentChannelId, 'CB');
 });
@@ -317,8 +287,6 @@ test('every implemented high-risk action is wired to the central audit trail', (
       'CONTACT_CREATED',
       'CONTACT_UPDATED',
       'NOTIFICATION_GROUP_CREATED',
-      'ESCALATION_POLICY_CREATED',
-      'ESCALATION_POLICY_UPDATED',
     ],
     'apps/api/src/on-call.controller.ts': [
       'ON_CALL_SCHEDULE_CREATED',

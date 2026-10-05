@@ -33,6 +33,7 @@ import {
   type RegisteredCluster,
 } from '@faultline/database';
 import { AuditTrail } from './auth/audit-trail';
+import { PlanEntitlements } from './billing/entitlements';
 import {
   CurrentUser,
   RequirePermission,
@@ -97,6 +98,7 @@ export class ClustersController {
     @Inject(PROJECT_ASSIGNMENT_REPOSITORY)
     private readonly assignments: ProjectAssignmentRepository,
     private readonly audit: AuditTrail,
+    private readonly entitlements: PlanEntitlements,
   ) {}
 
   @Get()
@@ -143,18 +145,44 @@ export class ClustersController {
   ) {
     const id = projectId(body?.id);
     const name = optionalText(body?.name, 'name') ?? id;
-    try {
-      const created = await this.clusters.create({
-        id,
-        name,
-        organizationId: actor.organizationId,
-        ...(optionalText(body?.environment, 'environment')
-          ? { environment: optionalText(body?.environment, 'environment')! }
-          : {}),
-        kubernetesContext: optionalText(body?.kubernetesContext, 'kubernetesContext') ?? null,
-        workloadNamespace: optionalText(body?.workloadNamespace, 'workloadNamespace') ?? null,
-        workloadSelector: optionalText(body?.workloadSelector, 'workloadSelector') ?? null,
+    const project = {
+      id,
+      name,
+      organizationId: actor.organizationId,
+      ...(optionalText(body?.environment, 'environment')
+        ? { environment: optionalText(body?.environment, 'environment')! }
+        : {}),
+      kubernetesContext:
+        optionalText(body?.kubernetesContext, 'kubernetesContext') ?? null,
+      workloadNamespace:
+        optionalText(body?.workloadNamespace, 'workloadNamespace') ?? null,
+      workloadSelector:
+        optionalText(body?.workloadSelector, 'workloadSelector') ?? null,
+    };
+
+    // Retrying registration for a cluster already owned by this organization is
+    // idempotent. An identically named cluster in another organization remains
+    // protected by the database's global identifier constraint below.
+    const existing = await this.clusters.get(id, actor.organizationId);
+    if (existing) {
+      const updated = (await this.clusters.update(id, project)) ?? existing;
+      await this.assignments.assign(actor.id, id, actor.id, []);
+      await this.audit.record({
+        user: actor,
+        action: AUDIT_ACTIONS.PROJECT_MODIFIED,
+        resourceType: 'project',
+        resourceId: id,
+        request,
+        metadata: { fields: Object.keys(project), idempotentRegistration: true },
       });
+      return updated;
+    }
+
+    // Only a genuinely new cluster counts against the plan's allowance; the idempotent
+    // retry above never does.
+    await this.entitlements.assertClusterCapacity(actor, this.clusters);
+    try {
+      const created = await this.clusters.create(project);
       await this.assignments.assign(actor.id, id, actor.id, []);
       await this.audit.record({
         user: actor,
@@ -166,8 +194,15 @@ export class ClustersController {
       });
       return created;
     } catch (error) {
-      if (isUniqueViolation(error))
+      if (isUniqueViolation(error)) {
+        const duplicate = await this.clusters.get(id, actor.organizationId);
+        if (duplicate) {
+          const updated = (await this.clusters.update(id, project)) ?? duplicate;
+          await this.assignments.assign(actor.id, id, actor.id, []);
+          return updated;
+        }
         throw new ConflictException('A project with that id already exists');
+      }
       throw error;
     }
   }

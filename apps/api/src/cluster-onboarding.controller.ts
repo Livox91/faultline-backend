@@ -8,6 +8,7 @@ import {
   Get,
   Header,
   HttpCode,
+  Inject,
   NotFoundException,
   Param,
   Post,
@@ -15,8 +16,11 @@ import {
 import { isIP } from 'node:net';
 import { PERMISSIONS, ROLES, hasProjectAccess } from '@faultline/auth';
 import type { AuthenticatedUser } from '@faultline/auth';
+import type { ClusterDirectory } from '@faultline/database';
 import { CurrentUser, RequirePermission, Roles } from './auth/context';
+import { PlanEntitlements } from './billing/entitlements';
 import { ClusterOnboardingService } from './cluster-onboarding.service';
+import { CLUSTER_DIRECTORY } from './clusters.controller';
 
 export function clusterName(value: unknown): string {
   if (
@@ -71,23 +75,27 @@ function clusterId(value: unknown): string {
 
 @Controller('cluster-onboarding')
 export class ClusterOnboardingController {
-  constructor(private readonly onboarding: ClusterOnboardingService) {}
+  constructor(
+    private readonly onboarding: ClusterOnboardingService,
+    private readonly entitlements: PlanEntitlements,
+    @Inject(CLUSTER_DIRECTORY) private readonly clusters: ClusterDirectory,
+  ) {}
 
   @Post()
   @HttpCode(202)
   @Header('Cache-Control', 'no-store')
   @Roles(ROLES.ADMIN)
   @RequirePermission(PERMISSIONS.PROJECT_CREATE)
-  start(
+  async start(
     @Body() body: Record<string, unknown>,
     @CurrentUser() actor: AuthenticatedUser,
   ) {
+    const name = clusterName(body?.clusterName);
+    const address = controlPlaneIp(body?.controlPlaneIp);
+    // Before the job starts, so a refused cluster never gets collectors installed.
+    await this.entitlements.assertClusterCapacity(actor, this.clusters);
     try {
-      return this.onboarding.start(
-        clusterName(body?.clusterName),
-        controlPlaneIp(body?.controlPlaneIp),
-        actor.id,
-      );
+      return this.onboarding.start(name, address, actor.id);
     } catch (error) {
       if (
         error instanceof Error &&

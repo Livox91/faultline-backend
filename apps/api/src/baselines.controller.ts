@@ -10,6 +10,7 @@ import {
   Query,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
 import { ApplicationLogger } from '@faultline/platform';
 import {
   BASELINE_REPOSITORY,
@@ -32,7 +33,7 @@ import {
   TELEMETRY_SCOPE_RESOLVER,
   type TelemetryScopeResolver,
 } from './telemetry-scope';
-import { CurrentUser } from './auth/context';
+import { CurrentUser, RequiresFeature } from './auth/context';
 import type { AuthenticatedUser } from '@faultline/auth';
 
 /**
@@ -44,6 +45,7 @@ import type { AuthenticatedUser } from '@faultline/auth';
  * said nothing at all.
  */
 @Controller('baselines')
+@RequiresFeature(FEATURES.LOG_AGGREGATOR)
 export class BaselinesController {
   constructor(
     @Inject(BASELINE_REPOSITORY)

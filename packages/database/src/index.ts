@@ -341,3 +341,4 @@ export * from './rbac';
 export * from './projects';
 export * from './billing';
 export * from './slack-integrations';
+export * from './cluster-sre-assignments';

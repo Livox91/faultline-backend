@@ -41,12 +41,17 @@ export class ClusterOnboardingService {
       throw new Error('A cluster onboarding job is already running');
 
     const id = randomUUID();
+    // Kubernetes context names and control-plane ports are local metadata, not
+    // tenant-safe identifiers. The collector receives this generated value and
+    // uses it as its globally unique telemetry and registry identity.
+    const clusterId = randomUUID();
     const job: StoredClusterOnboardingJob = {
       id,
       ownerUserId,
       operation: 'onboard',
       clusterName,
       controlPlaneIp,
+      clusterId,
       status: 'running',
       output: [],
       startedAt: new Date().toISOString(),
@@ -61,6 +66,8 @@ export class ClusterOnboardingService {
         resolve(repositoryRoot, 'scripts/cluster.cjs'),
         'onboard',
         '--yes',
+        '--id',
+        clusterId,
         '--name',
         clusterName,
         '--control-plane',
@@ -126,14 +133,23 @@ export class ClusterOnboardingService {
     child.stdout.on('data', append);
     child.stderr.on('data', append);
     child.once('error', (error) => this.finish(job, 'failed', error.message));
-    child.once('close', (code) => {
+    const complete = (code: number | null) => {
       if (job.status !== 'running') return;
+      const operation =
+        job.operation === 'uninstall' ? 'Cluster uninstall' : 'Onboarding';
       this.finish(
         job,
         code === 0 ? 'succeeded' : 'failed',
-        code === 0 ? undefined : `Onboarding command exited with code ${code ?? 'unknown'}`,
+        code === 0
+          ? undefined
+          : `${operation} command exited with code ${code ?? 'unknown'}`,
       );
-    });
+    };
+    // `exit` releases the operation lock as soon as the command terminates. Keep
+    // `close` as a fallback, but do not depend on it: inherited stdout/stderr handles
+    // can delay `close` after the child itself is already gone.
+    child.once('exit', complete);
+    child.once('close', complete);
   }
 
   private finish(

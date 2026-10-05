@@ -1,54 +1,404 @@
-const test=require('node:test');const assert=require('node:assert/strict');const {sign}=require('retell-sdk');
-const N=require('@faultline/notifications');const {ApplicationLogger}=require('@faultline/platform');
-const {IncidentMessageBuilder}=require('../apps/notification/dist/message-builder.js');const {NotificationService}=require('../apps/notification/dist/notification.service.js');
-const {RetellCommunicationProvider}=require('../apps/notification/dist/retell.provider.js');const {RetellWebhookController}=require('../apps/notification/dist/webhook.controller.js');
-const {IncidentAcknowledgementController}=require('../apps/api/dist/incident-acknowledgement.controller.js');
-const {VoiceActionService}=require('../apps/notification/dist/voice-action.service.js');const {VoiceActionController}=require('../apps/notification/dist/voice-action.controller.js');const {InMemoryIncidentRepository}=require('@faultline/incidents');
-const {LifecycleCommunicationService}=require('../apps/notification/dist/lifecycle-communication.service.js');
-const {RecoverySchedulerService}=require('../apps/notification/dist/recovery-scheduler.service.js');
-function incident(o={}){return{id:'inc-1',correlationKey:'c',clusterId:'production',namespace:'production',primaryResource:{scope:'deployment',clusterId:'production',workload:'payment-api'},affectedResources:[],classification:'WORKLOAD_CRASHING',title:'Repeated crashes',summary:'crashes',severity:'CRITICAL',status:'ACTIVE',confidence:.9,firstSeen:'2026-01-01T00:00:00Z',lastSeen:'2026-01-01T00:01:00Z',anomalies:[],evidence:[],timeline:[],...o};}
-function contact(id,role='ENGINEER',o={}){return{id,organizationId:'org',name:id,role,phoneNumber:`+1555000000${id==='primary'?1:id==='secondary'?2:3}`,smsEnabled:true,voiceEnabled:true,enabled:true,createdAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-01T00:00:00Z',...o};}
-function policy(steps=[{id:'s1',order:1,target:{type:'CONTACT',id:'primary'},channels:['VOICE'],maximumAttempts:2,retryDelayMs:0,waitBeforeNextStepMs:0}],o={}){return{id:'policy',organizationId:'org',name:'Production Critical',enabled:true,match:{severities:['CRITICAL'],environments:['production']},steps,sendResolution:true,createdAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-01T00:00:00Z',...o};}
-async function harness(p=policy(),provider={}){const contacts=new N.InMemoryContactRepository();await contacts.create(contact('primary'));await contacts.create(contact('secondary'));await contacts.create(contact('customer','END_USER'));const groups=new N.InMemoryNotificationGroupRepository();const policies=new N.InMemoryEscalationPolicyRepository();await policies.create(p);const attempts=new N.InMemoryNotificationAttemptRepository(),executions=new N.InMemoryEscalationExecutionRepository(),audit=new N.InMemoryNotificationAuditRepository(),calls=[];const communication={name:'mock',async startVoiceCall(input){calls.push({channel:'VOICE',input});return{requestId:`call-${calls.length}`,status:'SENT'}},async sendSms(input){calls.push({channel:'SMS',input});return{requestId:`sms-${calls.length}`,status:'SENT'}},async getCallStatus(id){return{requestId:id,status:'IN_PROGRESS'}},...provider};const service=new NotificationService(new N.SeverityNotificationPolicy(false),new N.RepositoryPolicySelector(policies),new N.RecipientResolver(contacts,groups),communication,attempts,executions,audit,new N.InMemoryIdempotencyStore(),new IncidentMessageBuilder(),new ApplicationLogger('notification','fatal'));return{service,contacts,groups,policies,attempts,executions,audit,calls};}
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { sign } = require('retell-sdk');
+const A = require('@faultline/auth');
+const N = require('@faultline/notifications');
+const { InMemoryIncidentRepository } = require('@faultline/incidents');
+const { ApplicationLogger } = require('@faultline/platform');
+const { ClusterRecipientResolver } = require('../apps/notification/dist/cluster-recipient.resolver.js');
+const { IncidentMessageBuilder } = require('../apps/notification/dist/message-builder.js');
+const { NotificationService } = require('../apps/notification/dist/notification.service.js');
+const { RetellCommunicationProvider, mapRetellStatus } = require('../apps/notification/dist/retell.provider.js');
+const { RetellWebhookController } = require('../apps/notification/dist/webhook.controller.js');
+const { VoiceActionController } = require('../apps/notification/dist/voice-action.controller.js');
+const { VoiceActionService } = require('../apps/notification/dist/voice-action.service.js');
 
-test('contact creation normalizes E.164 and rejects invalid phone numbers',async()=>{const repo=new N.InMemoryContactRepository();const value=contact('primary', 'ENGINEER',{phoneNumber:N.normalizePhoneNumber('+1 (555) 000-0001')});await repo.create(value);assert.equal((await repo.get('primary')).phoneNumber,'+15550000001');assert.throws(()=>N.normalizePhoneNumber('03001234567'),/E.164/);});
-test('groups reference reusable contacts and recipient resolution honors channel eligibility',async()=>{const contacts=new N.InMemoryContactRepository(),groups=new N.InMemoryNotificationGroupRepository();await contacts.create(contact('primary'));await contacts.create(contact('secondary','ENGINEER',{voiceEnabled:false}));await groups.create({id:'team',organizationId:'org',name:'Team',contactIds:['primary','secondary'],enabled:true,createdAt:'x',updatedAt:'x'});const result=await new N.RecipientResolver(contacts,groups).resolve({id:'s',order:1,target:{type:'GROUP',id:'team'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0});assert.deepEqual(result.recipients.map(x=>x.recipient.id),['primary']);assert.equal(result.skipped[0].reason,'CHANNEL_DISABLED');});
-test('policy creation and selection use severity and environment',async()=>{const repo=new N.InMemoryEscalationPolicyRepository();await repo.create(policy());const selected=await new N.RepositoryPolicySelector(repo).select(incident(),'org');assert.equal(selected.id,'policy');assert.equal(await new N.RepositoryPolicySelector(repo).select(incident({severity:'HIGH'}),'org'),undefined);});
-test('disabled recipient is audited and escalation advances',async()=>{const p=policy([{id:'s1',order:1,target:{type:'CONTACT',id:'primary'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0},{id:'s2',order:2,target:{type:'CONTACT',id:'secondary'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0}]);const h=await harness(p);await h.contacts.update(contact('primary','ENGINEER',{enabled:false}));await h.service.handleIncident(incident(),'org');assert.deepEqual(h.calls.map(x=>x.input.recipient.id),['secondary']);assert.ok((await h.audit.list('inc-1')).some(x=>x.type==='CONTACT_SKIPPED'));});
-test('first step, retry, and next-step escalation are stateful and audited',async()=>{const p=policy([{id:'s1',order:1,target:{type:'CONTACT',id:'primary'},channels:['VOICE'],maximumAttempts:2,retryDelayMs:0,waitBeforeNextStepMs:0},{id:'s2',order:2,target:{type:'CONTACT',id:'secondary'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0}]);const h=await harness(p);await h.service.handleIncident(incident(),'org');await h.service.processProviderEvent({requestId:'call-1',status:'NO_ANSWER'});await h.service.processProviderEvent({requestId:'call-2',status:'NO_ANSWER'});assert.deepEqual(h.calls.map(x=>x.input.recipient.id),['primary','primary','secondary']);const events=await h.audit.list('inc-1');assert.ok(events.some(x=>x.type==='RETRY_SCHEDULED'));assert.ok(events.some(x=>x.type==='ESCALATION_ADVANCED'));});
-test('acknowledgement API records audit state and stops delayed escalation',async()=>{const h=await harness(policy([{id:'s1',order:1,target:{type:'CONTACT',id:'primary'},channels:['VOICE'],maximumAttempts:2,retryDelayMs:20,waitBeforeNextStepMs:0}]));await h.service.handleIncident(incident(),'org');await h.service.processProviderEvent({requestId:'call-1',status:'FAILED'});const acknowledgements=new N.InMemoryIncidentAcknowledgementRepository(),securityAudit=[];const controller=new IncidentAcknowledgementController({async getIncident(){return incident()}},h.executions,acknowledgements,h.audit,{async record(entry){securityAudit.push(entry)}});await controller.acknowledge('inc-1',{acknowledgedBy:'engineer@example.com'});await new Promise(r=>setTimeout(r,40));assert.equal(h.calls.length,1);assert.equal((await h.executions.get('inc-1')).status,'ACKNOWLEDGED');assert.ok((await h.audit.list('inc-1')).some(x=>x.type==='INCIDENT_ACKNOWLEDGED'));assert.equal(securityAudit[0].action,'incident.acknowledged');});
-test('resolution stops retry and sends resolution message',async()=>{const h=await harness(policy([{id:'s1',order:1,target:{type:'CONTACT',id:'customer'},channels:['SMS'],maximumAttempts:2,retryDelayMs:20,waitBeforeNextStepMs:0}]));await h.service.handleIncident(incident(),'org');await h.service.processProviderEvent({requestId:'sms-1',status:'FAILED'});await h.service.handleIncident(incident({status:'RESOLVED',resolvedAt:'2026-01-01T00:02:00Z'}),'org');await new Promise(r=>setTimeout(r,40));assert.equal(h.calls.length,2);assert.match(h.calls[1].input.message,/resolved/);assert.equal((await h.executions.get('inc-1')).status,'RESOLVED');});
-test('all steps exhausted records terminal execution and audit event',async()=>{const h=await harness(policy([{id:'s1',order:1,target:{type:'CONTACT',id:'primary'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0}]));await h.service.handleIncident(incident(),'org');await h.service.processProviderEvent({requestId:'call-1',status:'FAILED'});assert.equal((await h.executions.get('inc-1')).status,'EXHAUSTED');assert.ok((await h.audit.list('inc-1')).some(x=>x.type==='ESCALATION_STOPPED'));});
-test('messages remain audience-specific',()=>{const b=new IncidentMessageBuilder();assert.match(b.build(incident(),'ENGINEERING'),/Critical incident/);assert.match(b.build(incident(),'STAKEHOLDER'),/Engineering has been notified/);assert.doesNotMatch(b.build(incident(),'END_USER'),/container|namespace|Kubernetes/i);});
-test('Retell request and signed webhook use provider boundary',async()=>{const config={apiKey:'secret',fromNumber:'+15550000000',voiceAgentId:'agent'};const provider=new RetellCommunicationProvider(config),original=global.fetch;global.fetch=async()=>new Response(JSON.stringify({call_id:'retell-call'}),{status:200});try{assert.equal((await provider.startVoiceCall({recipient:{id:'p',name:'P',phoneNumber:'+15550000001',audience:'ENGINEERING'},message:'Alert',context:{},metadata:{}})).requestId,'retell-call');let received;const controller=new RetellWebhookController(provider,{async processProviderEvent(e){received=e}});const body={event:'call_ended',call:{call_id:'retell-call',call_status:'ended',disconnection_reason:'dial_no_answer'}},rawBody=Buffer.from(JSON.stringify(body));await controller.receive({rawBody,body},await sign(rawBody.toString(),'secret'));assert.equal(received.status,'NO_ANSWER');}finally{global.fetch=original;}});
+function incident(overrides = {}) {
+  return {
+    id: 'inc-1',
+    correlationKey: 'c',
+    clusterId: 'production',
+    namespace: 'production',
+    primaryResource: { scope: 'deployment', clusterId: 'production', workload: 'payment-api' },
+    affectedResources: [],
+    classification: 'WORKLOAD_CRASHING',
+    title: 'Repeated crashes',
+    summary: 'crashes',
+    severity: 'CRITICAL',
+    status: 'ACTIVE',
+    confidence: 0.9,
+    firstSeen: '2026-01-01T00:00:00Z',
+    lastSeen: '2026-01-01T00:01:00Z',
+    anomalies: [],
+    evidence: [],
+    timeline: [],
+    ...overrides,
+  };
+}
 
-async function voiceHarness(p=policy()){const h=await harness(p),incidents=new InMemoryIncidentRepository(),acks=new N.InMemoryIncidentAcknowledgementRepository();await incidents.createIncident(incident());await h.service.handleIncident(incident(),'org');const actions=new VoiceActionService(incidents,h.attempts,h.executions,acks,h.audit,new N.InMemoryIdempotencyStore(),h.service,{async publish(){},async subscribe(){return{async close(){}}},async close(){}});const request={incidentId:'inc-1',notificationAttemptId:(await h.attempts.listForIncident('inc-1'))[0].id,recipientId:'primary',action:'ACKNOWLEDGE_INCIDENT',providerCallId:'call-1',timestamp:new Date().toISOString()};return{...h,incidents,acks,actions,request};}
-test('valid voice acknowledgement records ownership and stops escalation',async()=>{const h=await voiceHarness();const result=await h.actions.process(h.request);assert.equal(result.outcome,'ACKNOWLEDGED');assert.equal((await h.executions.get('inc-1')).status,'ACKNOWLEDGED');assert.deepEqual(await h.acks.get('inc-1'),{incidentId:'inc-1',acknowledgedBy:'primary',acknowledgedAt:(await h.acks.get('inc-1')).acknowledgedAt,notificationAttemptId:h.request.notificationAttemptId,providerCallId:'call-1',channel:'VOICE'});assert.equal((await h.attempts.get(h.request.notificationAttemptId)).status,'ACKNOWLEDGED');await h.service.handleIncident(incident(),'org');assert.equal(h.calls.length,1);});
-test('duplicate voice acknowledgement is side-effect free',async()=>{const h=await voiceHarness();await h.actions.process(h.request);const before=(await h.audit.list('inc-1')).length;const duplicate=await h.actions.process(h.request);assert.equal(duplicate.processed,false);assert.equal((await h.audit.list('inc-1')).length,before);});
-test('voice action rejects invalid incident, attempt, and recipient relationships',async()=>{const h=await voiceHarness();await assert.rejects(()=>h.actions.process({...h.request,incidentId:'missing'}),/Incident not found/);await assert.rejects(()=>h.actions.process({...h.request,notificationAttemptId:'missing'}),/does not belong/);await assert.rejects(()=>h.actions.process({...h.request,recipientId:'secondary'}),/does not match/);});
-test('resolved and already acknowledged incidents return safe outcomes',async()=>{const resolved=await voiceHarness();await resolved.incidents.updateIncident(incident({status:'RESOLVED',resolvedAt:new Date().toISOString()}));assert.equal((await resolved.actions.process(resolved.request)).outcome,'NO_LONGER_REQUIRED');assert.ok((await resolved.audit.list('inc-1')).some(x=>x.type==='ACKNOWLEDGEMENT_REJECTED'));const owned=await voiceHarness();await owned.actions.process(owned.request);assert.equal((await owned.actions.process({...owned.request,providerCallId:'call-1'})).outcome,'ALREADY_ACKNOWLEDGED');});
-test('engineer decline advances immediately and ambiguous intent changes no state',async()=>{const p=policy([{id:'s1',order:1,target:{type:'CONTACT',id:'primary'},channels:['VOICE'],maximumAttempts:2,retryDelayMs:0,waitBeforeNextStepMs:0},{id:'s2',order:2,target:{type:'CONTACT',id:'secondary'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0}]);const declined=await voiceHarness(p);assert.equal((await declined.actions.process({...declined.request,action:'DECLINE_INCIDENT'})).outcome,'DECLINED');assert.deepEqual(declined.calls.map(x=>x.input.recipient.id),['primary','secondary']);assert.ok((await declined.audit.list('inc-1')).some(x=>x.type==='INCIDENT_DECLINED'));const unknown=await voiceHarness();assert.equal((await unknown.actions.process({...unknown.request,action:'UNKNOWN'})).outcome,'UNKNOWN');assert.equal((await unknown.executions.get('inc-1')).status,'ACTIVE');assert.equal((await unknown.attempts.get(unknown.request.notificationAttemptId)).status,'SENT');});
-test('stale callback is rejected after escalation advances',async()=>{const p=policy([{id:'s1',order:1,target:{type:'CONTACT',id:'primary'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0},{id:'s2',order:2,target:{type:'CONTACT',id:'secondary'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0}]);const h=await voiceHarness(p);await h.service.processProviderEvent({requestId:'call-1',status:'NO_ANSWER'});await assert.rejects(()=>h.actions.process(h.request),/advanced beyond/);assert.ok((await h.audit.list('inc-1')).some(x=>x.details?.reason==='ESCALATION_ADVANCED'));});
-test('voice action endpoint rejects invalid provider authentication',async()=>{const h=await voiceHarness(),provider=new RetellCommunicationProvider({apiKey:'secret',fromNumber:'+15550000000',voiceAgentId:'agent'}),controller=new VoiceActionController(provider,h.actions),rawBody=Buffer.from(JSON.stringify(h.request));await assert.rejects(()=>controller.receive({rawBody,body:h.request},h.request,'invalid'),/Invalid provider signature/);});
+function contact(id, userId, overrides = {}) {
+  return {
+    id,
+    organizationId: 'org',
+    userId,
+    name: id,
+    role: 'ENGINEER',
+    phoneNumber: '+15550000001',
+    smsEnabled: true,
+    voiceEnabled: true,
+    enabled: true,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
 
-function lifecycleEvent(type,state,overrides={}){const current=incident({logicalService:'payments',...overrides});return{id:`event-${type}-${state}-${current.severity}-${current.estimatedRestorationAt??''}`,type,incident:current,state,occurredAt:new Date().toISOString(),changedFields:type==='INCIDENT_ETA_UPDATED'?['estimatedRestorationAt']:type==='INCIDENT_SEVERITY_CHANGED'?['severity']:['status']};}
-async function lifecycleHarness(){const rules=[{audience:'ENGINEERING',target:{type:'CONTACT',id:'primary'},channels:['SMS'],subscriptions:['INITIAL','STATUS_UPDATES','RESOLUTION'],services:['payments']},{audience:'STAKEHOLDER',target:{type:'CONTACT',id:'stakeholder'},channels:['SMS'],subscriptions:['INITIAL','RESOLUTION'],services:['payments']},{audience:'END_USER',target:{type:'CONTACT',id:'customer'},channels:['SMS'],subscriptions:['STATUS_UPDATES','RESOLUTION'],services:['payments'],minimumIntervalMs:0},{audience:'ENGINEERING',target:{type:'CONTACT',id:'secondary'},channels:['SMS'],subscriptions:['INITIAL'],services:['search']}];const h=await harness(policy(undefined,{communicationRules:rules}));await h.contacts.create(contact('stakeholder','STAKEHOLDER'));const history=new N.InMemoryIncidentCommunicationRepository();const lifecycle=new LifecycleCommunicationService(new N.RepositoryPolicySelector(h.policies),new N.RecipientResolver(h.contacts,h.groups),history,{name:'mock',async startVoiceCall(input){h.calls.push({channel:'VOICE',input});return{requestId:`voice-${h.calls.length}`,status:'SENT'}},async sendSms(input){h.calls.push({channel:'SMS',input});return{requestId:`sms-${h.calls.length}`,status:'SENT'}},async getCallStatus(id){return{requestId:id,status:'SENT'}}},new IncidentMessageBuilder());return{...h,history,lifecycle};}
-test('initial communication applies audience subscriptions and logical-service targeting',async()=>{const h=await lifecycleHarness();await h.lifecycle.handle(lifecycleEvent('INCIDENT_CREATED','OPEN'),'org');assert.deepEqual(h.calls.map(x=>x.input.recipient.id),['primary','stakeholder']);const records=await h.history.listForIncident('inc-1');assert.ok(records.every(x=>x.communicationType==='INITIAL'&&x.status==='SENT'));assert.ok(!h.calls.some(x=>x.input.recipient.id==='secondary'));});
-test('status updates are audience-aware and exact duplicates are suppressed',async()=>{const h=await lifecycleHarness(),event=lifecycleEvent('INCIDENT_STATUS_CHANGED','INVESTIGATING');await h.lifecycle.handle(event,'org');await h.lifecycle.handle(event,'org');assert.deepEqual(h.calls.map(x=>x.input.recipient.id),['primary','customer']);assert.match(h.calls[0].input.message,/leading signal/i);assert.doesNotMatch(h.calls[1].input.message,/pod|node|cluster|container|10\./i);});
-test('ETA is included only when explicitly present and changed ETA creates an update',async()=>{const b=new IncidentMessageBuilder();assert.doesNotMatch(b.buildLifecycle(lifecycleEvent('INCIDENT_STATUS_CHANGED','INVESTIGATING'),'END_USER'),/estimated restoration/i);assert.match(b.buildLifecycle(lifecycleEvent('INCIDENT_ETA_UPDATED','INVESTIGATING',{estimatedRestorationAt:'2026-01-01T15:30:00Z'}),'END_USER'),/15:30 UTC/);const h=await lifecycleHarness();await h.lifecycle.handle(lifecycleEvent('INCIDENT_ETA_UPDATED','INVESTIGATING',{estimatedRestorationAt:'2026-01-01T15:30:00Z'}),'org');await h.lifecycle.handle(lifecycleEvent('INCIDENT_ETA_UPDATED','INVESTIGATING',{estimatedRestorationAt:'2026-01-01T16:00:00Z'}),'org');assert.equal(h.calls.length,4);});
-test('severity escalation communicates without resolving the incident',async()=>{const h=await lifecycleHarness(),configured=await h.policies.get('policy');await h.policies.update({...configured,match:{...configured.match,severities:['HIGH','CRITICAL']}});await h.lifecycle.handle(lifecycleEvent('INCIDENT_SEVERITY_CHANGED','INVESTIGATING',{severity:'HIGH'}),'org');await h.lifecycle.handle(lifecycleEvent('INCIDENT_SEVERITY_CHANGED','INVESTIGATING',{severity:'CRITICAL'}),'org');assert.equal(h.calls.length,4);assert.ok(h.calls.some(x=>/critical/i.test(x.input.message)));});
-test('resolution sends final subscribed messages with safe audience detail',async()=>{const h=await lifecycleHarness();const event=lifecycleEvent('INCIDENT_RESOLVED','RESOLVED',{status:'RESOLVED',resolvedAt:'2026-01-01T00:31:00Z'});await h.lifecycle.handle(event,'org');assert.deepEqual(h.calls.map(x=>x.input.recipient.id),['primary','stakeholder','customer']);assert.match(h.calls[0].input.message,/31 minutes/);assert.match(h.calls[2].input.message,/Normal service has been restored/);assert.doesNotMatch(h.calls[2].input.message,/classification|workload|container/i);});
+async function harness(options = {}) {
+  const incidents = new InMemoryIncidentRepository();
+  await incidents.createIncident(incident());
+  const users = new A.InMemoryUserRepository();
+  const assignments = new N.InMemoryClusterSreAssignmentRepository();
+  const contacts = new N.InMemoryContactRepository();
+  const admin = await users.create({ organizationId: 'org', email: 'admin@example.com', name: 'Head Engineer', role: A.ROLES.ADMIN, status: 'active' });
+  await contacts.create(contact('admin-contact', admin.id, { role: 'TEAM_LEAD', phoneNumber: '+15550000009' }));
+  const engineers = [];
+  for (let index = 0; index < (options.engineerCount ?? 1); index++) {
+    const engineer = await users.create({ organizationId: 'org', email: `sre${index}@example.com`, name: `SRE ${index}`, role: A.ROLES.ONSITE_ENGINEER, status: 'active' });
+    engineers.push(engineer);
+    if (options.assignEngineers !== false)
+      await assignments.assign('production', engineer.id, admin.id);
+    if (options.linkEngineerContacts !== false)
+      await contacts.create(contact(`sre-contact-${index}`, engineer.id, { phoneNumber: `+1555000000${index + 1}`, ...(options.contactOverrides ?? {}) }));
+  }
+  const attempts = new N.InMemoryNotificationAttemptRepository();
+  const states = new N.InMemoryIncidentNotificationStateRepository();
+  const audit = new N.InMemoryNotificationAuditRepository();
+  const communications = new N.InMemoryIncidentCommunicationRepository();
+  const calls = [];
+  const provider = {
+    name: 'mock',
+    async startVoiceCall(input) {
+      calls.push({ channel: 'VOICE', input });
+      return { requestId: `call-${calls.length}`, status: 'SENT' };
+    },
+    async sendSms(input) {
+      calls.push({ channel: 'SMS', input });
+      return { requestId: `sms-${calls.length}`, status: 'SENT' };
+    },
+    async getCallStatus(requestId) { return { requestId, status: 'IN_PROGRESS' }; },
+    ...(options.provider ?? {}),
+  };
+  const resolver = new ClusterRecipientResolver(users, assignments, contacts);
+  const service = new NotificationService(
+    new N.SeverityNotificationPolicy(false),
+    resolver,
+    provider,
+    attempts,
+    states,
+    audit,
+    new N.InMemoryIdempotencyStore(),
+    new IncidentMessageBuilder(),
+    new ApplicationLogger('notification', 'fatal'),
+    communications,
+    incidents,
+    { async get(id) { return id === 'production' ? { id, name: 'Production EU' } : undefined; } },
+  );
+  return { service, incidents, users, assignments, contacts, admin, engineers, attempts, states, audit, communications, calls };
+}
 
-test('attempt transitions ignore duplicate and out-of-order webhooks',async()=>{const repo=new N.InMemoryNotificationAttemptRepository(),base={id:'a',incidentId:'i',recipientId:'r',escalationStep:0,channel:'VOICE',provider:'retell',providerRequestId:'call',status:'SENT',attemptNumber:1,createdAt:'2026-01-01T00:00:00Z'};await repo.save(base);assert.equal((await repo.updateStatus('a','ANSWERED')).changed,true);assert.equal((await repo.updateStatus('a','IN_PROGRESS')).changed,false);assert.equal((await repo.updateStatus('a','ANSWERED')).changed,false);assert.equal((await repo.get('a')).status,'ANSWERED');});
-test('persisted retry can be recovered by a replacement worker',async()=>{const p=policy([{id:'s1',order:1,target:{type:'CONTACT',id:'primary'},channels:['VOICE'],maximumAttempts:2,retryDelayMs:60000,waitBeforeNextStepMs:0}]),h=await harness(p,{async startVoiceCall(){throw new Error('offline')}});await h.service.handleIncident(incident(),'org');let execution=await h.executions.get('inc-1');assert.ok(execution.nextAttemptAt);execution=await h.executions.save({...execution,nextAttemptAt:new Date(0).toISOString(),updatedAt:new Date().toISOString()});const recoveredCalls=[],replacement=new NotificationService(new N.SeverityNotificationPolicy(false),new N.RepositoryPolicySelector(h.policies),new N.RecipientResolver(h.contacts,h.groups),{name:'mock',async startVoiceCall(input){recoveredCalls.push(input);return{requestId:'recovered',status:'SENT'}},async sendSms(){throw new Error()},async getCallStatus(id){return{requestId:id,status:'SENT'}}},h.attempts,h.executions,h.audit,new N.InMemoryIdempotencyStore(),new IncidentMessageBuilder(),new ApplicationLogger('notification','fatal'));await replacement.recover(execution,incident(),p);assert.equal(recoveredCalls.length,1);assert.equal((await h.attempts.listForIncident('inc-1')).length,2);});
-test('only one worker can lease the same due escalation',async()=>{const repo=new N.InMemoryEscalationExecutionRepository(),now=new Date().toISOString();await repo.save({incidentId:'i',policyId:'p',currentStep:0,attemptCount:1,status:'ACTIVE',nextAttemptAt:now,startedAt:now,updatedAt:now});const [a,b]=await Promise.all([repo.claimDue('i','worker-a',now,new Date(Date.now()+30000).toISOString()),repo.claimDue('i','worker-b',now,new Date(Date.now()+30000).toISOString())]);assert.equal([a,b].filter(Boolean).length,1);});
-test('resolution cancels persisted retry state',async()=>{const p=policy([{id:'s1',order:1,target:{type:'CONTACT',id:'primary'},channels:['VOICE'],maximumAttempts:2,retryDelayMs:60000,waitBeforeNextStepMs:0}],false),h=await harness(p,{async startVoiceCall(){throw new Error('offline')}});await h.service.handleIncident(incident(),'org');assert.ok((await h.executions.get('inc-1')).nextAttemptAt);await h.service.handleIncident(incident({status:'RESOLVED',resolvedAt:new Date().toISOString()}),'org');const state=await h.executions.get('inc-1');assert.equal(state.status,'RESOLVED');assert.equal(state.nextAttemptAt,undefined);});
-test('scheduler contains database failures and reports itself stalled',async()=>{const config={schedulerPollMs:100,schedulerLeaseMs:1000,staleAttemptMs:1000,attemptRetentionDays:1,auditRetentionDays:1},health={register(){}},scheduler=new RecoverySchedulerService(config,{async listDue(){throw new Error('database down')}},{},{},{},{},{},{},health);await scheduler.tick();await assert.rejects(()=>scheduler.ping(),/stalled/);});
+test('contact creation normalizes E.164 and user lookup is organization scoped', async () => {
+  const repo = new N.InMemoryContactRepository();
+  await repo.create(contact('sre', 'user-1', { phoneNumber: N.normalizePhoneNumber('+1 (555) 000-0001') }));
+  assert.equal((await repo.get('sre')).phoneNumber, '+15550000001');
+  assert.deepEqual((await repo.findByUserIds(['user-1'], 'org')).map((value) => value.id), ['sre']);
+  assert.equal((await repo.findByUserIds(['user-1'], 'other')).length, 0);
+  assert.throws(() => N.normalizePhoneNumber('03001234567'), /E.164/);
+});
 
-async function onCallFixture(){const schedules=new N.InMemoryOnCallScheduleRepository(),shifts=new N.InMemoryOnCallShiftRepository(),overrides=new N.InMemoryAvailabilityOverrideRepository();await schedules.create({id:'payments',organizationId:'org',teamId:'payments-team',name:'Payments primary',timezone:'America/New_York',enabled:true,createdAt:'x',updatedAt:'x'});return{schedules,shifts,overrides,resolver:new N.OnCallResolver(schedules,shifts,overrides)};}
-test('on-call resolver returns the current shift and no assignment outside it',async()=>{const h=await onCallFixture();await h.shifts.create({id:'day',scheduleId:'payments',contactId:'primary',startsAt:'2026-06-01T13:00:00.000Z',endsAt:'2026-06-01T21:00:00.000Z',createdAt:'x',updatedAt:'x'});assert.equal((await h.resolver.resolve('payments','2026-06-01T15:00:00Z')).contactId,'primary');assert.equal(await h.resolver.resolve('payments','2026-06-01T22:00:00Z'),undefined);});
-test('explicit overnight shifts remain active across the UTC date boundary',async()=>{const h=await onCallFixture();await h.shifts.create({id:'night',scheduleId:'payments',contactId:'secondary',startsAt:'2026-06-01T21:00:00.000Z',endsAt:'2026-06-02T05:00:00.000Z',createdAt:'x',updatedAt:'x'});assert.equal((await h.resolver.resolve('payments','2026-06-02T01:00:00Z')).contactId,'secondary');});
-test('offset timestamps normalize to UTC and preserve DST-distinct instants',()=>{assert.deepEqual(N.validateTimeRange('2026-03-08T01:30:00-05:00','2026-03-08T03:30:00-04:00'),{startsAt:'2026-03-08T06:30:00.000Z',endsAt:'2026-03-08T07:30:00.000Z'});assert.equal(N.isValidTimezone('America/New_York'),true);assert.equal(N.isValidTimezone('Not/A_Timezone'),false);});
-test('temporary override wins and an expired override does not',async()=>{const h=await onCallFixture();await h.shifts.create({id:'day',scheduleId:'payments',contactId:'primary',startsAt:'2026-06-01T13:00:00.000Z',endsAt:'2026-06-01T21:00:00.000Z',createdAt:'x',updatedAt:'x'});await h.overrides.create({id:'vacation',scheduleId:'payments',replacementContactId:'secondary',startsAt:'2026-06-01T14:00:00.000Z',endsAt:'2026-06-01T16:00:00.000Z',reason:'vacation',createdAt:'x',updatedAt:'x'});assert.equal((await h.resolver.resolve('payments','2026-06-01T15:00:00Z')).contactId,'secondary');assert.equal((await h.resolver.resolve('payments','2026-06-01T17:00:00Z')).contactId,'primary');});
-test('on-call contact availability is checked per requested channel',async()=>{const h=await onCallFixture(),contacts=new N.InMemoryContactRepository(),groups=new N.InMemoryNotificationGroupRepository();await contacts.create(contact('primary','ENGINEER',{enabled:false}));await h.shifts.create({id:'day',scheduleId:'payments',contactId:'primary',startsAt:'2026-01-01T00:00:00.000Z',endsAt:'2027-01-01T00:00:00.000Z',createdAt:'x',updatedAt:'x'});let result=await new N.RecipientResolver(contacts,groups,h.resolver).resolve({id:'s',order:1,target:{type:'ON_CALL_SCHEDULE',id:'payments'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0},'2026-06-01T00:00:00Z');assert.equal(result.skipped[0].reason,'CONTACT_DISABLED');await contacts.update(contact('primary','ENGINEER',{voiceEnabled:false,smsEnabled:true}));result=await new N.RecipientResolver(contacts,groups,h.resolver).resolve({id:'s',order:1,target:{type:'ON_CALL_SCHEDULE',id:'payments'},channels:['VOICE'],maximumAttempts:1,retryDelayMs:0,waitBeforeNextStepMs:0},'2026-06-01T00:00:00Z');assert.equal(result.skipped[0].reason,'CHANNEL_DISABLED');});
-test('escalation re-resolves on-call on retry and preserves attempt recipients',async()=>{const contacts=new N.InMemoryContactRepository(),groups=new N.InMemoryNotificationGroupRepository();await contacts.create(contact('primary'));await contacts.create(contact('secondary'));let resolution=0;const onCall={async resolve(){return{scheduleId:'payments',contactId:resolution++===0?'primary':'secondary',shift:{id:'shift',scheduleId:'payments',contactId:'primary',startsAt:'2020-01-01T00:00:00Z',endsAt:'2030-01-01T00:00:00Z',createdAt:'x',updatedAt:'x'},validUntil:'2030-01-01T00:00:00Z'}}},p=policy([{id:'s1',order:1,target:{type:'ON_CALL_SCHEDULE',id:'payments'},channels:['VOICE'],maximumAttempts:2,retryDelayMs:0,waitBeforeNextStepMs:0}]),policies=new N.InMemoryEscalationPolicyRepository();await policies.create(p);const attempts=new N.InMemoryNotificationAttemptRepository(),executions=new N.InMemoryEscalationExecutionRepository(),audit=new N.InMemoryNotificationAuditRepository();let calls=0;const service=new NotificationService(new N.SeverityNotificationPolicy(false),new N.RepositoryPolicySelector(policies),new N.RecipientResolver(contacts,groups,onCall),{name:'mock',async startVoiceCall(){if(++calls===1)throw new Error('retry');return{requestId:'ok',status:'SENT'}},async sendSms(){throw new Error('unused')},async getCallStatus(id){return{requestId:id,status:'SENT'}}},attempts,executions,audit,new N.InMemoryIdempotencyStore(),new IncidentMessageBuilder(),new ApplicationLogger('notification','fatal'));await service.handleIncident(incident(),'org');assert.deepEqual((await attempts.listForIncident('inc-1')).map(a=>a.recipientId),['primary','secondary']);});
+test('assigned SRE is contacted immediately on every enabled channel', async () => {
+  const h = await harness();
+  await h.service.handleIncident(incident(), 'org');
+  assert.deepEqual(h.calls.map((value) => value.channel).sort(), ['SMS', 'VOICE']);
+  assert.ok(h.calls.every((value) => value.input.recipient.id === 'sre-contact-0'));
+  const state = await h.states.get('inc-1');
+  assert.deepEqual(state.recipientIds, ['sre-contact-0']);
+  assert.equal(state.fallbackUsed, false);
+  const communications = await h.communications.listForIncident('inc-1');
+  assert.equal(communications.length, 2);
+  const voice = communications.find((value) => value.channel === 'VOICE');
+  assert.equal(voice.status, 'PENDING');
+  assert.equal(voice.providerRequestId, 'call-1');
+  assert.equal(h.calls.find((value) => value.channel === 'VOICE').input.context.cluster_name, 'Production EU');
+  assert.equal(h.calls.find((value) => value.channel === 'VOICE').input.context.incident_status, 'ACTIVE');
+});
+
+test('all assigned SREs are contacted in one dispatch pass', async () => {
+  const h = await harness({ engineerCount: 2, contactOverrides: { smsEnabled: false } });
+  await h.service.handleIncident(incident(), 'org');
+  assert.deepEqual(h.calls.map((value) => value.input.recipient.id).sort(), ['sre-contact-0', 'sre-contact-1']);
+  assert.equal((await h.attempts.listForIncident('inc-1')).length, 2);
+});
+
+test('primary admin is used when no SRE is assigned', async () => {
+  const h = await harness({ assignEngineers: false, contactOverrides: { smsEnabled: false } });
+  await h.service.handleIncident(incident(), 'org');
+  assert.ok(h.calls.every((value) => value.input.recipient.id === 'admin-contact'));
+  assert.equal((await h.states.get('inc-1')).fallbackUsed, true);
+  assert.ok((await h.audit.list('inc-1')).some((value) => value.type === 'ADMIN_FALLBACK_USED'));
+});
+
+test('uncontactable assigned SRE is audited and falls back to admin', async () => {
+  const h = await harness({ linkEngineerContacts: false });
+  await h.service.handleIncident(incident(), 'org');
+  assert.ok(h.calls.every((value) => value.input.recipient.id === 'admin-contact'));
+  assert.ok((await h.audit.list('inc-1')).some((value) => value.details?.reason === 'CONTACT_NOT_LINKED'));
+});
+
+test('duplicate incident events do not redeliver direct notifications', async () => {
+  const h = await harness();
+  await h.service.handleIncident(incident(), 'org');
+  await h.service.handleIncident(incident(), 'org');
+  assert.equal(h.calls.length, 2);
+});
+
+test('high incidents remain disabled unless the high-severity switch is enabled', async () => {
+  const h = await harness();
+  await h.service.handleIncident(incident({ severity: 'HIGH' }), 'org');
+  assert.equal(h.calls.length, 0);
+});
+
+test('provider request failure is recorded and immediately falls back to admin', async () => {
+  const h = await harness({ contactOverrides: { smsEnabled: false }, provider: { async startVoiceCall() { throw new Error('offline'); } } });
+  await h.service.handleIncident(incident(), 'org');
+  const attempts = await h.attempts.listForIncident('inc-1');
+  const sreAttempt = attempts.find((value) => value.recipientSource === 'ASSIGNED_SRE');
+  assert.equal(sreAttempt.status, 'FAILED');
+  assert.equal(sreAttempt.failureReason, 'offline');
+  assert.ok(attempts.some((value) => value.recipientSource === 'ADMIN_FALLBACK'));
+  assert.equal((await h.communications.findByDedupeKey(`direct:inc-1:sre-contact-0:VOICE`)).status, 'FAILED');
+  assert.ok((await h.audit.list('inc-1')).some((value) => value.type === 'CALL_FAILED'));
+});
+
+test('provider callbacks remain idempotent and preserve attempt history', async () => {
+  const h = await harness({ contactOverrides: { smsEnabled: false } });
+  await h.service.handleIncident(incident(), 'org');
+  await h.service.processProviderEvent({ requestId: 'call-1', status: 'ANSWERED' });
+  await h.service.processProviderEvent({ requestId: 'call-1', status: 'ANSWERED' });
+  assert.equal((await h.attempts.listForIncident('inc-1'))[0].status, 'ANSWERED');
+  assert.equal((await h.communications.listForIncident('inc-1'))[0].status, 'ANSWERED');
+  assert.equal((await h.audit.list('inc-1')).filter((value) => value.type === 'VOICE_CALL_ANSWERED').length, 1);
+});
+
+test('failed provider callback falls back to admin once and preserves the final outcome', async () => {
+  const h = await harness({ contactOverrides: { smsEnabled: false } });
+  await h.service.handleIncident(incident(), 'org');
+  await h.service.processProviderEvent({ requestId: 'call-1', status: 'NO_ANSWER' });
+  await h.service.processProviderEvent({ requestId: 'call-1', status: 'NO_ANSWER' });
+  assert.equal((await h.communications.findByProviderRequestId('call-1')).status, 'NO_ANSWER');
+  assert.equal(h.calls.filter((call) => call.input.recipient.id === 'admin-contact').length, 2);
+  assert.equal((await h.audit.list('inc-1')).filter((value) => value.type === 'ADMIN_FALLBACK_USED').length, 1);
+});
+
+test('resolved incidents close direct notification state without new delivery', async () => {
+  const h = await harness({ contactOverrides: { smsEnabled: false } });
+  await h.service.handleIncident(incident(), 'org');
+  await h.service.handleIncident(incident({ status: 'RESOLVED', resolvedAt: new Date().toISOString() }), 'org');
+  assert.equal((await h.states.get('inc-1')).status, 'RESOLVED');
+  assert.equal(h.calls.length, 1);
+});
+
+test('Retell request and signed webhook use provider boundary', async () => {
+  const config = { apiKey: 'secret', fromNumber: '+15550000000', voiceAgentId: 'agent' };
+  const requests = [];
+  const provider = new RetellCommunicationProvider(config, {
+    call: {
+      async createPhoneCall(body) {
+        requests.push(body);
+        return { call_id: 'retell-call', call_status: 'registered' };
+      },
+      async retrieve() {
+        return { call_id: 'retell-call', call_status: 'ongoing' };
+      },
+    },
+  });
+  const input = {
+    recipient: { id: 'p', name: 'P', phoneNumber: '+15550000001', audience: 'ENGINEERING' },
+    message: 'Critical alert',
+    context: { cluster_name: 'Production EU', incident_status: 'ACTIVE' },
+    metadata: { incidentId: 'inc-1' },
+  };
+  assert.equal((await provider.startVoiceCall(input)).requestId, 'retell-call');
+  assert.deepEqual(requests[0], {
+    from_number: '+15550000000',
+    to_number: '+15550000001',
+    override_agent_id: 'agent',
+    metadata: { incidentId: 'inc-1' },
+    retell_llm_dynamic_variables: {
+      cluster_name: 'Production EU',
+      incident_status: 'ACTIVE',
+      notification_message: 'Critical alert',
+      voice_script: 'This is the Faultline incident notification system. Critical alert Would you like to acknowledge this incident?',
+      caller_identity: 'Faultline incident notification system',
+      acknowledgement_prompt: 'Would you like to acknowledge this incident?',
+      acknowledgement_confirmation: 'The incident has been acknowledged. Further notification will stop.',
+      allowed_actions: 'ACKNOWLEDGE_INCIDENT,DECLINE_INCIDENT,UNKNOWN',
+    },
+  });
+  assert.equal((await provider.getCallStatus('retell-call')).status, 'IN_PROGRESS');
+  let received;
+  const controller = new RetellWebhookController(provider, { async processProviderEvent(event) { received = event; } }, { async processProviderResponse() {} });
+  const body = { event: 'call_ended', call: { call_id: 'retell-call', call_status: 'ended', disconnection_reason: 'dial_no_answer' } };
+  const rawBody = Buffer.from(JSON.stringify(body));
+  await controller.receive({ rawBody, body }, await sign(rawBody.toString(), 'secret'));
+  assert.equal(received.status, 'NO_ANSWER');
+  assert.equal(mapRetellStatus('ended', 'registered_call_timeout'), 'FAILED');
+  assert.equal(mapRetellStatus('ended', 'user_declined'), 'DECLINED');
+});
+
+async function voiceHarness() {
+  const h = await harness({ contactOverrides: { smsEnabled: false } });
+  const acknowledgements = new N.InMemoryIncidentAcknowledgementRepository();
+  await h.service.handleIncident(incident(), 'org');
+  const attempt = (await h.attempts.listForIncident('inc-1'))[0];
+  const actions = new VoiceActionService(
+    h.incidents,
+    h.attempts,
+    h.states,
+    acknowledgements,
+    h.audit,
+    new N.InMemoryIdempotencyStore(),
+    { async publish() {}, async subscribe() { return { async close() {} }; }, async close() {} },
+    h.communications,
+    h.service,
+  );
+  const request = {
+    incidentId: 'inc-1',
+    notificationAttemptId: attempt.id,
+    recipientId: attempt.recipientId,
+    action: 'ACKNOWLEDGE_INCIDENT',
+    providerCallId: attempt.providerRequestId,
+    timestamp: new Date().toISOString(),
+  };
+  return { ...h, acknowledgements, actions, request };
+}
+
+test('voice acknowledgement preserves webhook validation and stops notification state', async () => {
+  const h = await voiceHarness();
+  const result = await h.actions.process(h.request);
+  assert.equal(result.outcome, 'ACKNOWLEDGED');
+  assert.equal((await h.states.get('inc-1')).status, 'ACKNOWLEDGED');
+  assert.equal((await h.attempts.get(h.request.notificationAttemptId)).status, 'ACKNOWLEDGED');
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'ACKNOWLEDGED');
+  assert.equal((await h.acknowledgements.get('inc-1')).acknowledgedBy, 'sre-contact-0');
+});
+
+test('decline records the response and immediately contacts the primary admin', async () => {
+  const h = await voiceHarness();
+  const result = await h.actions.process({ ...h.request, action: 'DECLINE_INCIDENT' });
+  assert.equal(result.outcome, 'DECLINED');
+  assert.ok(h.calls.some((call) => call.input.recipient.id === 'admin-contact'));
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'DECLINED');
+  assert.equal((await h.states.get('inc-1')).status, 'ACTIVE');
+});
+
+test('signed Retell end-of-call transcript acknowledges the incident', async () => {
+  const h = await voiceHarness();
+  const provider = new RetellCommunicationProvider({ apiKey: 'secret', fromNumber: '+15550000000', voiceAgentId: 'agent' });
+  const controller = new RetellWebhookController(provider, h.service, h.actions);
+  const body = { event: 'call_ended', call: { call_id: h.request.providerCallId, call_status: 'ended', transcript_object: [
+    { role: 'agent', content: 'Will you acknowledge this incident?' },
+    { role: 'user', content: 'Yes, I acknowledge the incident.' },
+  ] } };
+  const rawBody = Buffer.from(JSON.stringify(body));
+  await controller.receive({ rawBody, body }, await sign(rawBody.toString(), 'secret'));
+  assert.equal((await h.states.get('inc-1')).status, 'ACKNOWLEDGED');
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'ACKNOWLEDGED');
+});
+
+test('signed Retell tool decision declines and starts the admin fallback', async () => {
+  const h = await voiceHarness();
+  const provider = new RetellCommunicationProvider({ apiKey: 'secret', fromNumber: '+15550000000', voiceAgentId: 'agent' });
+  const controller = new RetellWebhookController(provider, h.service, h.actions);
+  const body = { event: 'call_analyzed', call: { call_id: h.request.providerCallId, call_status: 'ended', transcript_with_tool_calls: [
+    { role: 'tool', name: 'record_incident_response', arguments: JSON.stringify({ action: 'DECLINE_INCIDENT' }) },
+  ] } };
+  const rawBody = Buffer.from(JSON.stringify(body));
+  await controller.receive({ rawBody, body }, await sign(rawBody.toString(), 'secret'));
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'DECLINED');
+  assert.ok(h.calls.some((call) => call.input.recipient.id === 'admin-contact'));
+});
+
+test('Retell webhook rejects an invalid signature before processing an event', async () => {
+  const h = await voiceHarness();
+  const provider = new RetellCommunicationProvider({ apiKey: 'secret', fromNumber: '+15550000000', voiceAgentId: 'agent' });
+  const controller = new RetellWebhookController(provider, h.service, h.actions);
+  const body = { event: 'call_ended', call: { call_id: h.request.providerCallId, call_status: 'ended' } };
+  await assert.rejects(
+    () => controller.receive({ rawBody: Buffer.from(JSON.stringify(body)), body }, 'invalid'),
+    /Invalid webhook signature/,
+  );
+  assert.equal((await h.states.get('inc-1')).status, 'ACTIVE');
+});
+
+test('duplicate voice acknowledgement is side-effect free', async () => {
+  const h = await voiceHarness();
+  await h.actions.process(h.request);
+  const before = (await h.audit.list('inc-1')).length;
+  const duplicate = await h.actions.process(h.request);
+  assert.equal(duplicate.processed, false);
+  assert.equal((await h.audit.list('inc-1')).length, before);
+});
+
+test('late failure events cannot overwrite an acknowledged call or start fallback', async () => {
+  const h = await voiceHarness();
+  await h.actions.process(h.request);
+  await h.service.processProviderEvent({ requestId: h.request.providerCallId, status: 'FAILED' });
+  assert.equal((await h.attempts.get(h.request.notificationAttemptId)).status, 'ACKNOWLEDGED');
+  assert.equal((await h.communications.findByProviderRequestId(h.request.providerCallId)).status, 'ACKNOWLEDGED');
+  assert.equal(h.calls.filter((call) => call.input.recipient.id === 'admin-contact').length, 0);
+});
+
+test('voice action endpoint rejects invalid provider authentication', async () => {
+  const h = await voiceHarness();
+  const provider = new RetellCommunicationProvider({ apiKey: 'secret', fromNumber: '+15550000000', voiceAgentId: 'agent' });
+  const controller = new VoiceActionController(provider, h.actions);
+  const rawBody = Buffer.from(JSON.stringify(h.request));
+  await assert.rejects(() => controller.receive({ rawBody, body: h.request }, h.request, 'invalid'), /Invalid provider signature/);
+});
+
+test('message builder keeps engineering and end-user detail separated', () => {
+  const builder = new IncidentMessageBuilder();
+  assert.match(builder.build(incident(), 'ENGINEERING'), /Critical incident/);
+  assert.doesNotMatch(builder.build(incident(), 'END_USER'), /container|namespace|Kubernetes/i);
+});
+
+test('Admin test call uses the normal Retell tracking path and is idempotent', async () => {
+  const h = await harness({ contactOverrides: { smsEnabled: false } });
+  await h.service.handleTestCall({ requestId: 'test-request-1', organizationId: 'org', phoneNumber: '+15559876543' });
+  await h.service.handleTestCall({ requestId: 'test-request-1', organizationId: 'org', phoneNumber: '+15559876543' });
+  const testCalls = h.calls.filter((call) => call.input.metadata.testCall === 'true');
+  assert.equal(testCalls.length, 1);
+  assert.equal(testCalls[0].input.recipient.id, 'test-recipient:test-request-1');
+  assert.equal(testCalls[0].input.recipient.phoneNumber, '+15559876543');
+  const recent = await h.communications.listRecent('org', 10);
+  const communication = recent.find((item) => item.communicationType === 'TEST');
+  assert.equal(communication.incidentId, 'test-call:test-request-1');
+  assert.equal(communication.status, 'PENDING');
+  assert.equal(communication.maskedPhoneNumber.endsWith('6543'), true);
+  assert.doesNotMatch(JSON.stringify(communication),/15559876543/);
+});
+
+test('Retell connection check masks the outbound number and never returns credentials', async () => {
+  const provider = new RetellCommunicationProvider(
+    { apiKey: 'super-secret', fromNumber: '+15551234567', voiceAgentId: 'agent', smsAgentId: 'sms' },
+    {
+      call: { async createPhoneCall() {}, async retrieve() {} },
+      agent: { async retrieve() { return { agent_id: 'agent' }; } },
+      phoneNumber: { async retrieve() { return { phone_number: '+15551234567' }; } },
+    },
+  );
+  const result = await provider.checkConnection();
+  assert.equal(result.connected, true);
+  assert.equal(result.maskedFromNumber.endsWith('4567'), true);
+  assert.doesNotMatch(JSON.stringify(result), /super-secret|15551234567/);
+});

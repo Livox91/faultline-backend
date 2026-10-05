@@ -126,7 +126,8 @@ test('generates a complete system summary from analytics and readiness', async (
     resolved: 2,
     unresolved: 1,
   });
-  assert.deepEqual(result.performance, { mttrMs: 300000, mttaMs: 120000 });
+  assert.deepEqual(result.performance, { mttrMs: 300000, mttaMs: 120000, resolutionRate: 2 / 3 });
+  assert.deepEqual(result.incidentsBySeverity, { CRITICAL: 1, WARNING: 2 });
   assert.deepEqual(result.topAffectedServices, [
     { service: 'database', incidentCount: 2 },
     { service: 'payments', incidentCount: 2 },
@@ -146,7 +147,8 @@ test('generates an empty incident summary without zeroing unavailable averages',
     resolved: 0,
     unresolved: 0,
   });
-  assert.deepEqual(result.performance, { mttrMs: null, mttaMs: null });
+  assert.deepEqual(result.performance, { mttrMs: null, mttaMs: null, resolutionRate: 0 });
+  assert.deepEqual(result.incidentsBySeverity, {});
   assert.deepEqual(result.topAffectedServices, []);
   assert.deepEqual(result.commonIncidentCategories, []);
   assert.deepEqual(result.trends, []);

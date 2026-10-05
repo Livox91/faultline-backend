@@ -10,6 +10,7 @@ import {
   Post,
   Req,
 } from '@nestjs/common';
+import { FEATURES } from '@faultline/billing';
 import { z } from 'zod';
 import { AUDIT_ACTIONS, ROLES, type AuthenticatedUser } from '@faultline/auth';
 import {
@@ -19,7 +20,12 @@ import {
   type SlackIntegrationRepository,
 } from '@faultline/notifications';
 import { AuditTrail } from './auth/audit-trail';
-import { CurrentUser, Roles, type RequestWithUser } from './auth/context';
+import {
+  CurrentUser,
+  RequiresFeature,
+  Roles,
+  type RequestWithUser,
+} from './auth/context';
 
 const channelId = z
   .string()
@@ -106,6 +112,7 @@ export class SlackIntegrationService {
 
 @Controller('integrations/slack')
 @Roles(ROLES.ADMIN)
+@RequiresFeature(FEATURES.INTEGRATIONS)
 export class SlackIntegrationController {
   constructor(
     private readonly service: SlackIntegrationService,

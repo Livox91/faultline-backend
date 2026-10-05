@@ -262,24 +262,57 @@ async function persistCluster(state) {
   try {
     await client.connect();
     await client.query('BEGIN');
-    await client.query(
+    let organizationId = 'default';
+    if (args['owner-user-id']) {
+      const owner = await client.query(
+        'SELECT organization_id FROM users WHERE id = $1',
+        [args['owner-user-id']],
+      );
+      if (!owner.rows[0])
+        throw new Error('The onboarding user no longer exists.');
+      organizationId = owner.rows[0].organization_id;
+    }
+
+    // Older local installations predate organizations and were registered under
+    // `default` without an owning assignment. Allow the first authenticated tenant
+    // to adopt only that orphaned legacy row. Any cluster with an assignment, or any
+    // non-default tenant owner, continues through the protected upsert below and
+    // cannot be transferred implicitly.
+    if (args['owner-user-id'] && organizationId !== 'default')
+      await client.query(
+        `UPDATE clusters c
+            SET organization_id=$2, updated_at=now()
+          WHERE c.id=$1
+            AND c.organization_id='default'
+            AND NOT EXISTS (
+              SELECT 1 FROM project_users pu WHERE pu.project_id=c.id
+            )`,
+        [state.clusterId, organizationId],
+      );
+
+    const registration = await client.query(
       `INSERT INTO clusters
-         (id, name, kubernetes_context, workload_namespace, workload_selector)
-       VALUES ($1, $2, $3, $4, $5)
+         (id, name, kubernetes_context, workload_namespace, workload_selector, organization_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name,
          kubernetes_context=EXCLUDED.kubernetes_context,
          workload_namespace=EXCLUDED.workload_namespace,
          workload_selector=EXCLUDED.workload_selector,
-         updated_at=now()`,
+         updated_at=now()
+       WHERE clusters.organization_id = EXCLUDED.organization_id
+       RETURNING id`,
       [
         state.clusterId,
         state.clusterName,
         state.context,
         state.workloadNamespace,
         state.workloadLabel,
+        organizationId,
       ],
     );
+    if (!registration.rowCount)
+      throw new Error('That cluster id is already registered to another organization.');
     if (args['owner-user-id'])
       await client.query(
         `INSERT INTO project_users (user_id, project_id, assigned_by)
@@ -548,7 +581,14 @@ async function register(options = {}) {
       : defaults.clusterName);
   const state = {
     version: 1,
-    clusterId: args.id || defaults.clusterId,
+    // A ConfigMap proves this physical cluster has been onboarded before, so
+    // retain that identity for repair/retry. For a newly discovered cluster,
+    // the web onboarding service supplies a generated UUID via --id; context
+    // names are only a backwards-compatible CLI fallback.
+    clusterId:
+      installed.context === current
+        ? installed.clusterId
+        : args.id || defaults.clusterId,
     clusterName,
     context: current,
     ...(detected.controlPlaneServer || prior.controlPlaneServer
@@ -1022,14 +1062,25 @@ async function removeClusterRegistration(clusterId) {
       for (const table of [
         'notification_attempts',
         'escalation_executions',
+        'incident_notification_states',
         'incident_acknowledgements',
         'notification_audit_events',
         'incident_communications',
-      ])
+      ]) {
+        // Notification storage evolved across migrations. In particular,
+        // 0014 replaced escalation_executions with incident_notification_states.
+        // Uninstall must work against either schema instead of rolling back all
+        // cluster cleanup when an optional legacy table is absent.
+        const relation = await client.query(
+          'SELECT to_regclass($1) AS name',
+          [`public.${table}`],
+        );
+        if (!relation.rows[0]?.name) continue;
         await client.query(
           `DELETE FROM ${table} WHERE incident_id = ANY($1::text[])`,
           [incidentIds],
         );
+      }
     }
     // Incident evidence, timelines, affected resources and external tickets cascade
     // from incidents. Project assignments cascade from the cluster row.

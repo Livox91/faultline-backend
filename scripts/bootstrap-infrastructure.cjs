@@ -37,7 +37,7 @@ try {
 } catch (error) {
   const detail = `${error?.detail ?? error?.message ?? ''}`;
   const credentialFailure =
-    /password authentication failed|role .* does not exist|database .* does not exist|28P01/i.test(
+    /password authentication failed|authentication failed for user|role .* does not exist|database .* does not exist|28P01/i.test(
       detail,
     );
   if (!credentialFailure) throw error;
