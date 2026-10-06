@@ -77,6 +77,10 @@ test('setup generates database credentials instead of hardcoding them', () => {
   assert.match(setup, /isStrongPassword/);
   assert.match(
     setup,
+    /configured !== slackTokenEncryptionKey[\s\S]*shared Slack key repaired/,
+  );
+  assert.match(
+    setup,
     /'apps\/storage\/\.env':[^\n]*DATABASE_URL=\$\{databaseUrl\}/,
   );
   assert.match(setup, /requiredLocalFields/);

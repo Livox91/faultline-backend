@@ -203,6 +203,22 @@ for (const [relative, content] of Object.entries(files)) {
     created.push(relative);
 }
 
+// Both services operate on the same encrypted Slack credentials. Preserve every
+// other existing setting, but reconcile this shared key when the env files drift.
+const notificationPath = resolve(root, 'apps/notification/.env');
+if (existsSync(notificationPath)) {
+  const current = readFileSync(notificationPath, 'utf8').replace(/\r+\n/g, '\n');
+  const configured = parseEnv(notificationPath).SLACK_TOKEN_ENCRYPTION_KEY;
+  if (configured !== slackTokenEncryptionKey) {
+    const line = `SLACK_TOKEN_ENCRYPTION_KEY=${slackTokenEncryptionKey}`;
+    const updated = /^SLACK_TOKEN_ENCRYPTION_KEY=.*$/m.test(current)
+      ? current.replace(/^SLACK_TOKEN_ENCRYPTION_KEY=.*$/m, line)
+      : `${current.replace(/\n?$/, '\n')}${line}\n`;
+    writePrivate(notificationPath, updated, true);
+    created.push('apps/notification/.env (shared Slack key repaired)');
+  }
+}
+
 // If setup repaired a Windows-reserved infrastructure port, update only local
 // loopback PostgreSQL URLs. Other application settings and secrets stay intact.
 if (replacedPostgresPort !== undefined) {
