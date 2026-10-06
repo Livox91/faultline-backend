@@ -138,6 +138,16 @@ test(
         };
         await repository.updateIncident(updated);
         assert.deepEqual(await repository.getIncident(created.id), updated);
+        const filtered = await repository.listIncidents({
+          search: 'integration',
+          service: 'api-1',
+          from: new Date(Date.parse(created.firstSeen) - 1_000).toISOString(),
+          to: new Date(Date.parse(created.firstSeen) + 1_000).toISOString(),
+          classification: 'WORKLOAD_CRASHING',
+          severity: 'CRITICAL',
+          status: 'ACTIVE',
+        });
+        assert.deepEqual(filtered.map((item) => item.id), [created.id]);
         await connection.disconnect();
         await assert.rejects(repository.getIncident(created.id));
       },

@@ -361,7 +361,7 @@ test('incident API lists, filters and retrieves repository incidents', async () 
     await app.listen(0, '127.0.0.1');
     const base = await app.getUrl();
     const list = await fetch(
-      `${base}/incidents?cluster=production-01&namespace=payments&status=open&severity=critical&classification=memory_exhaustion`,
+      `${base}/incidents?cluster=production-01&namespace=payments&status=open&severity=critical&classification=memory_exhaustion&service=payment-api&search=memory&from=${encodeURIComponent(at(-1))}&to=${encodeURIComponent(at(1))}`,
     );
     assert.equal(list.status, 200);
     assert.deepEqual(
@@ -373,6 +373,11 @@ test('incident API lists, filters and retrieves repository incidents', async () 
     assert.equal((await detail.json()).classification, 'MEMORY_EXHAUSTION');
     assert.equal((await fetch(`${base}/incidents/missing`)).status, 404);
     assert.equal((await fetch(`${base}/incidents?status=invalid`)).status, 400);
+    assert.equal((await fetch(`${base}/incidents?from=not-a-date`)).status, 400);
+    assert.equal(
+      (await fetch(`${base}/incidents?from=${encodeURIComponent(at(2))}&to=${encodeURIComponent(at(1))}`)).status,
+      400,
+    );
   } finally {
     await app.close();
   }

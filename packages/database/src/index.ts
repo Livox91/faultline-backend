@@ -175,6 +175,41 @@ export class PostgresIncidentRepository implements IncidentRepository {
         values.push(value);
         clauses.push(`${column}=$${values.length}`);
       }
+    if (filter.from) {
+      values.push(filter.from);
+      clauses.push(`first_seen >= $${values.length}::timestamptz`);
+    }
+    if (filter.to) {
+      values.push(filter.to);
+      clauses.push(`first_seen <= $${values.length}::timestamptz`);
+    }
+    if (filter.service) {
+      values.push(filter.service.toLowerCase());
+      const parameter = `$${values.length}`;
+      clauses.push(`(
+        position(${parameter} in lower(coalesce(aggregate->>'logicalService',''))) > 0 OR
+        position(${parameter} in lower(concat_ws(' ', primary_resource->>'workload', primary_resource->>'pod', primary_resource->>'container', primary_resource->>'node'))) > 0 OR
+        EXISTS (
+          SELECT 1 FROM incident_affected_resources resources
+          WHERE resources.incident_id=incidents.id
+            AND position(${parameter} in lower(concat_ws(' ', resources.resource->>'workload', resources.resource->>'pod', resources.resource->>'container', resources.resource->>'node'))) > 0
+        )
+      )`);
+    }
+    if (filter.search) {
+      values.push(filter.search.toLowerCase());
+      const parameter = `$${values.length}`;
+      clauses.push(`(
+        position(${parameter} in lower(aggregate::text)) > 0 OR
+        position(${parameter} in lower(concat_ws(' ', incidents.id::text, title, summary, correlation_key, cluster_id, namespace, classification, severity, status, coalesce(aggregate->>'logicalService','')))) > 0 OR
+        position(${parameter} in lower(concat_ws(' ', primary_resource->>'workload', primary_resource->>'pod', primary_resource->>'container', primary_resource->>'node'))) > 0 OR
+        EXISTS (
+          SELECT 1 FROM incident_affected_resources resources
+          WHERE resources.incident_id=incidents.id
+            AND position(${parameter} in lower(concat_ws(' ', resources.resource->>'workload', resources.resource->>'pod', resources.resource->>'container', resources.resource->>'node'))) > 0
+        )
+      )`);
+    }
     return this.many(
       `SELECT aggregate FROM incidents${clauses.length ? ' WHERE ' + clauses.join(' AND ') : ''} ORDER BY last_seen DESC`,
       values,

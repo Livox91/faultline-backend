@@ -59,6 +59,15 @@ function optional(value: unknown, field: string): string | undefined {
   return value.trim();
 }
 
+function instant(value: unknown, field: string): string | undefined {
+  const text = optional(value, field);
+  if (!text) return undefined;
+  const timestamp = Date.parse(text);
+  if (!Number.isFinite(timestamp))
+    throw new BadRequestException(`Invalid ${field} filter`);
+  return new Date(timestamp).toISOString();
+}
+
 @Controller('incidents')
 export class IncidentsController {
   constructor(
@@ -78,6 +87,10 @@ export class IncidentsController {
     @Query('status') statusValue: unknown,
     @Query('severity') severityValue: unknown,
     @Query('classification') classificationValue: unknown,
+    @Query('search') searchValue: unknown,
+    @Query('service') serviceValue: unknown,
+    @Query('from') fromValue: unknown,
+    @Query('to') toValue: unknown,
   ) {
     const status = optional(statusValue, 'status')?.toUpperCase();
     const severity = optional(severityValue, 'severity')?.toUpperCase();
@@ -94,6 +107,10 @@ export class IncidentsController {
       !classifications.has(classification as IncidentClassification)
     )
       throw new BadRequestException('Invalid classification filter');
+    const from = instant(fromValue, 'from');
+    const to = instant(toValue, 'to');
+    if (from && to && Date.parse(from) > Date.parse(to))
+      throw new BadRequestException('The from filter must not be after to');
 
     const scope = await this.scopes.resolve(user);
     const requestedCluster = optional(cluster, 'cluster');
@@ -112,6 +129,10 @@ export class IncidentsController {
       status: status as IncidentStatus | undefined,
       severity: severity as IncidentSeverity | undefined,
       classification: classification as IncidentClassification | undefined,
+      search: optional(searchValue, 'search'),
+      service: optional(serviceValue, 'service'),
+      from,
+      to,
     };
     return this.incidents.listIncidents(filter);
   }

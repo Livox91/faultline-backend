@@ -235,6 +235,10 @@ export interface IncidentFilter {
   status?: IncidentStatus;
   severity?: IncidentSeverity;
   classification?: IncidentClassification;
+  search?: string;
+  service?: string;
+  from?: string;
+  to?: string;
 }
 
 export interface ActiveIncidentLookup {
@@ -339,6 +343,10 @@ export class InMemoryIncidentRepository implements IncidentRepository {
   async listIncidents(
     filter: IncidentFilter = {},
   ): Promise<readonly Incident[]> {
+    const search = filter.search?.toLowerCase();
+    const service = filter.service?.toLowerCase();
+    const from = filter.from ? Date.parse(filter.from) : Number.NEGATIVE_INFINITY;
+    const to = filter.to ? Date.parse(filter.to) : Number.POSITIVE_INFINITY;
     return [...this.incidents.values()]
       .filter(
         (incident) =>
@@ -349,11 +357,47 @@ export class InMemoryIncidentRepository implements IncidentRepository {
           (!filter.status || incident.status === filter.status) &&
           (!filter.severity || incident.severity === filter.severity) &&
           (!filter.classification ||
-            incident.classification === filter.classification),
+            incident.classification === filter.classification) &&
+          Date.parse(incident.firstSeen) >= from &&
+          Date.parse(incident.firstSeen) <= to &&
+          (!service || incidentServiceTerms(incident).some((value) => value.includes(service))) &&
+          (!search || incidentSearchTerms(incident).some((value) => value.includes(search))),
       )
       .sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen))
       .map((incident) => structuredClone(incident));
   }
+}
+
+function incidentServiceTerms(incident: Incident): string[] {
+  return [incident.logicalService, ...incident.affectedResources.flatMap(resourceTerms)]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+}
+
+function incidentSearchTerms(incident: Incident): string[] {
+  return [
+    incident.id,
+    incident.title,
+    incident.summary,
+    incident.correlationKey,
+    incident.clusterId,
+    incident.namespace,
+    incident.classification,
+    incident.severity,
+    incident.status,
+    ...incident.anomalies.flatMap((item) => [item.summary, item.classification]),
+    ...incident.evidence.map((item) => item.summary),
+    ...incident.timeline.map((item) => item.summary),
+    ...incidentServiceTerms(incident),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+}
+
+function resourceTerms(resource: AnomalyAffectedResource): string[] {
+  return [resource.workload, resource.pod, resource.container, resource.node].filter(
+    (value): value is string => Boolean(value),
+  );
 }
 
 let temporaryRepository: IncidentRepository | undefined;
