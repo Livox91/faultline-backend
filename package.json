@@ -50,6 +50,7 @@
     "cluster:install": "node scripts/cluster.cjs install",
     "cluster:verify": "node scripts/cluster.cjs verify",
     "cluster:onboard": "node scripts/cluster.cjs onboard",
+    "cluster:import": "node scripts/import-kubeconfig.cjs",
     "onboarding:test:cleanup": "node scripts/cluster.cjs cleanup",
     "cluster:uninstall": "node scripts/cluster.cjs uninstall",
     "dev:reset": "node scripts/reset-development.cjs",

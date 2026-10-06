@@ -11,6 +11,7 @@ const { dirname, resolve } = require('node:path');
 const root = resolve(__dirname, '../..');
 const localDirectory = resolve(root, '.local');
 const statePath = resolve(localDirectory, 'onboarding.json');
+const remoteKubeconfigPath = resolve(localDirectory, 'remote-kubeconfig');
 
 function executable(name) {
   return name;
@@ -27,12 +28,15 @@ function run(command, args = [], options = {}) {
       ...args,
     ];
   }
+  const environment = { ...(options.env ?? process.env) };
+  if (!environment.KUBECONFIG && existsSync(remoteKubeconfigPath))
+    environment.KUBECONFIG = remoteKubeconfigPath;
   const result = spawnSync(program, programArgs, {
     cwd: root,
     encoding: 'utf8',
     timeout: options.timeout ?? 120_000,
     input: options.input,
-    env: options.env ?? process.env,
+    env: environment,
     stdio: options.inherit ? 'inherit' : ['pipe', 'pipe', 'pipe'],
     shell: false,
   });
@@ -142,6 +146,7 @@ module.exports = {
   root,
   localDirectory,
   statePath,
+  remoteKubeconfigPath,
   executable,
   run,
   parseEnv,

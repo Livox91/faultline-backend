@@ -13,6 +13,7 @@ test('onboarding exposes one-command setup, startup, and cluster verification', 
     'preflight',
     'faultline:start',
     'cluster:onboard',
+    'cluster:import',
     'cluster:verify',
     'cluster:uninstall',
     'dev:reset',
@@ -20,6 +21,20 @@ test('onboarding exposes one-command setup, startup, and cluster verification', 
     assert.equal(typeof scripts[name], 'string', name);
   assert.match(read('ONBOARDING.md'), /BookNest/i);
   assert.match(read('ONBOARDING.md'), /host\.docker\.internal/);
+});
+
+test('remote kubeconfig import verifies before replacing and is selected automatically', () => {
+  const importer = read('scripts/import-kubeconfig.cjs');
+  const library = read('scripts/onboarding/lib.cjs');
+  assert.match(importer, /remote-kubeconfig\.pending/);
+  assert.match(
+    importer,
+    /spawnSync[\s\S]*--kubeconfig[\s\S]*staged[\s\S]*copyFileSync\(staged, destination\)/,
+  );
+  assert.match(
+    library,
+    /if \(!environment\.KUBECONFIG && existsSync\(remoteKubeconfigPath\)\)/,
+  );
 });
 
 test('collector installation is outbound-only and cannot read Secrets', () => {

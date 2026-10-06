@@ -1,6 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { resolve } from 'node:path';
 
 export type ClusterOnboardingStatus = 'running' | 'succeeded' | 'failed';
@@ -10,6 +17,7 @@ export interface ClusterOnboardingJob {
   operation: 'onboard' | 'uninstall';
   clusterName?: string;
   controlPlaneIp?: string;
+  ingestionEndpoint?: string;
   clusterId?: string;
   status: ClusterOnboardingStatus;
   output: readonly string[];
@@ -33,7 +41,9 @@ export class ClusterOnboardingService {
 
   start(
     clusterName: string,
-    controlPlaneIp: string,
+    controlPlaneIp: string | undefined,
+    ingestionEndpoint: string,
+    kubeconfig: string | undefined,
     ownerUserId: string,
   ): ClusterOnboardingJob {
     const active = this.activeJobId ? this.jobs.get(this.activeJobId) : undefined;
@@ -50,16 +60,28 @@ export class ClusterOnboardingService {
       ownerUserId,
       operation: 'onboard',
       clusterName,
-      controlPlaneIp,
+      ...(controlPlaneIp ? { controlPlaneIp } : {}),
+      ingestionEndpoint,
       clusterId,
       status: 'running',
       output: [],
       startedAt: new Date().toISOString(),
     };
+    const repositoryRoot = resolve(__dirname, '../../..');
+    const kubeconfigPath = this.kubeconfigPath(repositoryRoot, clusterId);
+    if (kubeconfig) {
+      mkdirSync(resolve(kubeconfigPath, '..'), { recursive: true });
+      writeFileSync(kubeconfigPath, kubeconfig, {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+      });
+      try {
+        chmodSync(kubeconfigPath, 0o600);
+      } catch {}
+    }
     this.jobs.set(id, job);
     this.activeJobId = id;
-
-    const repositoryRoot = resolve(__dirname, '../../..');
     const child = spawn(
       process.execPath,
       [
@@ -70,12 +92,20 @@ export class ClusterOnboardingService {
         clusterId,
         '--name',
         clusterName,
-        '--control-plane',
-        controlPlaneIp,
+        ...(controlPlaneIp ? ['--control-plane', controlPlaneIp] : []),
+        '--endpoint',
+        ingestionEndpoint,
         '--owner-user-id',
         ownerUserId,
       ],
-      { cwd: repositoryRoot, env: process.env, windowsHide: true },
+      {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          ...(kubeconfig ? { KUBECONFIG: kubeconfigPath } : {}),
+        },
+        windowsHide: true,
+      },
     );
     this.capture(child, job);
     return this.present(job);
@@ -100,6 +130,7 @@ export class ClusterOnboardingService {
     this.activeJobId = id;
 
     const repositoryRoot = resolve(__dirname, '../../..');
+    const kubeconfigPath = this.kubeconfigPath(repositoryRoot, clusterId);
     const child = spawn(
       process.execPath,
       [
@@ -108,7 +139,14 @@ export class ClusterOnboardingService {
         '--id',
         clusterId,
       ],
-      { cwd: repositoryRoot, env: process.env, windowsHide: true },
+      {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          ...(existsSync(kubeconfigPath) ? { KUBECONFIG: kubeconfigPath } : {}),
+        },
+        windowsHide: true,
+      },
     );
     this.capture(child, job);
     return this.present(job);
@@ -162,6 +200,15 @@ export class ClusterOnboardingService {
     if (error) job.error = error;
     this.jobs.set(job.id, job);
     if (this.activeJobId === job.id) this.activeJobId = undefined;
+    if (job.operation === 'uninstall' && status === 'succeeded' && job.clusterId) {
+      const repositoryRoot = resolve(__dirname, '../../..');
+      const path = this.kubeconfigPath(repositoryRoot, job.clusterId);
+      if (existsSync(path)) unlinkSync(path);
+    }
+  }
+
+  private kubeconfigPath(repositoryRoot: string, clusterId: string): string {
+    return resolve(repositoryRoot, '.local/kubeconfigs', `${clusterId}.yaml`);
   }
 
   private present(job: StoredClusterOnboardingJob): ClusterOnboardingJob {

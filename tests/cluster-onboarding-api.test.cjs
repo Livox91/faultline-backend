@@ -6,8 +6,25 @@ const { resolve } = require('node:path');
 const {
   clusterName,
   controlPlaneIp,
+  ingestionEndpoint,
+  portableKubeconfig,
   ClusterOnboardingController,
 } = require('../apps/api/dist/cluster-onboarding.controller');
+
+const safeKubeconfig = `apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: Q0E=
+    server: https://192.168.1.50:36443
+  name: booknest
+contexts: []
+current-context: kind-booknest
+users:
+- name: booknest
+  user:
+    client-certificate-data: Q0VSVA==
+    client-key-data: S0VZ
+`;
 
 test('cluster onboarding validates names and control-plane IP addresses', () => {
   assert.equal(clusterName(' Production East '), 'Production East');
@@ -18,6 +35,21 @@ test('cluster onboarding validates names and control-plane IP addresses', () => 
   assert.throws(() => clusterName('../bad'));
   assert.throws(() => controlPlaneIp('localhost'));
   assert.throws(() => controlPlaneIp('127.0.0.1:70000'));
+  assert.equal(
+    ingestionEndpoint(' http://192.168.1.40:3001/ '),
+    'http://192.168.1.40:3001',
+  );
+  assert.throws(() => ingestionEndpoint('http://localhost:3001'), /localhost/i);
+  assert.throws(() => ingestionEndpoint('ftp://192.168.1.40'));
+  assert.equal(portableKubeconfig(safeKubeconfig), safeKubeconfig);
+  assert.throws(
+    () => portableKubeconfig(`${safeKubeconfig}    exec:\n      command: malware\n`),
+    /Executable plugins/i,
+  );
+  assert.throws(
+    () => portableKubeconfig(safeKubeconfig.replace('https://', 'http://')),
+    /HTTPS server/i,
+  );
 });
 
 test('cluster onboarding starts a background job with normalized input', async () => {
@@ -39,11 +71,36 @@ test('cluster onboarding starts a background job with normalized input', async (
   );
   const actor = { id: 'user-1', organizationId: 'org-1' };
   assert.deepEqual(
-    await controller.start({ clusterName: ' Demo ', controlPlaneIp: '10.0.0.8' }, actor),
+    await controller.start(
+      {
+        clusterName: ' Demo ',
+        controlPlaneIp: '10.0.0.8',
+        ingestionEndpoint: 'http://10.0.0.9:3001',
+      },
+      actor,
+    ),
     { id: 'job-1', status: 'running' },
   );
-  assert.deepEqual(calls, [['Demo', '10.0.0.8', 'user-1']]);
+  assert.deepEqual(calls, [
+    ['Demo', '10.0.0.8', 'http://10.0.0.9:3001', undefined, 'user-1'],
+  ]);
   assert.deepEqual(capacityChecks, [[actor, clusters]]);
+
+  await controller.start(
+    {
+      clusterName: 'Imported config',
+      ingestionEndpoint: 'http://10.0.0.9:3001',
+      kubeconfig: safeKubeconfig,
+    },
+    actor,
+  );
+  assert.deepEqual(calls[1], [
+    'Imported config',
+    undefined,
+    'http://10.0.0.9:3001',
+    safeKubeconfig,
+    'user-1',
+  ]);
 });
 
 test('a refused cluster allowance never starts the onboarding job', async () => {
@@ -59,7 +116,11 @@ test('a refused cluster allowance never starts the onboarding job', async () => 
   );
   await assert.rejects(
     controller.start(
-      { clusterName: 'Demo', controlPlaneIp: '10.0.0.8' },
+      {
+        clusterName: 'Demo',
+        controlPlaneIp: '10.0.0.8',
+        ingestionEndpoint: 'http://10.0.0.9:3001',
+      },
       { id: 'user-1', organizationId: 'org-1' },
     ),
     /plan limit/,
@@ -73,6 +134,10 @@ test('the onboarding process receives the authenticated owner id', () => {
     'utf8',
   );
   assert.match(service, /'--owner-user-id',[\s\S]*ownerUserId/);
+  assert.match(service, /'--endpoint',[\s\S]*ingestionEndpoint/);
+  assert.match(service, /\.\.\.\(controlPlaneIp \? \['--control-plane', controlPlaneIp\] : \[\]\)/);
+  assert.match(service, /KUBECONFIG: kubeconfigPath/);
+  assert.doesNotMatch(service, /kubeconfig[?:]?\s*string[\s\S]*interface ClusterOnboardingJob/);
   assert.match(
     service,
     /job\.operation === 'uninstall' \? 'Cluster uninstall' : 'Onboarding'/,

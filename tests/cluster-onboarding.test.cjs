@@ -14,6 +14,7 @@ const {
   registrationDefaults,
   podFailureReason,
   kubernetesUnavailable,
+  kubernetesConnectionMessage,
 } = require('../scripts/cluster.cjs');
 
 function kubectlMock({ context = 'kind-demo', nodes = 1, ready = 1 } = {}) {
@@ -53,7 +54,23 @@ test('cluster unavailable has a beginner-friendly failure', () => {
         if (args.includes('nodes')) throw new Error('connection refused');
         return execute(command, args, options);
       }),
-    /cluster kind-demo cannot be reached.*cluster is running/i,
+    /Kubernetes API .* cannot be reached.*forwarded port/i,
+  );
+});
+
+test('remote TLS failures explain certificate SAN and kubeconfig problems', () => {
+  assert.match(
+    kubernetesConnectionMessage('kind-booknest', 'https://192.168.18.35:36443', {
+      detail:
+        'tls: failed to verify certificate: x509: certificate is valid for 0.0.0.0, not 192.168.18.35',
+    }),
+    /api-server certificate does not include.*apiServer\.certSANs/i,
+  );
+  assert.match(
+    kubernetesConnectionMessage('kind-kind', 'https://192.168.18.35:36443', {
+      detail: 'x509: certificate signed by unknown authority',
+    }),
+    /context kind-kind has the wrong certificate authority.*import the kubeconfig/i,
   );
 });
 
