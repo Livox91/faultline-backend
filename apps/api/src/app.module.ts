@@ -1,5 +1,5 @@
 import { Module, SetMetadata, type Provider } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import {
   APPLICATION_CONFIG,
   ApplicationLogger,
@@ -136,6 +136,7 @@ import { IS_PUBLIC } from './auth/context';
 import { AuthenticationGuard } from './auth/authentication.guard';
 import { AuthorizationGuard } from './auth/authorization.guard';
 import { AuditTrail } from './auth/audit-trail';
+import { UserActivityAuditInterceptor } from './auth/user-activity-audit.interceptor';
 import { AdminBootstrap } from './auth/bootstrap';
 import { AuthController, LoginThrottle } from './auth/auth.controller';
 import { MfaController } from './auth/mfa.controller';
@@ -145,9 +146,11 @@ import {
 } from './auth/password-reset.controller';
 import { AuthSecurityStore } from './auth/security-store';
 import { BillingController } from './billing/billing.controller';
+import { BillingPortalController } from './billing/billing-portal.controller';
 import { EntitlementsController } from './billing/entitlements.controller';
 import { EntitlementsGuard, PlanEntitlements } from './billing/entitlements';
 import { SubscriptionProvisioningService } from './billing/provisioning.service';
+import { SubscriptionLifecycleService } from './billing/subscription-lifecycle.service';
 import { PAYMENT_GATEWAY, StripeGateway } from './billing/stripe.gateway';
 import { AdminUsersController } from './auth/users.controller';
 import { AdminAuditController } from './auth/audit.controller';
@@ -481,6 +484,7 @@ const billingEnabled = readEnvFlag('BILLING_ENABLED') === 'true';
 const billingProviders: Provider[] = billingEnabled
   ? [
       SubscriptionProvisioningService,
+      SubscriptionLifecycleService,
       { provide: PAYMENT_GATEWAY, useClass: StripeGateway },
     ]
   : [];
@@ -491,7 +495,7 @@ const billingProviders: Provider[] = billingEnabled
     AuthController,
     MfaController,
     PasswordResetController,
-    ...(billingEnabled ? [BillingController] : []),
+    ...(billingEnabled ? [BillingController, BillingPortalController] : []),
     // Unlike the purchase routes, this one is registered either way: the console asks
     // what the account may reach on every deployment, and with billing off the honest
     // answer is "everything, unenforced" rather than a 404 to interpret.
@@ -589,6 +593,9 @@ const billingProviders: Provider[] = billingEnabled
     // what your plan bought is consulted, so a stranger is never told which tier a
     // module needs, and the lookup is paid for only where it is asked for.
     { provide: APP_GUARD, useClass: EntitlementsGuard },
+    // Guards establish and authorize the identity first. The interceptor then records
+    // every authenticated request, including reads that have no domain mutation event.
+    { provide: APP_INTERCEPTOR, useClass: UserActivityAuditInterceptor },
   ],
 })
 export class AppModule {}

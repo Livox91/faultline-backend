@@ -28,8 +28,17 @@ const {
   SubscriptionProvisioningService,
 } = require('../apps/api/dist/billing/provisioning.service');
 const {
+  SubscriptionLifecycleService,
+} = require('../apps/api/dist/billing/subscription-lifecycle.service');
+const {
   BillingController,
 } = require('../apps/api/dist/billing/billing.controller');
+const {
+  BillingPortalController,
+} = require('../apps/api/dist/billing/billing-portal.controller');
+const {
+  PlanEntitlements,
+} = require('../apps/api/dist/billing/entitlements');
 const { PAYMENT_GATEWAY } = require('../apps/api/dist/billing/stripe.gateway');
 const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
 const { AuthController, LoginThrottle } = require('../apps/api/dist/auth/auth.controller');
@@ -299,6 +308,9 @@ function fakeGateway(overrides = {}) {
       id: 'cs_test_1',
       url: 'https://checkout.stripe.test/cs_test_1',
     }),
+    createCustomerPortalSession: async () => ({
+      url: 'https://billing.stripe.test/session/test',
+    }),
     verifyWebhook: (_payload, signature) => {
       if (signature !== 'good') throw new Error('bad signature');
       return { id: 'evt_1', type: 'checkout.session.completed', payment: payment() };
@@ -316,6 +328,7 @@ function billingController(gateway = fakeGateway()) {
     events,
     config,
     context.service,
+    new SubscriptionLifecycleService(context.subscriptions, silentLogger),
     silentLogger,
   );
   return { controller, events, ...context };
@@ -376,6 +389,208 @@ test('an unpaid or irrelevant event is acknowledged without provisioning', async
     handled: false,
   });
   assert.equal((await cancelled.users.list()).length, 0);
+});
+
+test('Stripe lifecycle webhooks update payment, plan and cancellation state', async () => {
+  let nextEvent;
+  const context = billingController(
+    fakeGateway({ verifyWebhook: () => nextEvent }),
+  );
+  await context.service.provision(payment());
+
+  nextEvent = {
+    id: 'evt_invoice_failed',
+    type: 'invoice.payment_failed',
+    lifecycle: {
+      type: 'invoice.payment_failed',
+      providerSubscriptionId: 'sub_test_1',
+      customerId: 'cus_test_1',
+      status: 'past_due',
+      startDate: '2026-10-01T00:00:00.000Z',
+      endDate: '2026-11-01T00:00:00.000Z',
+    },
+  };
+  assert.equal((await context.controller.webhook(rawRequest('good'))).outcome, 'updated');
+  assert.equal(
+    (await context.subscriptions.findByProviderSubscriptionId('sub_test_1')).status,
+    'past_due',
+  );
+  assert.equal(
+    (await context.subscriptions.findByProviderSubscriptionId('sub_test_1')).plan,
+    'basic',
+    'failed payment automatically falls back to Basic',
+  );
+
+  nextEvent = {
+    id: 'evt_invoice_paid',
+    type: 'invoice.paid',
+    lifecycle: {
+      type: 'invoice.paid',
+      providerSubscriptionId: 'sub_test_1',
+      customerId: 'cus_test_1',
+      plan: 'pro',
+      status: 'active',
+      startDate: '2026-11-01T00:00:00.000Z',
+      endDate: '2026-12-01T00:00:00.000Z',
+    },
+  };
+  await context.controller.webhook(rawRequest('good'));
+  let stored = await context.subscriptions.findByProviderSubscriptionId('sub_test_1');
+  assert.equal(stored.status, 'active');
+  assert.equal(stored.plan, 'pro', 'a successful Pro renewal restores Pro');
+  assert.equal(stored.endDate, '2026-12-01T00:00:00.000Z');
+
+  nextEvent = {
+    id: 'evt_subscription_updated',
+    type: 'customer.subscription.updated',
+    lifecycle: {
+      type: 'customer.subscription.updated',
+      providerSubscriptionId: 'sub_test_1',
+      customerId: 'cus_test_1',
+      plan: 'basic',
+      status: 'active',
+    },
+  };
+  await context.controller.webhook(rawRequest('good'));
+  stored = await context.subscriptions.findByProviderSubscriptionId('sub_test_1');
+  assert.equal(stored.plan, 'basic');
+  assert.equal(stored.status, 'active');
+
+  nextEvent = {
+    id: 'evt_subscription_upgraded',
+    type: 'customer.subscription.updated',
+    lifecycle: {
+      type: 'customer.subscription.updated',
+      providerSubscriptionId: 'sub_test_1',
+      customerId: 'cus_test_1',
+      plan: 'pro',
+      status: 'active',
+    },
+  };
+  await context.controller.webhook(rawRequest('good'));
+  stored = await context.subscriptions.findByProviderSubscriptionId('sub_test_1');
+  assert.equal(stored.plan, 'pro', 'an active Basic subscription can upgrade to Pro');
+
+  nextEvent = {
+    id: 'evt_subscription_deleted',
+    type: 'customer.subscription.deleted',
+    lifecycle: {
+      type: 'customer.subscription.deleted',
+      providerSubscriptionId: 'sub_test_1',
+      customerId: 'cus_test_1',
+      status: 'canceled',
+      endDate: '2026-12-01T00:00:00.000Z',
+    },
+  };
+  await context.controller.webhook(rawRequest('good'));
+  stored = await context.subscriptions.findByProviderSubscriptionId('sub_test_1');
+  assert.equal(stored.status, 'canceled');
+  assert.equal(stored.plan, 'basic', 'cancellation automatically falls back to Basic');
+
+  nextEvent = {
+    id: 'evt_late_invoice_paid',
+    type: 'invoice.paid',
+    lifecycle: {
+      type: 'invoice.paid',
+      providerSubscriptionId: 'sub_test_1',
+      customerId: 'cus_test_1',
+      plan: 'pro',
+      status: 'active',
+    },
+  };
+  await context.controller.webhook(rawRequest('good'));
+  stored = await context.subscriptions.findByProviderSubscriptionId('sub_test_1');
+  assert.equal(
+    stored.status,
+    'canceled',
+    'a late invoice event cannot resurrect a deleted subscription',
+  );
+  assert.equal(stored.plan, 'basic', 'a late Pro invoice cannot restore the paid plan');
+});
+
+test('an unmatched lifecycle event is released so Stripe can retry it', async () => {
+  const lifecycleEvent = {
+    id: 'evt_before_checkout',
+    type: 'invoice.payment_failed',
+    lifecycle: {
+      type: 'invoice.payment_failed',
+      providerSubscriptionId: 'sub_late',
+      customerId: 'cus_late',
+      status: 'past_due',
+    },
+  };
+  const context = billingController(
+    fakeGateway({ verifyWebhook: () => lifecycleEvent }),
+  );
+
+  await assert.rejects(
+    context.controller.webhook(rawRequest('good')),
+    /is not available yet/,
+  );
+
+  await context.service.provision(
+    payment({
+      checkoutSessionId: 'cs_late',
+      subscriptionId: 'sub_late',
+      customerId: 'cus_late',
+    }),
+  );
+  assert.equal(
+    (await context.controller.webhook(rawRequest('good'))).outcome,
+    'updated',
+    'the same event id is accepted after its first failed attempt',
+  );
+  assert.equal(
+    (await context.subscriptions.findByProviderSubscriptionId('sub_late')).status,
+    'past_due',
+  );
+});
+
+test('an organization owner can open Stripe billing management for their customer', async () => {
+  const context = provisioner();
+  await context.service.provision(payment());
+  const user = await context.users.findByEmail(PURCHASER);
+  const opened = [];
+  const gateway = fakeGateway({
+    createCustomerPortalSession: async (customerId, returnUrl) => {
+      opened.push({ customerId, returnUrl });
+      return { url: 'https://billing.stripe.test/session/portal_1' };
+    },
+  });
+  const controller = new BillingPortalController(
+    gateway,
+    config,
+    new PlanEntitlements(context.subscriptions, config, context.users),
+    silentLogger,
+  );
+
+  assert.deepEqual(await controller.create(user), {
+    portalUrl: 'https://billing.stripe.test/session/portal_1',
+  });
+  assert.deepEqual(opened, [
+    {
+      customerId: 'cus_test_1',
+      returnUrl: 'https://app.faultline.test/admin/subscription',
+    },
+  ]);
+});
+
+test('the billing portal refuses an account with no Stripe customer', async () => {
+  const context = provisioner();
+  const user = await context.users.create({
+    email: 'unsubscribed@example.com',
+    name: 'No Subscription',
+    role: ROLES.ADMIN,
+    password: 'Correct-horse-battery1!',
+  });
+  const controller = new BillingPortalController(
+    fakeGateway(),
+    config,
+    new PlanEntitlements(context.subscriptions, config, context.users),
+    silentLogger,
+  );
+
+  await assert.rejects(controller.create(user), (error) => error.getStatus() === 400);
 });
 
 test('a provisioning failure releases the event so the provider retry can succeed', async () => {
@@ -761,6 +976,113 @@ test('the real Stripe gateway accepts only genuinely signed payloads', () => {
     }),
   );
   assert.equal(unpaid.payment, undefined, 'an unpaid session provisions nothing');
+});
+
+test('the real Stripe gateway translates all supported lifecycle event shapes', () => {
+  const Stripe = require('stripe');
+  const { StripeGateway } = require('../apps/api/dist/billing/stripe.gateway');
+  const webhookSecret = 'whsec_lifecycle_test';
+  const gateway = new StripeGateway({
+    ...config,
+    billing: { ...config.billing, secretKey: 'sk_test_x', webhookSecret },
+  });
+  const signed = (type, object, id) => {
+    const body = JSON.stringify({ id, object: 'event', type, data: { object } });
+    return gateway.verifyWebhook(
+      Buffer.from(body),
+      Stripe.webhooks.generateTestHeaderString({ payload: body, secret: webhookSecret }),
+    );
+  };
+
+  const invoice = {
+    id: 'in_1',
+    object: 'invoice',
+    customer: 'cus_test_1',
+    parent: {
+      type: 'subscription_details',
+      subscription_details: { subscription: 'sub_test_1', metadata: { plan: 'pro' } },
+      quote_details: null,
+    },
+    period_start: 1790812800,
+    period_end: 1793491200,
+    lines: {
+      data: [
+        {
+          metadata: { plan: 'pro' },
+          pricing: {
+            type: 'price_details',
+            price_details: { price: 'price_test', product: 'prod_pro' },
+          },
+        },
+      ],
+    },
+  };
+  const paid = signed('invoice.paid', invoice, 'evt_paid').lifecycle;
+  assert.equal(paid.status, 'active');
+  assert.equal(paid.plan, 'pro');
+  assert.equal(
+    signed('invoice.payment_failed', invoice, 'evt_failed').lifecycle.status,
+    'past_due',
+  );
+
+  const subscription = {
+    id: 'sub_test_1',
+    object: 'subscription',
+    customer: 'cus_test_1',
+    status: 'active',
+    metadata: {},
+    start_date: 1790812800,
+    ended_at: null,
+    cancel_at: null,
+    items: {
+      data: [
+        {
+          price: { id: 'price_test_basic' },
+          current_period_start: 1790812800,
+          current_period_end: 1793491200,
+        },
+      ],
+    },
+  };
+  const updated = signed(
+    'customer.subscription.updated',
+    subscription,
+    'evt_updated',
+  ).lifecycle;
+  assert.equal(updated.plan, 'basic');
+  assert.equal(updated.status, 'active');
+
+  const upgraded = signed(
+    'customer.subscription.updated',
+    {
+      ...subscription,
+      items: {
+        data: [
+          {
+            ...subscription.items.data[0],
+            price: { id: 'price_test' },
+          },
+        ],
+      },
+    },
+    'evt_upgraded',
+  ).lifecycle;
+  assert.equal(upgraded.plan, 'pro');
+
+  const unpaid = signed(
+    'customer.subscription.updated',
+    { ...subscription, status: 'unpaid' },
+    'evt_unpaid_subscription',
+  ).lifecycle;
+  assert.equal(unpaid.status, 'past_due');
+
+  const deleted = signed(
+    'customer.subscription.deleted',
+    { ...subscription, status: 'canceled', ended_at: 1793491200 },
+    'evt_deleted',
+  ).lifecycle;
+  assert.equal(deleted.status, 'canceled');
+  assert.equal(deleted.providerSubscriptionId, 'sub_test_1');
 });
 
 test('a zero-amount tier settles without payment, and only that tier may', () => {

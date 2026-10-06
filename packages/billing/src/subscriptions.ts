@@ -64,6 +64,7 @@ export interface NewSubscription {
 
 export interface SubscriptionChanges {
   userId?: string | null;
+  plan?: PlanId;
   status?: SubscriptionStatus;
   provisioningStatus?: ProvisioningStatus;
   provisioningError?: string | null;
@@ -71,6 +72,23 @@ export interface SubscriptionChanges {
   paymentProviderCustomerId?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+}
+
+export type SubscriptionLifecycleEventType =
+  | 'invoice.paid'
+  | 'invoice.payment_failed'
+  | 'customer.subscription.updated'
+  | 'customer.subscription.deleted';
+
+/** A verified provider event reduced to the fields the billing domain persists. */
+export interface SubscriptionLifecycleUpdate {
+  readonly type: SubscriptionLifecycleEventType;
+  readonly providerSubscriptionId: string;
+  readonly customerId?: string | null;
+  readonly plan?: PlanId;
+  readonly status: SubscriptionStatus;
+  readonly startDate?: string | null;
+  readonly endDate?: string | null;
 }
 
 export interface SubscriptionRepository {

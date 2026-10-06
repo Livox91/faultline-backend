@@ -31,6 +31,7 @@ import { isValidUsername } from '@faultline/auth';
 import { Public } from '../auth/context';
 import { PAYMENT_GATEWAY, type PaymentGateway } from './stripe.gateway';
 import { SubscriptionProvisioningService } from './provisioning.service';
+import { SubscriptionLifecycleService } from './subscription-lifecycle.service';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -51,6 +52,7 @@ export class BillingController {
     private readonly processedEvents: ProcessedEventRepository,
     @Inject(APPLICATION_CONFIG) private readonly config: ApplicationConfig,
     private readonly provisioning: SubscriptionProvisioningService,
+    private readonly lifecycle: SubscriptionLifecycleService,
     private readonly logger: ApplicationLogger,
   ) {}
 
@@ -169,7 +171,7 @@ export class BillingController {
     if (typeof signature !== 'string' || !raw)
       throw new UnauthorizedException('Missing webhook signature');
 
-    let event: { id: string; type: string; payment?: unknown };
+    let event: ReturnType<PaymentGateway['verifyWebhook']>;
     try {
       event = this.gateway.verifyWebhook(raw, signature);
     } catch (error) {
@@ -191,16 +193,29 @@ export class BillingController {
     const payment = event.payment as
       | Parameters<SubscriptionProvisioningService['provision']>[0]
       | undefined;
-    if (!payment) {
-      // A signed event we do not act on - a renewal invoice, a cancellation. The claim
-      // stands so it is not reconsidered, and 200 stops the provider retrying.
+    const lifecycle = event.lifecycle;
+    if (!payment && !lifecycle) {
+      // A signed event outside the billing lifecycle we own. The claim stands so it is
+      // not reconsidered, and 200 stops the provider retrying.
       this.logger.log({ event: 'webhook_ignored', type: event.type });
       return { received: true, handled: false };
     }
 
     try {
-      const outcome = await this.provisioning.provision(payment);
-      return { received: true, handled: true, outcome: outcome.kind };
+      if (payment) {
+        const outcome = await this.provisioning.provision(payment);
+        return { received: true, handled: true, outcome: outcome.kind };
+      }
+      const outcome = await this.lifecycle.apply(lifecycle!);
+      if (outcome.kind === 'not-found')
+        throw new Error(
+          `Subscription ${lifecycle!.providerSubscriptionId} is not available yet`,
+        );
+      return {
+        received: true,
+        handled: true,
+        outcome: outcome.kind,
+      };
     } catch (error) {
       // Let the provider retry: the claim must not outlive a failed attempt.
       await this.processedEvents.release(event.id);

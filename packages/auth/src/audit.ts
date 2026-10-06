@@ -17,6 +17,7 @@ export const AUDIT_ACTIONS = {
   PASSWORD_RESET_COMPLETED: 'auth.password-reset.completed',
   PASSWORD_RESET_FAILED: 'auth.password-reset.failed',
   SESSIONS_REVOKED: 'auth.sessions.revoked',
+  USER_ACTIVITY: 'user.activity',
   PROJECT_CREATED: 'project.created',
   PROJECT_MODIFIED: 'project.modified',
   PROJECT_DELETED: 'project.deleted',

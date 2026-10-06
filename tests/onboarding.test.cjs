@@ -162,6 +162,14 @@ test('setup provides a project-local Stripe CLI and clear next commands', () => 
   const webhooks = read('scripts/stripe-webhooks.cjs');
   assert.match(webhooks, /LOCAL_STRIPE_BIN/);
   assert.match(webhooks, /cli-\$\{process\.platform\}-\$\{process\.arch\}/);
+  for (const event of [
+    'checkout.session.completed',
+    'invoice.paid',
+    'invoice.payment_failed',
+    'customer.subscription.updated',
+    'customer.subscription.deleted',
+  ])
+    assert.match(webhooks, new RegExp(event.replaceAll('.', '\\.')));
 
   const preflight = read('scripts/preflight.cjs');
   assert.match(preflight, /Stripe CLI/);

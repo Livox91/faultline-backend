@@ -1,4 +1,4 @@
-import { Controller, Get, Header } from '@nestjs/common';
+import { Controller, Get, Header, Inject } from '@nestjs/common';
 import {
   FEATURE_LABELS,
   FEATURES,
@@ -10,7 +10,9 @@ import {
   type PlanFeature,
 } from '@faultline/billing';
 import type { AuthenticatedUser } from '@faultline/auth';
+import type { ClusterDirectory } from '@faultline/database';
 import { CurrentUser } from '../auth/context';
+import { CLUSTER_DIRECTORY } from '../clusters.controller';
 import { PlanEntitlements } from './entitlements';
 
 const ALL_FEATURES = Object.values(FEATURES) as readonly PlanFeature[];
@@ -33,16 +35,20 @@ const describe = (feature: PlanFeature) => ({
  */
 @Controller('billing')
 export class EntitlementsController {
-  constructor(private readonly entitlements: PlanEntitlements) {}
+  constructor(
+    private readonly entitlements: PlanEntitlements,
+    @Inject(CLUSTER_DIRECTORY) private readonly clusters: ClusterDirectory,
+  ) {}
 
   @Get('entitlements')
   @Header('Cache-Control', 'no-store')
   async mine(@CurrentUser() user: AuthenticatedUser) {
     const enforced = this.entitlements.enforced;
     // The organization's subscription, so an engineer sees the tier their owner bought.
-    const subscription = enforced
-      ? await this.entitlements.subscriptionFor(user)
-      : undefined;
+    const [subscription, clusters] = await Promise.all([
+      enforced ? this.entitlements.subscriptionFor(user) : undefined,
+      this.clusters.list(undefined, user.organizationId),
+    ]);
     const plan = enforced ? entitledPlan(subscription ?? null) : 'enterprise';
     const granted = new Set(featuresFor(plan));
 
@@ -56,6 +62,8 @@ export class EntitlementsController {
       subscriptionStatus: subscription?.status ?? null,
       /** Allowances on included modules; `null` is unlimited. */
       limits: { clusters: enforced ? clusterLimitFor(plan) : null },
+      /** Current organization-wide consumption of those allowances. */
+      usage: { clusters: clusters.length },
       features: [...granted].map(describe),
       locked: ALL_FEATURES.filter((feature) => !granted.has(feature)).map(
         (feature) => {

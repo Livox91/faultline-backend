@@ -29,6 +29,7 @@ import {
   hashRecoveryCode,
   issueAccessToken,
   issueMfaEnrollmentToken,
+  issueMfaTrustedDeviceToken,
   presentUser,
   recoveryCodeMatches,
   verifyMfaChallengeToken,
@@ -44,7 +45,11 @@ import {
 import { AuditTrail } from './audit-trail';
 import { LoginThrottle } from './auth.controller';
 import { AuthSecurityStore } from './security-store';
-import { setSessionCookie, type CookieResponse } from './session-cookie';
+import {
+  setMfaTrustedDeviceCookie,
+  setSessionCookie,
+  type CookieResponse,
+} from './session-cookie';
 import {
   AllowWhileMfaEnrollmentPending,
   CurrentUser,
@@ -57,6 +62,7 @@ type MfaBody = {
   code?: unknown;
   challengeToken?: unknown;
   enrollmentToken?: unknown;
+  rememberDevice?: unknown;
 };
 
 @Controller('auth/mfa')
@@ -66,6 +72,7 @@ export class MfaController {
   private readonly issuer: string;
   private readonly required: boolean;
   private readonly secureCookies: boolean;
+  private readonly trustedDeviceTtlDays: number;
 
   constructor(
     @Inject(USER_REPOSITORY) private readonly users: UserRepository,
@@ -80,6 +87,7 @@ export class MfaController {
     this.issuer = config.applicationName;
     this.required = config.auth.mfaRequired;
     this.secureCookies = config.environment === 'production';
+    this.trustedDeviceTtlDays = config.auth.mfaTrustedDeviceTtlDays ?? 30;
     this.tokens = {
       // MFA challenge/enrollment material is protected with the dedicated MFA key,
       // but the completed login must issue an ordinary access token. Every other
@@ -102,6 +110,8 @@ export class MfaController {
   ) {
     const challengeToken = requiredText(body?.challengeToken, 'MFA challenge token');
     const code = requiredText(body?.code, 'Authenticator or recovery code');
+    if (body?.rememberDevice !== undefined && typeof body.rememberDevice !== 'boolean')
+      throw new BadRequestException('rememberDevice must be a boolean');
     let challenge: ReturnType<typeof verifyMfaChallengeToken>;
     try {
       challenge = verifyMfaChallengeToken(challengeToken, this.masterSecret);
@@ -150,6 +160,21 @@ export class MfaController {
     );
     await this.security.createSession(sessionId, user.id, this.tokens.ttlSeconds);
     setSessionCookie(response, token, this.tokens.ttlSeconds, this.secureCookies);
+    if (body.rememberDevice) {
+      const trustedDevice = issueMfaTrustedDeviceToken(
+        user.id,
+        user.mfaSecretCiphertext,
+        user.sessionVersion,
+        this.masterSecret,
+        this.trustedDeviceTtlDays,
+      );
+      setMfaTrustedDeviceCookie(
+        response,
+        trustedDevice.token,
+        this.trustedDeviceTtlDays * 24 * 60 * 60,
+        this.secureCookies,
+      );
+    }
     await this.audit.record({
       user: authenticated,
       action: AUDIT_ACTIONS.LOGIN_SUCCEEDED,
@@ -160,6 +185,7 @@ export class MfaController {
         role: user.role,
         projects: assignments.length,
         mfa: factor.kind,
+        rememberedDevice: body.rememberDevice === true,
         recoveryCodesRemaining:
           factor.kind === 'recovery' ? user.mfaRecoveryCodeHashes.length - 1 : undefined,
       },

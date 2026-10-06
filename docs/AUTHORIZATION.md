@@ -95,12 +95,14 @@ users ──┬─< project_users >── clusters      (project_users is the ma
   Verified: `UPDATE audit_log SET action='tampered'` reports `UPDATE 0` even as the
   database owner. Dropping the trail is a migration, which is reviewable.
 
-The centralized trail records every security- or incident-relevant operator mutation
-with the authenticated actor, target, outcome, client address, user agent, and safe
-change metadata. This includes user creation and profile edits; role, status, password,
-and MFA changes; project assignment changes; incident acknowledgements; and manual Slack
-ticket requests. Incident acknowledgement also remains in the notification event trail,
-where it participates in the operational incident timeline.
+The centralized trail records every authenticated API request, including reads, with
+the actor, HTTP method, route, outcome, status, duration, client address, and user agent.
+It never copies request bodies, headers, or query strings into the trail, because those
+can contain credentials or customer data. Security- and incident-relevant mutations also
+write a descriptive domain event. These include user creation and profile edits; role,
+status, password, and MFA changes; project assignment changes; incident acknowledgements;
+and manual Slack ticket requests. Incident acknowledgement also remains in the
+notification event trail, where it participates in the operational incident timeline.
 
 Migration `0021_audit_integrity.sql` adds an HMAC-SHA-256 hash chain. Each new row
 signs its canonical contents and the preceding hash while an advisory transaction lock
@@ -155,6 +157,7 @@ every request 500s.
 | `AUTH_ACCESS_TOKEN_TTL_SECONDS`   | `3600`      | 60–86400                                                                    |
 | `AUTH_PASSWORD_RESET_TTL_SECONDS` | `1800`      | Single-use reset-link lifetime; 300–86400                                   |
 | `AUTH_MFA_REQUIRED`               | `false`     | Confines unenrolled accounts to authenticator setup when true               |
+| `AUTH_MFA_TRUSTED_DEVICE_TTL_DAYS` | `30`        | Lifetime of an opted-in browser's MFA trusted-device cookie (1–365 days)    |
 | `AUTH_MFA_ENCRYPTION_KEY`         | JWT-derived | Separate ≥32-character TOTP encryption key; recommended                     |
 | `AUDIT_INTEGRITY_KEY`             | dev-derived | ≥32 chars; required explicitly for the production API                       |
 | `AUDIT_INTEGRITY_KEY_ID`          | `primary`   | Identifier stored with each signed record                                   |
@@ -209,7 +212,10 @@ at rest, recovery codes are stored only as keyed digests, login challenges expir
 five minutes, and a TOTP counter or recovery code can be consumed only once.
 
 An enrolled account always completes `POST /auth/mfa/verify` before an access token is
-issued. With `AUTH_MFA_REQUIRED=true`, an unenrolled account receives a password-authenticated
+issued, unless it previously opted to trust the same browser during a successful MFA challenge.
+The trusted-device credential is signed, HttpOnly, expires after 30 days by default, and is
+bound to the user, current MFA enrollment, and session version; the password is still required
+on every new login. With `AUTH_MFA_REQUIRED=true`, an unenrolled account receives a password-authenticated
 session that the backend confines to `/auth/me`, logout, password change and MFA setup.
 The React redirect is explanatory; the global authorization guard applies the lock.
 

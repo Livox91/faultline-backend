@@ -136,22 +136,24 @@ export class PostgresSubscriptionRepository implements SubscriptionRepository {
     const result = await this.connection.pool.query<SubscriptionRow>(
       `UPDATE subscriptions SET
          user_id = COALESCE($2, user_id),
-         status = COALESCE($3, status),
-         provisioning_status = COALESCE($4, provisioning_status),
+         plan = COALESCE($3, plan),
+         status = COALESCE($4, status),
+         provisioning_status = COALESCE($5, provisioning_status),
          -- Cleared explicitly on success, so a stale reason cannot outlive the failure
-         -- it described; $6 carries the "please clear it" flag.
-         provisioning_error = CASE WHEN $6::boolean THEN $5 ELSE provisioning_error END,
+         -- it described; $7 carries the "please clear it" flag.
+         provisioning_error = CASE WHEN $7::boolean THEN $6 ELSE provisioning_error END,
          payment_provider_subscription_id =
-           COALESCE($7, payment_provider_subscription_id),
-         payment_provider_customer_id = COALESCE($8, payment_provider_customer_id),
-         start_date = COALESCE($9::timestamptz, start_date),
-         end_date = COALESCE($10::timestamptz, end_date),
+           COALESCE($8, payment_provider_subscription_id),
+         payment_provider_customer_id = COALESCE($9, payment_provider_customer_id),
+         start_date = COALESCE($10::timestamptz, start_date),
+         end_date = COALESCE($11::timestamptz, end_date),
          updated_at = now()
        WHERE id = $1
        RETURNING ${columns}`,
       [
         id,
         changes.userId ?? null,
+        changes.plan ?? null,
         changes.status ?? null,
         changes.provisioningStatus ?? null,
         changes.provisioningError ?? null,

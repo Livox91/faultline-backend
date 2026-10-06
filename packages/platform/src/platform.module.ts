@@ -145,6 +145,10 @@ export class PlatformModule {
                   { infer: true },
                 ),
                 mfaRequired: config.get('AUTH_MFA_REQUIRED', { infer: true }),
+                mfaTrustedDeviceTtlDays: config.get(
+                  'AUTH_MFA_TRUSTED_DEVICE_TTL_DAYS',
+                  { infer: true },
+                ),
                 mfaEncryptionKey: config.get('AUTH_MFA_ENCRYPTION_KEY', {
                   infer: true,
                 }),

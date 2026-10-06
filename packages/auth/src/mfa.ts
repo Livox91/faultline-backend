@@ -12,6 +12,7 @@ const TOTP_STEP_SECONDS = 30;
 const TOTP_DIGITS = 6;
 const CHALLENGE_TTL_SECONDS = 5 * 60;
 const ENROLLMENT_TTL_SECONDS = 10 * 60;
+export const DEFAULT_MFA_TRUSTED_DEVICE_TTL_DAYS = 30;
 
 export class MfaError extends Error {
   constructor(message: string) {
@@ -178,9 +179,11 @@ export function recoveryCodeMatches(
 interface SignedPayload {
   sub: string;
   exp: number;
-  purpose: 'login' | 'enrollment';
+  purpose: 'login' | 'enrollment' | 'trusted-device';
   challengeId?: string;
   secret?: string;
+  fingerprint?: string;
+  sessionVersion?: number;
 }
 
 function signPayload(prefix: string, payload: SignedPayload, masterSecret: string): string {
@@ -270,4 +273,64 @@ export function verifyMfaEnrollmentToken(token: string, masterSecret: string, no
     challengeId: payload.challengeId,
     expiresAt: payload.exp,
   };
+}
+
+function trustedDeviceFingerprint(encryptedSecret: string, masterSecret: string): string {
+  return createHmac('sha256', keyFor(masterSecret, 'trusted-device-binding'))
+    .update(encryptedSecret, 'utf8')
+    .digest('base64url');
+}
+
+/**
+ * Issues a browser-bound MFA bypass credential. It is tied to both the current MFA
+ * enrollment and session version, so resetting either invalidates every remembered
+ * device without keeping a second database of device tokens.
+ */
+export function issueMfaTrustedDeviceToken(
+  userId: string,
+  encryptedSecret: string,
+  sessionVersion: number,
+  masterSecret: string,
+  ttlDays = DEFAULT_MFA_TRUSTED_DEVICE_TTL_DAYS,
+  now = Date.now(),
+): { token: string; expiresAt: string } {
+  const exp = Math.floor(now / 1000) + ttlDays * 24 * 60 * 60;
+  return {
+    token: signPayload(
+      'mfat1',
+      {
+        sub: userId,
+        purpose: 'trusted-device',
+        exp,
+        fingerprint: trustedDeviceFingerprint(encryptedSecret, masterSecret),
+        sessionVersion,
+      },
+      masterSecret,
+    ),
+    expiresAt: new Date(exp * 1000).toISOString(),
+  };
+}
+
+export function verifyMfaTrustedDeviceToken(
+  token: string,
+  userId: string,
+  encryptedSecret: string,
+  sessionVersion: number,
+  masterSecret: string,
+  now = Date.now(),
+): boolean {
+  try {
+    const payload = verifyPayload(token, 'mfat1', 'trusted-device', masterSecret, now);
+    if (
+      payload.sub !== userId ||
+      payload.sessionVersion !== sessionVersion ||
+      typeof payload.fingerprint !== 'string'
+    )
+      return false;
+    const expected = Buffer.from(trustedDeviceFingerprint(encryptedSecret, masterSecret));
+    const provided = Buffer.from(payload.fingerprint);
+    return expected.length === provided.length && timingSafeEqual(expected, provided);
+  } catch {
+    return false;
+  }
 }

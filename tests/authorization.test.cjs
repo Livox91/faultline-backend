@@ -116,7 +116,7 @@ const incident = (id, clusterId) => ({
 });
 
 /** Boots the whole authorized surface on in-memory storage. */
-async function boot() {
+async function boot({ auditEveryRequest = false } = {}) {
   const incidents = new InMemoryIncidentRepository();
   await incidents.createIncident(incident('incident-a', PROJECT_A));
   await incidents.createIncident(incident('incident-b', PROJECT_B));
@@ -138,6 +138,7 @@ async function boot() {
       },
     ],
     config,
+    auditEveryRequest,
   });
 
   const adminRecord = await context.users.create({
@@ -303,6 +304,26 @@ test('audit records form a verifiable cryptographic chain', async () => {
   const verification = await audit.verifyIntegrity();
   assert.equal(verification.valid, false);
   assert.equal(verification.firstInvalidRecordId, first.id);
+});
+
+test('every authenticated API request creates a sanitized activity record', async () => {
+  const { app, base, adminToken, audit } = await boot({ auditEveryRequest: true });
+  try {
+    const response = await call(base, adminToken, '/projects?search=must-not-be-audited');
+    assert.equal(response.status, 200);
+    const records = await audit.list({ action: 'user.activity' });
+    assert.equal(records.length, 1);
+    assert.equal(records[0].actor, 'admin@faultline.test');
+    assert.equal(records[0].resourceType, 'api-request');
+    assert.equal(records[0].resourceId, '/projects');
+    assert.equal(records[0].outcome, 'allowed');
+    assert.equal(records[0].metadata.method, 'GET');
+    assert.equal(records[0].metadata.statusCode, 200);
+    assert.equal(typeof records[0].metadata.durationMs, 'number');
+    assert.doesNotMatch(JSON.stringify(records[0]), /must-not-be-audited/);
+  } finally {
+    await app.close();
+  }
 });
 
 test('an anonymous caller reaches nothing', async () => {

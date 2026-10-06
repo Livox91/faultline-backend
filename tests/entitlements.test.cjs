@@ -81,10 +81,22 @@ const call = (base, token, path) =>
  * Always an Admin: the point is that the *tier* decides, not the role. If these tests
  * used a restricted role, a pass could be a role check agreeing by accident.
  */
-async function boot({ plan, status = 'active', config = billingOn() } = {}) {
+async function boot({ plan, status = 'active', config = billingOn(), clusterCount = 0 } = {}) {
   const context = await bootWithRealGuards({
     controllers: [ModulesController, EntitlementsController],
     config,
+    providers: [
+      {
+        provide: CLUSTER_DIRECTORY,
+        useValue: {
+          list: async (_projectIds, organizationId) =>
+            Array.from({ length: clusterCount }, (_, index) => ({
+              id: `cluster-${index + 1}`,
+              organizationId,
+            })),
+        },
+      },
+    ],
   });
   const user = await context.users.create({
     email: 'owner@faultline.test',
@@ -287,6 +299,7 @@ test('the entitlements endpoint reports what the guard enforces', async (t) => {
   assert.equal(body.enforced, true);
   assert.equal(body.subscriptionStatus, 'active');
   assert.deepEqual(body.limits, { clusters: null });
+  assert.deepEqual(body.usage, { clusters: 0 });
   assert.deepEqual(
     body.features.map((entry) => entry.id).sort(),
     [...featuresFor('pro')].sort(),
@@ -314,6 +327,7 @@ test('the entitlements endpoint says so when tiers are not enforced', async (t) 
   assert.equal(body.locked.length, 0);
   assert.equal(body.features.length, Object.keys(FEATURES).length);
   assert.deepEqual(body.limits, { clusters: null });
+  assert.deepEqual(body.usage, { clusters: 0 });
 });
 
 test('entitlements are not readable without a token', async (t) => {
@@ -323,13 +337,14 @@ test('entitlements are not readable without a token', async (t) => {
   assert.equal((await call(base, null, '/billing/entitlements')).status, 401);
 });
 
-test('the free tier is told its cluster allowance and which pages are locked', async (t) => {
-  const { app, base, token } = await boot({ plan: 'basic' });
+test('the free tier is told its cluster allowance, usage and which pages are locked', async (t) => {
+  const { app, base, token } = await boot({ plan: 'basic', clusterCount: 1 });
   t.after(() => app.close());
 
   const body = await (await call(base, token, '/billing/entitlements')).json();
   assert.equal(body.plan, 'basic');
   assert.deepEqual(body.limits, { clusters: 1 });
+  assert.deepEqual(body.usage, { clusters: 1 });
   assert.deepEqual(
     body.locked.filter((entry) => entry.requiredPlan === 'pro').map((entry) => entry.label),
     ['Team & Roles', 'Integrations', 'Runtime', 'Reports', 'Voice Agent'],

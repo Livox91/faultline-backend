@@ -32,6 +32,8 @@ import {
   type TokenSettings,
   type UserRepository,
   issueMfaChallengeToken,
+  readCookie,
+  verifyMfaTrustedDeviceToken,
 } from '@faultline/auth';
 import { AuditTrail } from './audit-trail';
 import {
@@ -44,6 +46,8 @@ import {
 import { AuthSecurityStore } from './security-store';
 import {
   clearSessionCookie,
+  clearMfaTrustedDeviceCookie,
+  MFA_TRUSTED_DEVICE_COOKIE,
   setSessionCookie,
   type CookieResponse,
 } from './session-cookie';
@@ -103,6 +107,7 @@ export class AuthController {
   private readonly mfaSecret: string;
   private readonly mfaRequired: boolean;
   private readonly secureCookies: boolean;
+  private readonly trustedDeviceTtlDays: number;
 
   constructor(
     @Inject(USER_REPOSITORY) private readonly users: UserRepository,
@@ -121,6 +126,7 @@ export class AuthController {
     this.mfaSecret = config.auth.mfaEncryptionKey ?? config.auth.jwtSecret ?? '';
     this.mfaRequired = config.auth.mfaRequired;
     this.secureCookies = config.environment === 'production';
+    this.trustedDeviceTtlDays = config.auth.mfaTrustedDeviceTtlDays ?? 30;
   }
 
   @Public()
@@ -181,7 +187,24 @@ export class AuthController {
 
     await this.throttle.succeed(throttleKey);
 
-    if (user.mfaEnabled) {
+    let trustedDevice = false;
+    if (user.mfaEnabled && user.mfaSecretCiphertext) {
+      const trustedDeviceToken = readCookie(
+        request.headers.cookie,
+        MFA_TRUSTED_DEVICE_COOKIE,
+      );
+      trustedDevice = !!trustedDeviceToken && verifyMfaTrustedDeviceToken(
+        trustedDeviceToken,
+        user.id,
+        user.mfaSecretCiphertext,
+        user.sessionVersion,
+        this.mfaSecret,
+      );
+      if (trustedDeviceToken && !trustedDevice)
+        clearMfaTrustedDeviceCookie(response, this.secureCookies);
+    }
+
+    if (user.mfaEnabled && !trustedDevice) {
       if (!user.mfaSecretCiphertext)
         throw new UnauthorizedException('MFA configuration is incomplete; contact an administrator');
       const challengeExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
@@ -205,6 +228,7 @@ export class AuthController {
         mfaRequired: true,
         challengeToken: challenge.token,
         expiresAt: challenge.expiresAt,
+        trustedDeviceTtlDays: this.trustedDeviceTtlDays,
         user: { email: user.email },
       };
     }
@@ -228,7 +252,7 @@ export class AuthController {
         sub: user.id,
         email: user.email,
         role: user.role,
-        amr: ['pwd'],
+        amr: trustedDevice ? ['pwd', 'trusted-device'] : ['pwd'],
         sv: user.sessionVersion,
       },
       this.tokens,
@@ -255,6 +279,7 @@ export class AuthController {
         role: user.role,
         projects: assignments.length,
         mustChangePassword: user.mustChangePassword,
+        ...(trustedDevice ? { mfa: 'trusted-device' } : {}),
       },
     });
 

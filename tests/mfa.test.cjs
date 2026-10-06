@@ -12,9 +12,11 @@ const {
   generateRecoveryCodes,
   hashRecoveryCode,
   issueMfaChallengeToken,
+  issueMfaTrustedDeviceToken,
   recoveryCodeMatches,
   verifyAccessToken,
   verifyMfaChallengeToken,
+  verifyMfaTrustedDeviceToken,
   verifyTotp,
 } = require('../packages/auth/dist');
 const { AuthController, LoginThrottle } = require('../apps/api/dist/auth/auth.controller');
@@ -103,6 +105,44 @@ test('challenge tokens are purpose-bound, signed and expire', () => {
   assert.throws(() => verifyMfaChallengeToken(issued.token + 'x', masterSecret, 2_000));
 });
 
+test('trusted-device tokens are bound to the user, MFA enrollment, version and expiry', () => {
+  const issued = issueMfaTrustedDeviceToken(
+    'user-1',
+    'encrypted-secret-1',
+    3,
+    masterSecret,
+    30,
+    1_000,
+  );
+  assert.equal(
+    verifyMfaTrustedDeviceToken(
+      issued.token,
+      'user-1',
+      'encrypted-secret-1',
+      3,
+      masterSecret,
+      2_000,
+    ),
+    true,
+  );
+  assert.equal(
+    verifyMfaTrustedDeviceToken(issued.token, 'user-2', 'encrypted-secret-1', 3, masterSecret, 2_000),
+    false,
+  );
+  assert.equal(
+    verifyMfaTrustedDeviceToken(issued.token, 'user-1', 'encrypted-secret-2', 3, masterSecret, 2_000),
+    false,
+  );
+  assert.equal(
+    verifyMfaTrustedDeviceToken(issued.token, 'user-1', 'encrypted-secret-1', 4, masterSecret, 2_000),
+    false,
+  );
+  assert.equal(
+    verifyMfaTrustedDeviceToken(issued.token, 'user-1', 'encrypted-secret-1', 3, masterSecret, 31 * 86_400_000),
+    false,
+  );
+});
+
 test('recovery codes are stored as keyed digests and match normalized input', () => {
   const [code] = generateRecoveryCodes(1);
   const hash = hashRecoveryCode(code, masterSecret);
@@ -171,10 +211,15 @@ test('enrollment creates a real factor and login requires a one-time second fact
   assert.equal(firstStep.mfaRequired, true);
   assert.equal(firstStep.accessToken, undefined);
 
+  const setCookies = [];
   const session = await mfa.verifyLogin(
-    { challengeToken: firstStep.challengeToken, code: completed.recoveryCodes[0] },
+    {
+      challengeToken: firstStep.challengeToken,
+      code: completed.recoveryCodes[0],
+      rememberDevice: true,
+    },
     request(),
-    response(),
+    { append: (name, value) => { if (name === 'Set-Cookie') setCookies.push(value); } },
   );
   assert.ok(session.accessToken);
   assert.deepEqual(
@@ -186,6 +231,29 @@ test('enrollment creates a real factor and login requires a one-time second fact
     ['pwd', 'recovery'],
   );
   assert.equal((await users.findById(stored.id)).mfaRecoveryCodeHashes.length, 9);
+  const trustedCookie = setCookies.find((value) => value.startsWith('fl_mfa_device='));
+  assert.ok(trustedCookie, 'opting in should set a trusted-device cookie');
+  assert.match(trustedCookie, /HttpOnly/);
+  assert.match(trustedCookie, /SameSite=Strict/);
+  assert.match(trustedCookie, /Max-Age=2592000/);
+
+  const rememberedLogin = await auth.login(
+    { email: stored.email, password },
+    {
+      ...request(),
+      headers: { cookie: trustedCookie.split(';', 1)[0] },
+    },
+    response(),
+  );
+  assert.equal(rememberedLogin.mfaRequired, undefined);
+  assert.deepEqual(
+    verifyAccessToken(rememberedLogin.accessToken, {
+      secret: jwtSecret,
+      issuer: config.auth.issuer,
+      ttlSeconds: 3600,
+    }).amr,
+    ['pwd', 'trusted-device'],
+  );
 
   await assert.rejects(
     mfa.verifyLogin(

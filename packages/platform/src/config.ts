@@ -98,6 +98,7 @@ const environmentSchema = z
       .default(1800),
     /** When true, accounts that have not enrolled are confined to MFA setup. */
     AUTH_MFA_REQUIRED: booleanFlag(false),
+    AUTH_MFA_TRUSTED_DEVICE_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
     /** Separate at-rest key for TOTP secrets; falls back to a domain-separated JWT key. */
     AUTH_MFA_ENCRYPTION_KEY: z.string().min(32).optional(),
     /** HMAC key kept outside PostgreSQL so database-only tampering is detectable. */
@@ -668,6 +669,7 @@ export interface AuthSettings {
   readonly accessTokenTtlSeconds: number;
   readonly passwordResetTtlSeconds: number;
   readonly mfaRequired: boolean;
+  readonly mfaTrustedDeviceTtlDays?: number;
   readonly mfaEncryptionKey?: string;
   readonly bootstrapAdmin?: { email: string; password: string };
 }

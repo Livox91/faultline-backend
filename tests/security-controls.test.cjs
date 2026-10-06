@@ -317,6 +317,24 @@ test('every implemented high-risk action is wired to the central audit trail', (
   }
 });
 
+test('every authenticated request is covered by the global activity audit interceptor', () => {
+  const moduleSource = readFileSync(
+    join(process.cwd(), 'apps/api/src/app.module.ts'),
+    'utf8',
+  );
+  const interceptorSource = readFileSync(
+    join(
+      process.cwd(),
+      'apps/api/src/auth/user-activity-audit.interceptor.ts',
+    ),
+    'utf8',
+  );
+  assert.match(moduleSource, /APP_INTERCEPTOR[\s\S]*UserActivityAuditInterceptor/);
+  assert.match(interceptorSource, /AUDIT_ACTIONS\.USER_ACTIVITY/);
+  assert.match(interceptorSource, /request\.user/);
+  assert.doesNotMatch(interceptorSource, /request\.body|request\.query/);
+});
+
 test.todo(
   'external identity callback validates issuer, audience, nonce and maps the subject before issuing a session',
 );

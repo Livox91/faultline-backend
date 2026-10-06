@@ -90,6 +90,7 @@ export class InMemorySubscriptionRepository implements SubscriptionRepository {
     const updated: Subscription = {
       ...existing,
       ...(changes.userId !== undefined ? { userId: changes.userId } : {}),
+      ...(changes.plan !== undefined ? { plan: changes.plan } : {}),
       ...(changes.status !== undefined ? { status: changes.status } : {}),
       ...(changes.provisioningStatus !== undefined
         ? { provisioningStatus: changes.provisioningStatus }

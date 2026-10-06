@@ -11,7 +11,7 @@
  *     exactly as a deployed API would. Use it for anything about access itself.
  */
 const { Module, SetMetadata } = require('@nestjs/common');
-const { APP_GUARD, Reflector } = require('@nestjs/core');
+const { APP_GUARD, APP_INTERCEPTOR, Reflector } = require('@nestjs/core');
 const { NestFactory } = require('@nestjs/core');
 const {
   AUDIT_LOG_REPOSITORY,
@@ -39,6 +39,9 @@ const {
   AuthorizationGuard,
 } = require('../apps/api/dist/auth/authorization.guard');
 const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
+const {
+  UserActivityAuditInterceptor,
+} = require('../apps/api/dist/auth/user-activity-audit.interceptor');
 const { AuthSecurityStore } = require('../apps/api/dist/auth/security-store');
 const {
   EntitlementsGuard,
@@ -144,6 +147,7 @@ async function bootWithRealGuards({
   contacts = new InMemoryContactRepository(),
   email = new RecordingEmailSender(),
   config = apiConfig(),
+  auditEveryRequest = false,
 } = {}) {
   class TestModule {}
   Module({
@@ -166,6 +170,14 @@ async function bootWithRealGuards({
       { provide: APP_GUARD, useClass: AuthorizationGuard },
       // Same order as the application: identity is settled before the plan is asked.
       { provide: APP_GUARD, useClass: EntitlementsGuard },
+      ...(auditEveryRequest
+        ? [
+            {
+              provide: APP_INTERCEPTOR,
+              useClass: UserActivityAuditInterceptor,
+            },
+          ]
+        : []),
     ],
   })(TestModule);
   const app = await NestFactory.create(TestModule, { logger: false });
