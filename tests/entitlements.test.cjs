@@ -448,7 +448,11 @@ async function bootOnboarding({ plan, existing, config = billingOn() }) {
     fetch(`${context.base}/cluster-onboarding`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${tokenFor(owner)}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clusterName: 'Production', controlPlaneIp: '10.0.0.8' }),
+      body: JSON.stringify({
+        clusterName: 'Production',
+        controlPlaneIp: '10.0.0.8',
+        ingestionEndpoint: 'http://10.0.0.9:3001',
+      }),
     });
   return { ...context, started, onboard };
 }

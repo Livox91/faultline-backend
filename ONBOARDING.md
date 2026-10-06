@@ -58,6 +58,24 @@ At the end, setup prints the commands that should be run next.
 
 ## Advanced prerequisites and troubleshooting
 
+### Remote cluster quick setup
+
+When Kubernetes and Faultline run on different machines, export the current cluster
+from the BookNest repository on the Kubernetes machine:
+
+```powershell
+.\scripts\Export-FaultlineKubeconfig.ps1 -BookNestAddress <KUBERNETES-MACHINE-IP>
+```
+
+Copy the generated kubeconfig securely to the computer where you use Faultline. Open
+**Clusters → Cluster Onboarding**, select it under **Cluster access file**, and submit.
+The authenticated API validates and privately stores the credentials for that cluster;
+they are never included in job responses or setup output. Delete the transferred copy
+after the upload succeeds.
+
+For headless operation, `npm run cluster:import -- "C:\path\config.yaml"` remains
+available as an alternative, but it is not required by the UI workflow.
+
 - Node.js 22 or newer and npm (the repository uses npm workspaces and `package-lock.json`)
 - Docker Engine with Docker Compose v2
 - `kubectl` configured for the cluster that runs BookNest

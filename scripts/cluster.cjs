@@ -49,6 +49,7 @@ function kubernetesUnavailable(error) {
     .join('\n');
   return [
     /unable to connect to the server/i,
+    /connection refused/i,
     /the connection to the server .* was refused/i,
     /dial tcp .*?(?:connection refused|actively refused|i\/o timeout)/i,
     /connectex:.*actively refused/i,
@@ -108,6 +109,39 @@ function controlPlaneServer(value) {
   }
 }
 
+function kubernetesConnectionMessage(context, server, error) {
+  const detail = [error?.detail, error?.message]
+    .filter(Boolean)
+    .join('\n');
+  const target = server || `the server configured by context ${context}`;
+
+  if (/certificate is valid for .* not /i.test(detail))
+    return (
+      `Kubernetes rejected the TLS certificate at ${target}. ` +
+      'The API-server certificate does not include this control-plane address. ' +
+      'For Kind, add the host IP to apiServer.certSANs and recreate the cluster.'
+    );
+  if (/certificate signed by unknown authority/i.test(detail))
+    return (
+      `Kubernetes rejected the certificate at ${target}. ` +
+      `kubectl context ${context} has the wrong certificate authority; import the kubeconfig exported by this cluster and select its context.`
+    );
+  if (/Unauthorized|the server has asked for the client to provide credentials/i.test(detail))
+    return (
+      `Kubernetes rejected the credentials in context ${context}. ` +
+      'Import a current kubeconfig from the cluster machine and try again.'
+    );
+  if (kubernetesUnavailable(error))
+    return (
+      `Kubernetes API ${target} cannot be reached from the Faultline machine. ` +
+      'Check the forwarded port, host firewall, and control-plane address.'
+    );
+  return (
+    `Kubernetes cluster ${context} could not be accessed at ${target}. ` +
+    `kubectl reported: ${detail.split(/\r?\n/).find(Boolean) || 'unknown error'}`
+  );
+}
+
 function detectKubernetes(execute = run) {
   try {
     execute('kubectl', ['version', '--client'], {
@@ -157,7 +191,7 @@ function detectKubernetes(execute = run) {
     ).items;
   } catch (error) {
     throw new Error(
-      `Kubernetes cluster ${current} cannot be reached. Make sure the cluster is running and that kubectl can connect to it.`,
+      kubernetesConnectionMessage(current, selectedControlPlane, error),
     );
   }
   const ready = nodes.filter((node) =>
@@ -1304,4 +1338,5 @@ module.exports = {
   registrationDefaults,
   podFailureReason,
   kubernetesUnavailable,
+  kubernetesConnectionMessage,
 };
