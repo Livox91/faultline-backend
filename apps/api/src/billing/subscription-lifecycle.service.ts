@@ -49,6 +49,9 @@ export class SubscriptionLifecycleService {
       ...(update.customerId ? { paymentProviderCustomerId: update.customerId } : {}),
       ...(update.startDate ? { startDate: update.startDate } : {}),
       ...(update.endDate ? { endDate: update.endDate } : {}),
+      ...(update.cancelAtPeriodEnd !== undefined
+        ? { cancelAtPeriodEnd: update.cancelAtPeriodEnd }
+        : {}),
     });
     if (!subscription)
       throw new Error(`Subscription ${existing.id} disappeared during lifecycle update`);

@@ -52,8 +52,8 @@ export interface IncidentCommunicationRepository { save(value:IncidentCommunicat
 export class InMemoryIncidentCommunicationRepository implements IncidentCommunicationRepository { private readonly values=new Map<string,IncidentCommunication>();async save(value:IncidentCommunication){this.values.set(value.id,structuredClone(value));return structuredClone(value);}async findByDedupeKey(key:string){const value=[...this.values.values()].find((item)=>item.dedupeKey===key);return value?structuredClone(value):undefined;}async findByProviderRequestId(id:string){const value=[...this.values.values()].find((item)=>item.providerRequestId===id);return value?structuredClone(value):undefined;}async listForIncident(id:string){return[...this.values.values()].filter((item)=>item.incidentId===id).map((item)=>structuredClone(item));}async listRecent(organizationId:string,limit:number){return[...this.values.values()].filter((item)=>item.organizationId===organizationId).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,limit).map((item)=>structuredClone(item));}}
 
 export interface NotificationProviderStatus { organizationId:string; provider:'retell'; configured:boolean; connected:boolean; maskedFromNumber?:string; voiceAgentConfigured:boolean; smsAgentConfigured:boolean; checkedAt:string; message:string; }
-export interface NotificationProviderStatusRepository { save(value:NotificationProviderStatus):Promise<NotificationProviderStatus>; get(organizationId:string):Promise<NotificationProviderStatus|undefined>; }
-export class InMemoryNotificationProviderStatusRepository implements NotificationProviderStatusRepository {private readonly values=new Map<string,NotificationProviderStatus>();async save(value:NotificationProviderStatus){this.values.set(value.organizationId,structuredClone(value));return structuredClone(value);}async get(id:string){const value=this.values.get(id);return value?structuredClone(value):undefined;}}
+export interface NotificationProviderStatusRepository { save(value:NotificationProviderStatus):Promise<NotificationProviderStatus>; get(organizationId:string):Promise<NotificationProviderStatus|undefined>; getLatest():Promise<NotificationProviderStatus|undefined>; }
+export class InMemoryNotificationProviderStatusRepository implements NotificationProviderStatusRepository {private readonly values=new Map<string,NotificationProviderStatus>();async save(value:NotificationProviderStatus){this.values.set(value.organizationId,structuredClone(value));return structuredClone(value);}async get(id:string){const value=this.values.get(id);return value?structuredClone(value):undefined;}async getLatest(){const value=[...this.values.values()].sort((a,b)=>Date.parse(b.checkedAt)-Date.parse(a.checkedAt))[0];return value?structuredClone(value):undefined;}}
 
 export interface NotificationAttempt {
   id: string;
@@ -87,7 +87,7 @@ export interface NotificationGroupRepository { create(group: NotificationGroup):
 export type IncidentNotificationStateStatus = 'ACTIVE' | 'ACKNOWLEDGED' | 'RESOLVED';
 export interface IncidentNotificationState { incidentId:string; clusterId:string; organizationId:string; recipientIds:readonly string[]; fallbackUsed:boolean; status:IncidentNotificationStateStatus; startedAt:string; updatedAt:string; completedAt?:string; }
 export interface IncidentNotificationStateRepository { save(value:IncidentNotificationState):Promise<IncidentNotificationState>; get(incidentId:string):Promise<IncidentNotificationState|undefined>; }
-export interface IncidentAcknowledgement { incidentId: string; acknowledgedBy: string; acknowledgedAt: string; notificationAttemptId?: string; providerCallId?: string; channel?: 'VOICE'; note?: string; }
+export interface IncidentAcknowledgement { incidentId: string; acknowledgedBy: string; acknowledgedAt: string; notificationAttemptId?: string; providerCallId?: string; slackEventId?: string; channel?: 'VOICE' | 'SLACK'; note?: string; }
 export interface IncidentAcknowledgementRepository { save(value: IncidentAcknowledgement): Promise<IncidentAcknowledgement>; get(incidentId: string): Promise<IncidentAcknowledgement | undefined>; }
 export interface AcknowledgementTransaction { acknowledge(input:{acknowledgement:IncidentAcknowledgement;state:IncidentNotificationState;attempt?:NotificationAttempt;communication?:IncidentCommunication;events:readonly NotificationAuditEvent[]}):Promise<void>; }
 export type NotificationAuditEventType = 'DIRECT_NOTIFICATION_STARTED' | 'RECIPIENT_RESOLVED' | 'ADMIN_FALLBACK_USED' | 'CONTACT_SKIPPED' | 'CALL_REQUESTED' | 'SMS_REQUESTED' | 'CALL_ANSWERED' | 'VOICE_CALL_ANSWERED' | 'ACKNOWLEDGEMENT_REQUESTED' | 'CALL_FAILED' | 'INCIDENT_ACKNOWLEDGED' | 'INCIDENT_DECLINED' | 'ACKNOWLEDGEMENT_REJECTED' | 'NOTIFICATION_STOPPED' | 'INCIDENT_RESOLVED';
@@ -104,7 +104,7 @@ class InMemoryCrudRepository<T extends { id: string; organizationId: string }> {
 export class InMemoryContactRepository extends InMemoryCrudRepository<Contact> implements ContactRepository {async findByUserIds(ids:readonly string[],organizationId:string){const wanted=new Set(ids);return[...this.values.values()].filter(value=>value.organizationId===organizationId&&!!value.userId&&wanted.has(value.userId)).map(value=>structuredClone(value));}}
 export class InMemoryNotificationGroupRepository extends InMemoryCrudRepository<NotificationGroup> implements NotificationGroupRepository {}
 export class InMemoryIncidentNotificationStateRepository implements IncidentNotificationStateRepository {private readonly values=new Map<string,IncidentNotificationState>();async save(value:IncidentNotificationState){this.values.set(value.incidentId,structuredClone(value));return structuredClone(value);}async get(id:string){const value=this.values.get(id);return value?structuredClone(value):undefined;}}
-export class InMemoryIncidentAcknowledgementRepository implements IncidentAcknowledgementRepository { private readonly values = new Map<string, IncidentAcknowledgement>(); async save(value: IncidentAcknowledgement) { this.values.set(value.incidentId, structuredClone(value)); return structuredClone(value); } async get(id: string) { const value = this.values.get(id); return value ? structuredClone(value) : undefined; } }
+export class InMemoryIncidentAcknowledgementRepository implements IncidentAcknowledgementRepository { private readonly values = new Map<string, IncidentAcknowledgement>(); async save(value: IncidentAcknowledgement) { const existing=this.values.get(value.incidentId);if(existing)return structuredClone(existing);this.values.set(value.incidentId, structuredClone(value)); return structuredClone(value); } async get(id: string) { const value = this.values.get(id); return value ? structuredClone(value) : undefined; } }
 export class InMemoryNotificationAuditRepository implements NotificationAuditRepository { private readonly values: NotificationAuditEvent[] = []; async append(value: NotificationAuditEvent) { this.values.push(structuredClone(value)); } async list(id: string) { return this.values.filter((value) => value.incidentId === id).map((value) => structuredClone(value)); } async purge(before:string){const old=this.values.length;for(let i=this.values.length-1;i>=0;i--)if(this.values[i]!.timestamp<before)this.values.splice(i,1);return old-this.values.length;} }
 
 export function normalizePhoneNumber(value: string): string {
@@ -295,6 +295,11 @@ export interface ExternalTicketRepository {
     incidentId: string,
     provider: ExternalTicket['provider'],
   ): Promise<ExternalTicket | undefined>;
+  findByProviderMessage(
+    provider: ExternalTicket['provider'],
+    channelId: string,
+    externalMessageId: string,
+  ): Promise<ExternalTicket | undefined>;
   /** Persists a ticket or returns the record that already owns the unique incident/provider key. */
   saveIfAbsent(ticket: ExternalTicket): Promise<ExternalTicket>;
   markUpdated(id: string, updatedAt: string): Promise<ExternalTicket | undefined>;
@@ -313,6 +318,14 @@ export class InMemoryExternalTicketRepository
   ): Promise<ExternalTicket | undefined> {
     const value = this.values.get(this.key(incidentId, provider));
     return value ? structuredClone(value) : undefined;
+  }
+  async findByProviderMessage(
+    provider: ExternalTicket['provider'],
+    channelId: string,
+    externalMessageId: string,
+  ): Promise<ExternalTicket | undefined> {
+    const value=[...this.values.values()].find((item)=>item.provider===provider&&item.channelId===channelId&&item.externalMessageId===externalMessageId);
+    return value?structuredClone(value):undefined;
   }
   async saveIfAbsent(ticket: ExternalTicket): Promise<ExternalTicket> {
     const key = this.key(ticket.incidentId, ticket.provider);

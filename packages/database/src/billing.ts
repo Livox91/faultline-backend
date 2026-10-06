@@ -25,6 +25,7 @@ interface SubscriptionRow {
   provisioning_error: string | null;
   start_date: Date | null;
   end_date: Date | null;
+  cancel_at_period_end: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -43,13 +44,15 @@ const toSubscription = (row: SubscriptionRow): Subscription => ({
   provisioningError: row.provisioning_error,
   startDate: row.start_date?.toISOString() ?? null,
   endDate: row.end_date?.toISOString() ?? null,
+  cancelAtPeriodEnd: row.cancel_at_period_end,
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
 });
 
 const columns = `id, user_id, email, payment_provider, payment_provider_customer_id,
   payment_provider_subscription_id, checkout_session_id, plan, status,
-  provisioning_status, provisioning_error, start_date, end_date, created_at, updated_at`;
+  provisioning_status, provisioning_error, start_date, end_date,
+  cancel_at_period_end, created_at, updated_at`;
 
 export class PostgresSubscriptionRepository implements SubscriptionRepository {
   constructor(private readonly connection: PostgresConnection) {}
@@ -67,8 +70,8 @@ export class PostgresSubscriptionRepository implements SubscriptionRepository {
       `INSERT INTO subscriptions
          (id, email, payment_provider, payment_provider_customer_id,
           payment_provider_subscription_id, checkout_session_id, plan, status,
-          provisioning_status, start_date, end_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11::timestamptz)
+          provisioning_status, start_date, end_date, cancel_at_period_end)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11::timestamptz, $12)
        ON CONFLICT (checkout_session_id) WHERE checkout_session_id IS NOT NULL
          DO NOTHING
        RETURNING ${columns}`,
@@ -84,6 +87,7 @@ export class PostgresSubscriptionRepository implements SubscriptionRepository {
         input.provisioningStatus ?? 'pending',
         input.startDate ?? null,
         input.endDate ?? null,
+        input.cancelAtPeriodEnd ?? false,
       ],
     );
     if (result.rows[0]) return toSubscription(result.rows[0]);
@@ -147,6 +151,7 @@ export class PostgresSubscriptionRepository implements SubscriptionRepository {
          payment_provider_customer_id = COALESCE($9, payment_provider_customer_id),
          start_date = COALESCE($10::timestamptz, start_date),
          end_date = COALESCE($11::timestamptz, end_date),
+         cancel_at_period_end = COALESCE($12::boolean, cancel_at_period_end),
          updated_at = now()
        WHERE id = $1
        RETURNING ${columns}`,
@@ -162,6 +167,7 @@ export class PostgresSubscriptionRepository implements SubscriptionRepository {
         changes.paymentProviderCustomerId ?? null,
         changes.startDate ?? null,
         changes.endDate ?? null,
+        changes.cancelAtPeriodEnd ?? null,
       ],
     );
     return result.rows[0] ? toSubscription(result.rows[0]) : undefined;

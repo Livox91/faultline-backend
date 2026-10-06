@@ -73,7 +73,7 @@ export class PostgresIncidentCommunicationRepository implements IncidentCommunic
   async listForIncident(id:string){const result=await this.db.pool.query<AggregateRow<IncidentCommunication>>('SELECT aggregate FROM incident_communications WHERE incident_id=$1 ORDER BY created_at',[id]);return result.rows.map((row)=>structuredClone(row.aggregate));}
   async listRecent(organizationId:string,limit:number){const result=await this.db.pool.query<AggregateRow<IncidentCommunication>>('SELECT aggregate FROM incident_communications WHERE organization_id=$1 ORDER BY created_at DESC LIMIT $2',[organizationId,limit]);return result.rows.map((row)=>structuredClone(row.aggregate));}
 }
-export class PostgresNotificationProviderStatusRepository implements NotificationProviderStatusRepository {constructor(private readonly db:PostgresConnection){}async save(value:NotificationProviderStatus){await this.db.pool.query(`INSERT INTO notification_provider_status (organization_id,aggregate,checked_at) VALUES ($1,$2,$3) ON CONFLICT (organization_id) DO UPDATE SET aggregate=EXCLUDED.aggregate,checked_at=EXCLUDED.checked_at`,[value.organizationId,JSON.stringify(value),value.checkedAt]);return structuredClone(value);}async get(id:string){const result=await this.db.pool.query<AggregateRow<NotificationProviderStatus>>('SELECT aggregate FROM notification_provider_status WHERE organization_id=$1',[id]);return result.rows[0]?.aggregate?structuredClone(result.rows[0].aggregate):undefined;}}
+export class PostgresNotificationProviderStatusRepository implements NotificationProviderStatusRepository {constructor(private readonly db:PostgresConnection){}async save(value:NotificationProviderStatus){await this.db.pool.query(`INSERT INTO notification_provider_status (organization_id,aggregate,checked_at) VALUES ($1,$2,$3) ON CONFLICT (organization_id) DO UPDATE SET aggregate=EXCLUDED.aggregate,checked_at=EXCLUDED.checked_at`,[value.organizationId,JSON.stringify(value),value.checkedAt]);return structuredClone(value);}async get(id:string){const result=await this.db.pool.query<AggregateRow<NotificationProviderStatus>>('SELECT aggregate FROM notification_provider_status WHERE organization_id=$1',[id]);return result.rows[0]?.aggregate?structuredClone(result.rows[0].aggregate):undefined;}async getLatest(){const result=await this.db.pool.query<AggregateRow<NotificationProviderStatus>>('SELECT aggregate FROM notification_provider_status ORDER BY checked_at DESC LIMIT 1');return result.rows[0]?.aggregate?structuredClone(result.rows[0].aggregate):undefined;}}
 export class PostgresIncidentNotificationStateRepository implements IncidentNotificationStateRepository {
   constructor(private readonly db: PostgresConnection) {}
   async save(value:IncidentNotificationState){await this.db.pool.query(`INSERT INTO incident_notification_states (incident_id,cluster_id,organization_id,status,aggregate) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (incident_id) DO UPDATE SET cluster_id=EXCLUDED.cluster_id,organization_id=EXCLUDED.organization_id,status=EXCLUDED.status,aggregate=EXCLUDED.aggregate,updated_at=now()`,[value.incidentId,value.clusterId,value.organizationId,value.status,JSON.stringify(value)]);return structuredClone(value);}
@@ -81,7 +81,7 @@ export class PostgresIncidentNotificationStateRepository implements IncidentNoti
 }
 export class PostgresIncidentAcknowledgementRepository implements IncidentAcknowledgementRepository {
   constructor(private readonly db: PostgresConnection) {}
-  async save(value: IncidentAcknowledgement) { await this.db.pool.query(`INSERT INTO incident_acknowledgements (incident_id,aggregate) VALUES ($1,$2) ON CONFLICT (incident_id) DO UPDATE SET aggregate=EXCLUDED.aggregate`,[value.incidentId,JSON.stringify(value)]); return structuredClone(value); }
+  async save(value: IncidentAcknowledgement) { const result=await this.db.pool.query<AggregateRow<IncidentAcknowledgement>>(`INSERT INTO incident_acknowledgements (incident_id,aggregate) VALUES ($1,$2) ON CONFLICT (incident_id) DO NOTHING RETURNING aggregate`,[value.incidentId,JSON.stringify(value)]); return result.rows[0]?.aggregate?structuredClone(result.rows[0].aggregate):(await this.get(value.incidentId))!; }
   async get(id: string) { const result = await this.db.pool.query<AggregateRow<IncidentAcknowledgement>>('SELECT aggregate FROM incident_acknowledgements WHERE incident_id=$1',[id]); return result.rows[0]?.aggregate ? structuredClone(result.rows[0].aggregate) : undefined; }
 }
 export class PostgresNotificationAuditRepository implements NotificationAuditRepository {
@@ -105,6 +105,10 @@ export class PostgresExternalTicketRepository implements ExternalTicketRepositor
   constructor(private readonly db:PostgresConnection) {}
   async findByIncidentAndProvider(incidentId:string,provider:ExternalTicket['provider']) {
     const result=await this.db.pool.query<ExternalTicketRow>('SELECT id,incident_id,provider,channel_id,external_message_id,url,created_at,updated_at FROM incident_external_tickets WHERE incident_id=$1 AND provider=$2',[incidentId,provider]);
+    return result.rows[0]?this.map(result.rows[0]):undefined;
+  }
+  async findByProviderMessage(provider:ExternalTicket['provider'],channelId:string,externalMessageId:string) {
+    const result=await this.db.pool.query<ExternalTicketRow>('SELECT id,incident_id,provider,channel_id,external_message_id,url,created_at,updated_at FROM incident_external_tickets WHERE provider=$1 AND channel_id=$2 AND external_message_id=$3',[provider,channelId,externalMessageId]);
     return result.rows[0]?this.map(result.rows[0]):undefined;
   }
   async saveIfAbsent(ticket:ExternalTicket) {

@@ -23,12 +23,16 @@ import {
 } from '@faultline/auth';
 import {
   EXTERNAL_TICKET_REPOSITORY,
+  SLACK_INTEGRATION_REPOSITORY,
   type ExternalTicket,
   type ExternalTicketRepository,
+  type SlackIntegrationRepository,
 } from '@faultline/notifications';
+import type { ClusterDirectory } from '@faultline/database';
 import { EVENT_TOPICS, QUEUE, type Queue } from '@faultline/queue';
 import { AuditTrail } from './auth/audit-trail';
 import { CurrentUser, type RequestWithUser } from './auth/context';
+import { CLUSTER_DIRECTORY } from './clusters.controller';
 
 export interface SlackTicketView {
   provider: 'slack';
@@ -47,6 +51,10 @@ export class IncidentExternalTicketController {
     private readonly incidents: IncidentRepository,
     @Inject(EXTERNAL_TICKET_REPOSITORY)
     private readonly tickets: ExternalTicketRepository,
+    @Inject(SLACK_INTEGRATION_REPOSITORY)
+    private readonly slackIntegrations: SlackIntegrationRepository,
+    @Inject(CLUSTER_DIRECTORY)
+    private readonly clusters: ClusterDirectory,
     @Inject(QUEUE) private readonly queue: Queue,
     private readonly audit: AuditTrail,
   ) {}
@@ -87,6 +95,37 @@ export class IncidentExternalTicketController {
     );
     if (existing) return { status: 'LINKED', ticket: toView(existing) };
 
+    const [slack, cluster] = await Promise.all([
+      this.slackIntegrations.get(actor.organizationId),
+      this.clusters.get(incident.clusterId, actor.organizationId),
+    ]);
+    const service = normalizeService(
+      incident.logicalService ?? incident.primaryResource.workload,
+    );
+    const channelId =
+      cluster?.slackChannelId ??
+      (service ? slack?.serviceChannels[service] : undefined) ??
+      slack?.incidentChannelId;
+    if (!slack?.enabled || !slack.botToken || !channelId) {
+      await this.audit.record({
+        user: actor,
+        action: AUDIT_ACTIONS.SLACK_TICKET_REQUESTED,
+        resourceType: 'incident',
+        resourceId: incidentId,
+        outcome: 'denied',
+        request,
+        metadata: {
+          clusterId: incident.clusterId,
+          reason: 'slack_not_configured',
+        },
+      });
+      throw new ServiceUnavailableException({
+        code: 'SLACK_NOT_CONFIGURED',
+        message:
+          'Slack is not configured for this incident. Configure and enable Slack with an available incident channel, then try again.',
+      });
+    }
+
     try {
       await this.queue.publish(EVENT_TOPICS.incidentTicketRequested, {
         id: `manual-slack-ticket:${incidentId}:${randomUUID()}`,
@@ -124,6 +163,11 @@ export class IncidentExternalTicketController {
     });
     return { status: 'REQUESTED', ticket: null };
   }
+}
+
+function normalizeService(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized || undefined;
 }
 
 function toView(ticket: ExternalTicket): SlackTicketView {

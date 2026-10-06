@@ -61,10 +61,14 @@ import { VoiceActionController } from './voice-action.controller';
 import { VoiceActionService } from './voice-action.service';
 import { RetellWebhookController } from './webhook.controller';
 import { ProviderHealthService } from './provider-health.service';
+import { SlackAcknowledgementService } from './slack-acknowledgement.service';
+import { SlackEventsController } from './slack-events.controller';
+import { SlackEventProcessor } from './slack-event.processor';
+import { SlackSocketModeService } from './slack-socket-mode.service';
 
 @Module({
   imports: [PlatformModule.forRoot('notification', resolve(__dirname, '../.env'))],
-  controllers: [RetellWebhookController, VoiceActionController],
+  controllers: [RetellWebhookController, VoiceActionController, SlackEventsController],
   providers: [
     { provide: NOTIFICATION_CONFIG, useFactory: loadNotificationConfig },
     {
@@ -126,6 +130,9 @@ import { ProviderHealthService } from './provider-health.service';
     VoiceActionService,
     RecoverySchedulerService,
     ProviderHealthService,
+    SlackAcknowledgementService,
+    SlackEventProcessor,
+    SlackSocketModeService,
   ],
 })
 export class AppModule {}

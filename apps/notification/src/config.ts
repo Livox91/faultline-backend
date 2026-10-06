@@ -4,6 +4,9 @@ import { z } from 'zod';
 
 export interface SlackWorkerConfig {
   enabled: boolean;
+  socketModeEnabled: boolean;
+  appToken?: string;
+  signingSecret?: string;
   botToken?: string;
   incidentChannelId?: string;
   dashboardUrl?: string;
@@ -83,6 +86,9 @@ const notificationEnvironment = z.object({
       .min(1)
       .default(365),
     SLACK_ENABLED: z.enum(['true', 'false']).default('false'),
+    SLACK_SOCKET_MODE_ENABLED: z.enum(['true', 'false']).default('false'),
+    SLACK_APP_TOKEN: optionalText,
+    SLACK_SIGNING_SECRET: optionalText,
     SLACK_TOKEN_ENCRYPTION_KEY: optionalText,
     SLACK_BOT_TOKEN: optionalText,
     SLACK_INCIDENT_CHANNEL_ID: optionalText,
@@ -118,6 +124,8 @@ export function loadNotificationConfig(
     value.SLACK_ENABLED === 'true' &&
     !!value.SLACK_BOT_TOKEN &&
     !!value.SLACK_INCIDENT_CHANNEL_ID;
+  if (value.SLACK_SOCKET_MODE_ENABLED === 'true' && !value.SLACK_APP_TOKEN)
+    throw new Error('Invalid environment fields: SLACK_APP_TOKEN');
   return {
     slackTokenEncryptionKey: value.SLACK_TOKEN_ENCRYPTION_KEY,
     apiKey: value.RETELL_API_KEY,
@@ -135,6 +143,11 @@ export function loadNotificationConfig(
     auditRetentionDays: value.NOTIFICATION_AUDIT_RETENTION_DAYS,
     slack: {
       enabled: slackEnabled,
+      socketModeEnabled: value.SLACK_SOCKET_MODE_ENABLED === 'true',
+      ...(value.SLACK_APP_TOKEN ? { appToken: value.SLACK_APP_TOKEN } : {}),
+      ...(value.SLACK_SIGNING_SECRET
+        ? { signingSecret: value.SLACK_SIGNING_SECRET }
+        : {}),
       botToken: value.SLACK_BOT_TOKEN,
       incidentChannelId: value.SLACK_INCIDENT_CHANNEL_ID,
       dashboardUrl: value.SLACK_DASHBOARD_URL,

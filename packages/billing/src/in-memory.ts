@@ -39,6 +39,7 @@ export class InMemorySubscriptionRepository implements SubscriptionRepository {
       provisioningError: null,
       startDate: input.startDate ?? null,
       endDate: input.endDate ?? null,
+      cancelAtPeriodEnd: input.cancelAtPeriodEnd ?? false,
       createdAt: now,
       updatedAt: now,
     };
@@ -111,6 +112,9 @@ export class InMemorySubscriptionRepository implements SubscriptionRepository {
         ? { startDate: changes.startDate }
         : {}),
       ...(changes.endDate !== undefined ? { endDate: changes.endDate } : {}),
+      ...(changes.cancelAtPeriodEnd !== undefined
+        ? { cancelAtPeriodEnd: changes.cancelAtPeriodEnd }
+        : {}),
       updatedAt: new Date().toISOString(),
     };
     this.rows.set(id, updated);

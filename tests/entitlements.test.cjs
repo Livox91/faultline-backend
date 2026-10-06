@@ -81,7 +81,14 @@ const call = (base, token, path) =>
  * Always an Admin: the point is that the *tier* decides, not the role. If these tests
  * used a restricted role, a pass could be a role check agreeing by accident.
  */
-async function boot({ plan, status = 'active', config = billingOn(), clusterCount = 0 } = {}) {
+async function boot({
+  plan,
+  status = 'active',
+  endDate,
+  cancelAtPeriodEnd = false,
+  config = billingOn(),
+  clusterCount = 0,
+} = {}) {
   const context = await bootWithRealGuards({
     controllers: [ModulesController, EntitlementsController],
     config,
@@ -111,6 +118,8 @@ async function boot({ plan, status = 'active', config = billingOn(), clusterCoun
       checkoutSessionId: `cs_${plan}_${status}`,
       plan,
       status,
+      endDate,
+      cancelAtPeriodEnd,
     });
     await context.subscriptions.update(subscription.id, {
       userId: user.id,
@@ -287,7 +296,11 @@ test('with billing disabled no module is withheld', async (t) => {
 /* ----------------------------------------------- what the console is told */
 
 test('the entitlements endpoint reports what the guard enforces', async (t) => {
-  const { app, base, token } = await boot({ plan: 'pro' });
+  const { app, base, token } = await boot({
+    plan: 'pro',
+    endDate: '2026-12-01T00:00:00.000Z',
+    cancelAtPeriodEnd: true,
+  });
   t.after(() => app.close());
 
   const response = await call(base, token, '/billing/entitlements');
@@ -298,6 +311,8 @@ test('the entitlements endpoint reports what the guard enforces', async (t) => {
   assert.equal(body.planName, 'Pro');
   assert.equal(body.enforced, true);
   assert.equal(body.subscriptionStatus, 'active');
+  assert.equal(body.subscriptionPeriodEnd, '2026-12-01T00:00:00.000Z');
+  assert.equal(body.cancelAtPeriodEnd, true);
   assert.deepEqual(body.limits, { clusters: null });
   assert.deepEqual(body.usage, { clusters: 0 });
   assert.deepEqual(

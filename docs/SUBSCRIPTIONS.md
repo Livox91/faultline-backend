@@ -142,16 +142,14 @@ trip and a `plan` in a request is validated against something this codebase owns
 
 | Plan | Price | Bought how |
 |---|---|---|
-| `basic` | Free | hosted checkout, at a **zero-amount recurring Price** |
+| `basic` | Free | direct email signup; Stripe is not used |
 | `pro` | $49.00 / month | hosted checkout |
 | `enterprise` | Custom | sales conversation — `BILLING_SALES_CONTACT` |
 
-Basic is free but still goes through the provider. That is deliberate: it keeps one
-provisioning path — checkout, signed webhook, account, credentials email — rather than a
-second, unpaid one, which would be a public "create me an Admin" endpoint wearing a
-different hat. A zero-amount session settles as `no_payment_required` rather than `paid`,
-and the gateway accepts that **only** for a tier whose amount in our own catalog is zero;
-a paid tier that somehow completed without money still provisions nothing.
+Basic uses `POST /billing/free-signup`. The endpoint always provisions Basic, creates the
+administrator account through the same audited provisioning service, and emails the
+temporary credentials. It does not create a checkout session or call Stripe. A stable,
+email-derived signup id makes retries idempotent, while an existing account returns 409.
 
 Enterprise has no amount and no price id. `POST /billing/checkout` rejects it with a 400
 that says why, and a signed webhook naming it provisions nothing.
@@ -230,7 +228,9 @@ it is written to the audit trail like any other denial (`resourceType: 'feature'
 |---|---|---|
 | `GET` | `/billing/plans` | public — pricing for the page |
 | `POST` | `/billing/checkout` | public — `{email, plan, fullName?, username?}` → `{checkoutUrl}` |
-| `POST` | `/billing/webhook` | **signature only** — the one route that creates an Admin |
+| `POST` | `/billing/free-signup` | public — creates a Basic account without Stripe |
+| `POST` | `/billing/upgrade` | Admin — `{plan: "pro"}` → authenticated Stripe checkout URL |
+| `POST` | `/billing/webhook` | **signature only** — provisions paid checkout results |
 | `GET` | `/billing/checkout/status?sessionId=` | public — `{paid, email}`, never credentials |
 | `GET` | `/billing/entitlements` | authenticated — the caller's tier, its modules, and what is locked |
 | `POST` | `/billing/portal` | Admin — opens Stripe-hosted billing management |

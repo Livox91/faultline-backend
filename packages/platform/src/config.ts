@@ -127,13 +127,7 @@ const environmentSchema = z
      * refuses to operate when this is unset.
      */
     STRIPE_WEBHOOK_SECRET: z.string().trim().min(1).optional(),
-    /**
-     * The Stripe Price the Basic plan is sold at, e.g. `price_1234`.
-     *
-     * Basic is free, but it is still a recurring price of zero at the provider: that
-     * keeps one provisioning path for every self-serve tier instead of an unpaid side
-     * door that creates Admin accounts.
-     */
+    /** Legacy Basic Stripe Price. Basic signup now bypasses Stripe. */
     STRIPE_PRICE_ID_BASIC: z.string().trim().min(1).optional(),
     /** The Stripe Price the Pro plan is sold at, e.g. `price_1234`. */
     STRIPE_PRICE_ID_PRO: z.string().trim().min(1).optional(),

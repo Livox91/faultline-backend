@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Get,
   Header,
@@ -27,7 +28,7 @@ import {
   planIds,
   type ProcessedEventRepository,
 } from '@faultline/billing';
-import { isValidUsername } from '@faultline/auth';
+import { DuplicateEmailError, isValidUsername } from '@faultline/auth';
 import { Public } from '../auth/context';
 import { PAYMENT_GATEWAY, type PaymentGateway } from './stripe.gateway';
 import { SubscriptionProvisioningService } from './provisioning.service';
@@ -41,8 +42,8 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * Every route here is `@Public()` by necessity: the person buying a subscription does
  * not have an account yet - creating one is the point. That makes this the only part of
  * the API an anonymous caller can reach beyond health and login, so each route is
- * deliberately narrow, and the one that actually creates an Admin (`/webhook`) trusts
- * nothing but a valid provider signature.
+ * deliberately narrow. Paid account creation trusts a valid provider signature; free
+ * signup is constrained to the Basic tier and never accepts a plan from the caller.
  */
 @Controller('billing')
 export class BillingController {
@@ -77,7 +78,9 @@ export class BillingController {
         // A self-serve tier with no configured price cannot be sold, so the card says
         // so rather than offering a button that can only fail.
         available:
-          !isSelfServePlan(PLANS[id]) || !!this.config.billing.priceIds[id],
+          PLANS[id].checkout === 'signup' ||
+          PLANS[id].checkout === 'contact' ||
+          !!this.config.billing.priceIds[id],
       })),
     };
   }
@@ -146,8 +149,52 @@ export class BillingController {
     }
   }
 
+  /** Provisions the free tier directly; no Stripe session or card is involved. */
+  @Public()
+  @Post('free-signup')
+  @HttpCode(201)
+  @Header('Cache-Control', 'no-store')
+  async freeSignup(@Body() body: Record<string, unknown>) {
+    const email = typeof body?.email === 'string' ? body.email.trim() : '';
+    if (!EMAIL_PATTERN.test(email))
+      throw new BadRequestException('A valid email address is required');
+
+    const requestedUsername =
+      typeof body?.username === 'string' && body.username.trim()
+        ? body.username.trim().toLowerCase()
+        : undefined;
+    if (requestedUsername && !isValidUsername(requestedUsername))
+      throw new BadRequestException(
+        'Username must be 3-32 characters: letters, digits, dot, dash or underscore',
+      );
+
+    const fullName =
+      typeof body?.fullName === 'string' && body.fullName.trim()
+        ? body.fullName.trim().slice(0, 120)
+        : undefined;
+
+    try {
+      const outcome = await this.provisioning.provisionFreeAccount({
+        email,
+        ...(fullName ? { fullName } : {}),
+        ...(requestedUsername ? { requestedUsername } : {}),
+      });
+      return {
+        created: true,
+        email,
+        deliveryPending: outcome.kind === 'email-failed',
+      };
+    } catch (error) {
+      if (error instanceof DuplicateEmailError)
+        throw new ConflictException(
+          'An account with this email already exists. Please sign in instead.',
+        );
+      throw error;
+    }
+  }
+
   /**
-   * The only route that creates an Admin account.
+   * The paid route that creates an Admin account.
    *
    * Three things make it safe to expose publicly:
    *

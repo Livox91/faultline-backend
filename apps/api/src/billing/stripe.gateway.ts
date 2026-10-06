@@ -23,6 +23,9 @@ export interface CheckoutRequest {
   readonly email: string;
   readonly fullName?: string;
   readonly requestedUsername?: string;
+  readonly customerId?: string;
+  readonly successUrl?: string;
+  readonly cancelUrl?: string;
 }
 
 export interface CheckoutSession {
@@ -53,6 +56,8 @@ export interface PaymentGateway {
     customerId: string,
     returnUrl: string,
   ): Promise<{ url: string }>;
+  /** Reads the provider's current subscription state for an authenticated reconciliation. */
+  getSubscriptionLifecycle(id: string): Promise<SubscriptionLifecycleUpdate>;
   /**
    * Verifies the provider's signature over the raw body and returns the event.
    *
@@ -106,7 +111,9 @@ export class StripeGateway implements PaymentGateway {
       {
         mode: 'subscription',
         line_items: [{ price: priceId, quantity: 1 }],
-        customer_email: request.email,
+        ...(request.customerId
+          ? { customer: request.customerId }
+          : { customer_email: request.email }),
         // Stripe asks for a card on a subscription even when the amount is zero unless
         // told not to. Without this the free tier would demand card details for nothing
         // and never reach `no_payment_required`, which is what we provision it on.
@@ -124,8 +131,11 @@ export class StripeGateway implements PaymentGateway {
             : {}),
         },
         subscription_data: { metadata: { plan: plan.id } },
-        success_url: `${this.config.publicUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${this.config.publicUrl}/payment/cancel`,
+        success_url:
+          request.successUrl ??
+          `${this.config.publicUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url:
+          request.cancelUrl ?? `${this.config.publicUrl}/payment/cancel`,
       },
       {
         // Stripe-side idempotency: a double-clicked Subscribe button reuses the
@@ -150,6 +160,17 @@ export class StripeGateway implements PaymentGateway {
       return_url: returnUrl,
     });
     return { url: session.url };
+  }
+
+  async getSubscriptionLifecycle(id: string): Promise<SubscriptionLifecycleUpdate> {
+    const subscription = await this.stripe.subscriptions.retrieve(id);
+    return subscriptionLifecycle(
+      subscription,
+      this.config,
+      subscription.status === 'canceled'
+        ? 'customer.subscription.deleted'
+        : 'customer.subscription.updated',
+    );
   }
 
   verifyWebhook(
@@ -229,26 +250,43 @@ function toSubscriptionLifecycle(
     event.type === 'customer.subscription.updated' ||
     event.type === 'customer.subscription.deleted'
   ) {
-    const subscription = event.data.object as Stripe.Subscription;
-    const item = subscription.items.data[0];
-    const plan = planFromSubscription(subscription, config);
-    return {
-      type: event.type,
-      providerSubscriptionId: subscription.id,
-      customerId: idOf(subscription.customer),
-      ...(plan ? { plan } : {}),
-      status:
-        event.type === 'customer.subscription.deleted'
-          ? 'canceled'
-          : subscriptionStatus(subscription.status),
-      startDate: toIso(item?.current_period_start ?? subscription.start_date),
-      endDate: toIso(
-        item?.current_period_end ?? subscription.ended_at ?? subscription.cancel_at,
-      ),
-    };
+    return subscriptionLifecycle(
+      event.data.object as Stripe.Subscription,
+      config,
+      event.type,
+    );
   }
 
   return undefined;
+}
+
+function subscriptionLifecycle(
+  subscription: Stripe.Subscription,
+  config: ApplicationConfig,
+  type: 'customer.subscription.updated' | 'customer.subscription.deleted',
+): SubscriptionLifecycleUpdate {
+  const item = subscription.items.data[0];
+  const plan = planFromSubscription(subscription, config);
+  const deleted = type === 'customer.subscription.deleted';
+  const cancellationScheduled =
+    !deleted &&
+    (subscription.cancel_at_period_end || typeof subscription.cancel_at === 'number');
+  return {
+    type,
+    providerSubscriptionId: subscription.id,
+    customerId: idOf(subscription.customer),
+    ...(plan ? { plan } : {}),
+    status: deleted ? 'canceled' : subscriptionStatus(subscription.status),
+    startDate: toIso(item?.current_period_start ?? subscription.start_date),
+    endDate: toIso(
+      deleted
+        ? subscription.ended_at ?? subscription.cancel_at ?? item?.current_period_end
+        : cancellationScheduled
+          ? subscription.cancel_at ?? item?.current_period_end
+          : item?.current_period_end,
+    ),
+    cancelAtPeriodEnd: cancellationScheduled,
+  };
 }
 
 function planFromSubscription(

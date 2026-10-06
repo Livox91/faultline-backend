@@ -125,6 +125,7 @@ test('Slack configuration is opt-in and missing credentials fail closed', () => 
   });
   assert.deepEqual(enabled.slack, {
     enabled: true,
+    socketModeEnabled: false,
     botToken: 'xoxb-test',
     incidentChannelId: 'C123',
     dashboardUrl: 'https://faultline.example/',
@@ -132,6 +133,19 @@ test('Slack configuration is opt-in and missing credentials fail closed', () => 
     serviceOwners: { payments: 'Commerce' },
     teamChannels: { commerce: 'C-COMMERCE' },
   });
+});
+
+test('Slack Socket Mode requires a separate app-level token', () => {
+  assert.throws(
+    () => loadNotificationConfig({ SLACK_SOCKET_MODE_ENABLED: 'true' }),
+    /SLACK_APP_TOKEN/,
+  );
+  const value = loadNotificationConfig({
+    SLACK_SOCKET_MODE_ENABLED: 'true',
+    SLACK_APP_TOKEN: 'xapp-test',
+  });
+  assert.equal(value.slack.socketModeEnabled, true);
+  assert.equal(value.slack.appToken, 'xapp-test');
 });
 
 test('Slack-only configuration does not require Retell credentials', () => {

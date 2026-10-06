@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   APPLICATION_CONFIG,
   ApplicationLogger,
@@ -45,6 +45,12 @@ export interface ConfirmedPayment {
   readonly endDate?: string | null;
 }
 
+export interface FreeSignup {
+  readonly email: string;
+  readonly requestedUsername?: string | null;
+  readonly fullName?: string | null;
+}
+
 export type ProvisioningOutcome =
   | { kind: 'provisioned'; subscription: Subscription; username: string }
   | { kind: 'already-provisioned'; subscription: Subscription }
@@ -77,14 +83,37 @@ export class SubscriptionProvisioningService {
     private readonly logger: ApplicationLogger,
   ) {}
 
-  async provision(payment: ConfirmedPayment): Promise<ProvisioningOutcome> {
+  /** Creates a Basic account without involving the configured payment provider. */
+  async provisionFreeAccount(signup: FreeSignup): Promise<ProvisioningOutcome> {
+    const email = signup.email.trim().toLowerCase();
+    if (await this.users.findByEmail(email)) throw new DuplicateEmailError();
+
+    // Stable per email so a retried request cannot create duplicate subscription rows.
+    const signupId = createHash('sha256').update(email).digest('hex');
+    return this.provision(
+      {
+        checkoutSessionId: `free_${signupId}`,
+        email,
+        plan: 'basic',
+        status: 'active',
+        requestedUsername: signup.requestedUsername,
+        fullName: signup.fullName,
+      },
+      { paymentProvider: 'free', linkExistingUser: false },
+    );
+  }
+
+  async provision(
+    payment: ConfirmedPayment,
+    options: { paymentProvider?: string; linkExistingUser?: boolean } = {},
+  ): Promise<ProvisioningOutcome> {
     // The row is written before any account exists. If everything after this throws,
     // the payment is still recorded and `listUnprovisioned` will surface it - a paid
     // customer with no account is a bug, but a paid customer with no *record* is
     // unrecoverable.
     const subscription = await this.subscriptions.createForCheckout({
       email: payment.email,
-      paymentProvider: this.config.billing.provider,
+      paymentProvider: options.paymentProvider ?? this.config.billing.provider,
       paymentProviderCustomerId: payment.customerId ?? null,
       paymentProviderSubscriptionId: payment.subscriptionId ?? null,
       checkoutSessionId: payment.checkoutSessionId,
@@ -109,7 +138,11 @@ export class SubscriptionProvisioningService {
       return { kind: 'already-provisioned', subscription };
 
     try {
-      return await this.createOrLink(subscription, payment);
+      return await this.createOrLink(
+        subscription,
+        payment,
+        options.linkExistingUser !== false,
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'unknown failure';
       await this.subscriptions.update(subscription.id, {
@@ -138,8 +171,10 @@ export class SubscriptionProvisioningService {
   private async createOrLink(
     subscription: Subscription,
     payment: ConfirmedPayment,
+    linkExistingUser: boolean,
   ): Promise<ProvisioningOutcome> {
     const existing = await this.users.findByEmail(payment.email);
+    if (existing && !linkExistingUser) throw new DuplicateEmailError();
     if (existing)
       return this.linkExistingUser(subscription, existing, payment);
 
@@ -165,6 +200,7 @@ export class SubscriptionProvisioningService {
       // already sent (or will send) the credentials, so this run must not email a
       // second temporary password - that would invalidate nothing but confuse everyone.
       if (error instanceof DuplicateEmailError) {
+        if (!linkExistingUser) throw error;
         const winner = await this.users.findByEmail(payment.email);
         if (winner) return this.linkExistingUser(subscription, winner, payment);
       }

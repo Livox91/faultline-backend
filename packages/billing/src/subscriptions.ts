@@ -45,6 +45,8 @@ export interface Subscription {
   readonly provisioningError: string | null;
   readonly startDate: string | null;
   readonly endDate: string | null;
+  /** Stripe cancellation is scheduled, but paid access remains until `endDate`. */
+  readonly cancelAtPeriodEnd: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -60,6 +62,7 @@ export interface NewSubscription {
   provisioningStatus?: ProvisioningStatus;
   startDate?: string | null;
   endDate?: string | null;
+  cancelAtPeriodEnd?: boolean;
 }
 
 export interface SubscriptionChanges {
@@ -72,6 +75,7 @@ export interface SubscriptionChanges {
   paymentProviderCustomerId?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+  cancelAtPeriodEnd?: boolean;
 }
 
 export type SubscriptionLifecycleEventType =
@@ -89,6 +93,7 @@ export interface SubscriptionLifecycleUpdate {
   readonly status: SubscriptionStatus;
   readonly startDate?: string | null;
   readonly endDate?: string | null;
+  readonly cancelAtPeriodEnd?: boolean;
 }
 
 export interface SubscriptionRepository {

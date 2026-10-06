@@ -6,6 +6,8 @@ See [Configure and test the Faultline calling agent](docs/CALLING-AGENT.md) for 
 
 See [Configure the Faultline Retell SMS agent](docs/SMS-AGENT.md) for chat-agent prompting, SMS-number/A2P setup, cluster contact import formats, consent requirements, and end-to-end verification.
 
+See [Configure Slack incident acknowledgements](docs/SLACK-ACKNOWLEDGEMENT.md) to let engineers acknowledge a Slack ticket by thread reply or reaction as a secondary MTTA signal while retaining the calling-agent acknowledgement flow.
+
 ## First-time BookNest onboarding
 
 Faultline can run on the customer machine while its read-only collectors monitor the

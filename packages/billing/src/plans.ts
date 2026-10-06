@@ -10,10 +10,8 @@
  *
  * Three tiers, and they are not the same kind of thing:
  *
- *  - `basic` is free, but still sold through the provider at a zero-amount recurring
- *    price. That is deliberate: it keeps one provisioning path - checkout, signed
- *    webhook, account, credentials email - instead of a second, unpaid one that would
- *    be a public "create me an Admin" endpoint wearing a different hat.
+ *  - `basic` is free and provisions directly, without sending the visitor through a
+ *    payment provider.
  *  - `pro` is the ordinary paid tier.
  *  - `enterprise` is priced by conversation, so it has no amount and no price id, and
  *    checkout refuses it rather than inventing a number.
@@ -25,8 +23,8 @@
 
 export type PlanId = 'basic' | 'pro' | 'enterprise';
 
-/** How a plan is acquired: self-serve through the provider, or by talking to someone. */
-export type PlanCheckout = 'hosted' | 'contact';
+/** How a plan is acquired: direct signup, hosted payment, or a sales conversation. */
+export type PlanCheckout = 'signup' | 'hosted' | 'contact';
 
 export interface Plan {
   readonly id: PlanId;
@@ -53,7 +51,7 @@ export const PLANS: Readonly<Record<PlanId, Plan>> = Object.freeze({
     amount: 0,
     currency: 'usd',
     interval: 'month',
-    checkout: 'hosted',
+    checkout: 'signup',
     recommended: false,
     features: Object.freeze([
       'Cluster Onboarding for 1 cluster',
@@ -93,7 +91,15 @@ export const PLANS: Readonly<Record<PlanId, Plan>> = Object.freeze({
     recommended: false,
     features: Object.freeze([
       'Everything in Pro',
-      'Remediation (coming soon)',
+      'Unlimited clusters',
+      'Runtime log monitoring',
+      'Reports and incident analytics',
+      'Voice Agent calls and SMS to on-call engineers',
+      'Integrations, including Slack',
+      'Team & Roles for onsite engineer accounts',
+      'Remediation Runner',
+      'Static Code Analyzer',
+      'Incident Playbook Generator',
     ]),
   }),
 });

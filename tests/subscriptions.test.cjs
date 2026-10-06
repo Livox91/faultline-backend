@@ -472,6 +472,25 @@ test('Stripe lifecycle webhooks update payment, plan and cancellation state', as
   assert.equal(stored.plan, 'pro', 'an active Basic subscription can upgrade to Pro');
 
   nextEvent = {
+    id: 'evt_subscription_cancellation_scheduled',
+    type: 'customer.subscription.updated',
+    lifecycle: {
+      type: 'customer.subscription.updated',
+      providerSubscriptionId: 'sub_test_1',
+      customerId: 'cus_test_1',
+      plan: 'pro',
+      status: 'active',
+      endDate: '2026-12-01T00:00:00.000Z',
+      cancelAtPeriodEnd: true,
+    },
+  };
+  await context.controller.webhook(rawRequest('good'));
+  stored = await context.subscriptions.findByProviderSubscriptionId('sub_test_1');
+  assert.equal(stored.status, 'active', 'Pro remains active until the period ends');
+  assert.equal(stored.plan, 'pro');
+  assert.equal(stored.cancelAtPeriodEnd, true);
+
+  nextEvent = {
     id: 'evt_subscription_deleted',
     type: 'customer.subscription.deleted',
     lifecycle: {
@@ -480,12 +499,14 @@ test('Stripe lifecycle webhooks update payment, plan and cancellation state', as
       customerId: 'cus_test_1',
       status: 'canceled',
       endDate: '2026-12-01T00:00:00.000Z',
+      cancelAtPeriodEnd: false,
     },
   };
   await context.controller.webhook(rawRequest('good'));
   stored = await context.subscriptions.findByProviderSubscriptionId('sub_test_1');
   assert.equal(stored.status, 'canceled');
   assert.equal(stored.plan, 'basic', 'cancellation automatically falls back to Basic');
+  assert.equal(stored.cancelAtPeriodEnd, false);
 
   nextEvent = {
     id: 'evt_late_invoice_paid',
@@ -561,6 +582,7 @@ test('an organization owner can open Stripe billing management for their custome
     gateway,
     config,
     new PlanEntitlements(context.subscriptions, config, context.users),
+    new SubscriptionLifecycleService(context.subscriptions, silentLogger),
     silentLogger,
   );
 
@@ -575,6 +597,93 @@ test('an organization owner can open Stripe billing management for their custome
   ]);
 });
 
+test('billing sync repairs a stale renewal date after cancellation is scheduled', async () => {
+  const context = provisioner();
+  await context.service.provision(payment({
+    endDate: '2026-11-06T00:00:00.000Z',
+  }));
+  const user = await context.users.findByEmail(PURCHASER);
+  const gateway = fakeGateway({
+    getSubscriptionLifecycle: async (subscriptionId) => ({
+      type: 'customer.subscription.updated',
+      providerSubscriptionId: subscriptionId,
+      customerId: 'cus_test_1',
+      plan: 'pro',
+      status: 'active',
+      endDate: '2026-11-06T00:00:00.000Z',
+      cancelAtPeriodEnd: true,
+    }),
+  });
+  const controller = new BillingPortalController(
+    gateway,
+    config,
+    new PlanEntitlements(context.subscriptions, config, context.users),
+    new SubscriptionLifecycleService(context.subscriptions, silentLogger),
+    silentLogger,
+  );
+
+  assert.deepEqual(await controller.sync(user), { synchronized: true });
+  const stored = await context.subscriptions.findByProviderSubscriptionId('sub_test_1');
+  assert.equal(stored.cancelAtPeriodEnd, true);
+  assert.equal(stored.endDate, '2026-11-06T00:00:00.000Z');
+});
+
+test('a Basic organization owner can open a Pro upgrade checkout', async () => {
+  const context = provisioner();
+  await context.service.provisionFreeAccount({
+    email: 'free-owner@example.com',
+    fullName: 'Free Owner',
+  });
+  const user = await context.users.findByEmail('free-owner@example.com');
+  const opened = [];
+  const gateway = fakeGateway({
+    createCheckoutSession: async (request) => {
+      opened.push(request);
+      return {
+        id: 'cs_upgrade_1',
+        url: 'https://checkout.stripe.test/cs_upgrade_1',
+      };
+    },
+  });
+  const controller = new BillingPortalController(
+    gateway,
+    config,
+    new PlanEntitlements(context.subscriptions, config, context.users),
+    new SubscriptionLifecycleService(context.subscriptions, silentLogger),
+    silentLogger,
+  );
+
+  assert.deepEqual(await controller.upgrade(user, { plan: 'pro' }), {
+    checkoutUrl: 'https://checkout.stripe.test/cs_upgrade_1',
+    sessionId: 'cs_upgrade_1',
+  });
+  assert.deepEqual(opened, [{
+    plan: 'pro',
+    email: 'free-owner@example.com',
+    fullName: 'Free Owner',
+    successUrl: 'https://app.faultline.test/admin/subscription?checkout=success&session_id={CHECKOUT_SESSION_ID}',
+    cancelUrl: 'https://app.faultline.test/admin/subscription?checkout=cancel',
+  }]);
+});
+
+test('an active Pro organization cannot start a second Pro upgrade', async () => {
+  const context = provisioner();
+  await context.service.provision(payment());
+  const user = await context.users.findByEmail(PURCHASER);
+  const controller = new BillingPortalController(
+    fakeGateway(),
+    config,
+    new PlanEntitlements(context.subscriptions, config, context.users),
+    new SubscriptionLifecycleService(context.subscriptions, silentLogger),
+    silentLogger,
+  );
+
+  await assert.rejects(
+    controller.upgrade(user, { plan: 'pro' }),
+    (error) => error.getStatus() === 409,
+  );
+});
+
 test('the billing portal refuses an account with no Stripe customer', async () => {
   const context = provisioner();
   const user = await context.users.create({
@@ -587,6 +696,7 @@ test('the billing portal refuses an account with no Stripe customer', async () =
     fakeGateway(),
     config,
     new PlanEntitlements(context.subscriptions, config, context.users),
+    new SubscriptionLifecycleService(context.subscriptions, silentLogger),
     silentLogger,
   );
 
@@ -638,6 +748,43 @@ test('checkout validates its input and never creates an account by itself', asyn
   assert.equal((await users.list()).length, 0, 'no account before payment');
 });
 
+test('free signup provisions Basic directly without calling Stripe', async () => {
+  let checkoutCalls = 0;
+  const context = billingController(
+    fakeGateway({
+      createCheckoutSession: async () => {
+        checkoutCalls += 1;
+        throw new Error('Stripe must not be called for free signup');
+      },
+    }),
+  );
+
+  const result = await context.controller.freeSignup({
+    email: 'free@example.com',
+    fullName: 'Free User',
+    username: 'free.user',
+  });
+
+  assert.deepEqual(result, {
+    created: true,
+    email: 'free@example.com',
+    deliveryPending: false,
+  });
+  assert.equal(checkoutCalls, 0);
+  const created = await context.users.findByEmail('free@example.com');
+  assert.equal(created.role, ROLES.ADMIN);
+  assert.equal(created.mustChangePassword, true);
+  const subscription = await context.subscriptions.findByUserId(created.id);
+  assert.equal(subscription.plan, 'basic');
+  assert.equal(subscription.paymentProvider, 'free');
+  assert.equal(context.email.sent.length, 1);
+
+  await assert.rejects(
+    context.controller.freeSignup({ email: 'free@example.com' }),
+    (error) => error.getStatus() === 409,
+  );
+});
+
 test('the public plans endpoint exposes every tier, its pricing, and no secrets', () => {
   const { controller } = billingController();
   const body = controller.plans();
@@ -649,10 +796,16 @@ test('the public plans endpoint exposes every tier, its pricing, and no secrets'
 
   const byId = Object.fromEntries(body.plans.map((plan) => [plan.id, plan]));
   assert.equal(byId.basic.priceLabel, 'Free');
+  assert.equal(byId.basic.checkout, 'signup');
   assert.equal(byId.pro.priceLabel, '$49.00');
   // Enterprise is listed but has no list price, and says so rather than showing a zero.
   assert.equal(byId.enterprise.priceLabel, 'Custom');
   assert.equal(byId.enterprise.checkout, 'contact');
+  for (const feature of [
+    'Remediation Runner',
+    'Static Code Analyzer',
+    'Incident Playbook Generator',
+  ]) assert.ok(byId.enterprise.features.includes(feature));
   assert.equal(body.salesContact, 'sales@faultline.test');
   // Exactly one tier is led with, so the page cannot render two 'recommended' badges.
   assert.equal(body.plans.filter((plan) => plan.recommended).length, 1);
@@ -1034,6 +1187,7 @@ test('the real Stripe gateway translates all supported lifecycle event shapes', 
     start_date: 1790812800,
     ended_at: null,
     cancel_at: null,
+    cancel_at_period_end: false,
     items: {
       data: [
         {
@@ -1051,6 +1205,16 @@ test('the real Stripe gateway translates all supported lifecycle event shapes', 
   ).lifecycle;
   assert.equal(updated.plan, 'basic');
   assert.equal(updated.status, 'active');
+  assert.equal(updated.cancelAtPeriodEnd, false);
+
+  const scheduled = signed(
+    'customer.subscription.updated',
+    { ...subscription, cancel_at_period_end: true },
+    'evt_cancel_scheduled',
+  ).lifecycle;
+  assert.equal(scheduled.status, 'active');
+  assert.equal(scheduled.cancelAtPeriodEnd, true);
+  assert.equal(scheduled.endDate, '2026-11-01T00:00:00.000Z');
 
   const upgraded = signed(
     'customer.subscription.updated',
@@ -1085,7 +1249,7 @@ test('the real Stripe gateway translates all supported lifecycle event shapes', 
   assert.equal(deleted.providerSubscriptionId, 'sub_test_1');
 });
 
-test('a zero-amount tier settles without payment, and only that tier may', () => {
+test('Stripe cannot provision the direct-signup tier without payment', () => {
   const Stripe = require('stripe');
   const { StripeGateway } = require('../apps/api/dist/billing/stripe.gateway');
 
@@ -1119,10 +1283,10 @@ test('a zero-amount tier settles without payment, and only that tier may', () =>
     created: 1789900000,
   };
 
-  // Basic is free: `no_payment_required` is what success looks like for it.
+  // Basic now bypasses Stripe entirely, so even a signed zero-amount session is not a
+  // valid account-creation path.
   const free = signed({ ...base, metadata: { plan: 'basic' } }, 'evt_free_1');
-  assert.equal(free.payment.plan, 'basic');
-  assert.equal(free.payment.email, PURCHASER);
+  assert.equal(free.payment, undefined);
 
   // The same status on a paid tier is not success, and must provision nothing - this
   // is the whole reason the rule is read off our catalog and not off the session.

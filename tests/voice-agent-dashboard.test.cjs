@@ -40,3 +40,11 @@ test('voice dashboard refuses to present an old worker heartbeat as connected',a
   const result=await controller.status(user);
   assert.equal(result.connected,false);assert.equal(result.stale,true);assert.match(result.message,/stale/);
 });
+
+test('voice dashboard uses the deployment-wide worker heartbeat across organizations',async()=>{
+  const statuses=new N.InMemoryNotificationProviderStatusRepository();
+  await statuses.save({organizationId:'worker-default',provider:'retell',configured:true,connected:true,voiceAgentConfigured:true,smsAgentConfigured:true,checkedAt:new Date().toISOString(),message:'Connected'});
+  const controller=new VoiceAgentController(statuses,new N.InMemoryIncidentCommunicationRepository(),new N.InMemoryContactRepository(),{async publish(){}},{async record(){}});
+  const result=await controller.status(user);
+  assert.equal(result.organizationId,'org');assert.equal(result.connected,true);assert.equal(result.voiceAgentConfigured,true);assert.equal(result.smsAgentConfigured,true);
+});

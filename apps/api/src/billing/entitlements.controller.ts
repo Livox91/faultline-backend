@@ -60,6 +60,9 @@ export class EntitlementsController {
       // Never the provider's customer or subscription ids: this route answers "what may
       // I use", and the billing relationship is not part of that answer.
       subscriptionStatus: subscription?.status ?? null,
+      /** Period boundary used by the console for renewal and scheduled cancellation. */
+      subscriptionPeriodEnd: subscription?.endDate ?? null,
+      cancelAtPeriodEnd: subscription?.cancelAtPeriodEnd ?? false,
       /** Allowances on included modules; `null` is unlimited. */
       limits: { clusters: enforced ? clusterLimitFor(plan) : null },
       /** Current organization-wide consumption of those allowances. */

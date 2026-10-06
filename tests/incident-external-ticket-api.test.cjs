@@ -15,6 +15,8 @@ const {
 const {
   EXTERNAL_TICKET_REPOSITORY,
   InMemoryExternalTicketRepository,
+  InMemorySlackIntegrationRepository,
+  SLACK_INTEGRATION_REPOSITORY,
 } = require('@faultline/notifications');
 const {
   IncidentExternalTicketController,
@@ -22,6 +24,9 @@ const {
 const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
 const { EVENT_TOPICS, QUEUE } = require('@faultline/queue');
 const { ApplicationLogger } = require('@faultline/platform');
+const {
+  CLUSTER_DIRECTORY,
+} = require('../apps/api/dist/clusters.controller');
 
 const incidentId = '11111111-1111-4111-8111-111111111111';
 
@@ -59,11 +64,19 @@ async function serve({
   unsafeUrl = false,
   published = [],
   publishError = false,
+  slackConfigured = true,
 } = {}) {
   const incidents = new InMemoryIncidentRepository();
   const audit = new InMemoryAuditLogRepository();
   await incidents.createIncident(incident());
   const tickets = new InMemoryExternalTicketRepository();
+  const slackIntegrations = new InMemorySlackIntegrationRepository();
+  if (slackConfigured)
+    await slackIntegrations.upsert('default', {
+      enabled: true,
+      botToken: 'xoxb-test-token',
+      incidentChannelId: 'C12345678',
+    });
   if (withTicket)
     await tickets.saveIfAbsent({
       id: '22222222-2222-4222-8222-222222222222',
@@ -84,6 +97,15 @@ async function serve({
     providers: [
       { provide: INCIDENT_REPOSITORY, useValue: incidents },
       { provide: EXTERNAL_TICKET_REPOSITORY, useValue: tickets },
+      { provide: SLACK_INTEGRATION_REPOSITORY, useValue: slackIntegrations },
+      {
+        provide: CLUSTER_DIRECTORY,
+        useValue: {
+          async get() {
+            return { id: 'production' };
+          },
+        },
+      },
       { provide: AUDIT_LOG_REPOSITORY, useValue: audit },
       {
         provide: ApplicationLogger,
@@ -99,6 +121,7 @@ async function serve({
               email: 'operator@faultline.test',
               name: 'Operator',
               role: 'onsiteengineer',
+              organizationId: 'default',
               status: 'active',
               mfaEnabled: false,
               assignments: [{ projectId: 'production' }],
@@ -199,6 +222,28 @@ test('Slack ticket creation returns the linked ticket without publishing a dupli
     assert.equal(body.status, 'LINKED');
     assert.equal(body.ticket.channelId, 'C123');
     assert.equal(published.length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Slack ticket creation rejects an unconfigured integration before publishing', async () => {
+  const published = [];
+  const app = await serve({ slackConfigured: false, published });
+  try {
+    const response = await fetch(
+      `${await app.getUrl()}/incidents/${incidentId}/external-tickets/slack`,
+      { method: 'POST' },
+    );
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, 'SLACK_NOT_CONFIGURED');
+    assert.equal(published.length, 0);
+    const entries = await app.get(AUDIT_LOG_REPOSITORY).list({
+      action: AUDIT_ACTIONS.SLACK_TICKET_REQUESTED,
+    });
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].outcome, 'denied');
+    assert.equal(entries[0].metadata.reason, 'slack_not_configured');
   } finally {
     await app.close();
   }
