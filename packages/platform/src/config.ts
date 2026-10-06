@@ -90,8 +90,22 @@ const environmentSchema = z
       .min(60)
       .max(86_400)
       .default(3600),
-    /** When true, a login returns a challenge and the token is issued after the code. */
+    AUTH_PASSWORD_RESET_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(300)
+      .max(86_400)
+      .default(1800),
+    /** When true, accounts that have not enrolled are confined to MFA setup. */
     AUTH_MFA_REQUIRED: booleanFlag(false),
+    AUTH_MFA_TRUSTED_DEVICE_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+    /** Separate at-rest key for TOTP secrets; falls back to a domain-separated JWT key. */
+    AUTH_MFA_ENCRYPTION_KEY: z.string().min(32).optional(),
+    /** HMAC key kept outside PostgreSQL so database-only tampering is detectable. */
+    AUDIT_INTEGRITY_KEY: z.string().min(32).optional(),
+    AUDIT_INTEGRITY_KEY_ID: z.string().trim().min(1).max(64).default('primary'),
+    /** When true, an audit write failure fails the operation being audited. */
+    AUDIT_STRICT: booleanFlag(false),
     /**
      * Public base URL of the web application.
      *
@@ -145,7 +159,15 @@ const environmentSchema = z
 
     /** Seeds the first Admin on startup when the users table is empty. */
     AUTH_BOOTSTRAP_ADMIN_EMAIL: z.string().email().optional(),
-    AUTH_BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).optional(),
+    AUTH_BOOTSTRAP_ADMIN_PASSWORD: z
+      .string()
+      .min(12)
+      .max(128)
+      .regex(/[a-z]/)
+      .regex(/[A-Z]/)
+      .regex(/[0-9]/)
+      .regex(/[^A-Za-z0-9\s]/)
+      .optional(),
     REDIS_URL: z.string().url().optional(),
     BROKER_URL: z.string().url().optional(),
     BROKER_CLIENT_ID: z.string().trim().min(1).default('faultline'),
@@ -563,6 +585,7 @@ export interface ApplicationConfig {
   readonly anomalyThresholds: AnomalyThresholds;
   readonly incidentCorrelation: IncidentCorrelationConfig;
   readonly auth: AuthSettings;
+  readonly audit: AuditSettings;
   readonly billing: BillingSettings;
   readonly email: EmailSettings;
   readonly publicUrl: string;
@@ -644,8 +667,17 @@ export interface AuthSettings {
   readonly jwtSecret?: string;
   readonly issuer: string;
   readonly accessTokenTtlSeconds: number;
+  readonly passwordResetTtlSeconds: number;
   readonly mfaRequired: boolean;
+  readonly mfaTrustedDeviceTtlDays?: number;
+  readonly mfaEncryptionKey?: string;
   readonly bootstrapAdmin?: { email: string; password: string };
+}
+
+export interface AuditSettings {
+  readonly integrityKey?: string;
+  readonly integrityKeyId: string;
+  readonly strict: boolean;
 }
 
 /**
@@ -776,16 +808,23 @@ export function validateEnvironment(
       ...(application === 'api' && !result.data.AUTH_JWT_SECRET
         ? ['AUTH_JWT_SECRET']
         : []),
+      ...(application === 'api' &&
+      result.data.NODE_ENV === 'production' &&
+      !result.data.AUDIT_INTEGRITY_KEY
+        ? ['AUDIT_INTEGRITY_KEY']
+        : []),
       ...((application === 'api' ||
         application === 'processor' ||
         application === 'notification') &&
       !result.data.DATABASE_URL
         ? ['DATABASE_URL']
         : []),
-      ...(application === 'processor' && !result.data.REDIS_URL
+      ...((application === 'api' || application === 'processor') &&
+      !result.data.REDIS_URL
         ? ['REDIS_URL']
         : []),
-      ...((application === 'ingestion' ||
+      ...((application === 'api' ||
+        application === 'ingestion' ||
         application === 'processor' ||
         application === 'storage' ||
         application === 'notification') &&
@@ -823,11 +862,10 @@ export function validateEnvironment(
             ...(result.data.STRIPE_PRICE_ID_PRO ? [] : ['STRIPE_PRICE_ID_PRO']),
           ]
         : []),
-      // Credentials are emailed. A production deployment that only logs them would
-      // strand every purchaser, so the log transport is refused there.
+      // Password recovery is always available. A production deployment that only
+      // logs reset links would strand users, so real SMTP is mandatory there.
       ...(application === 'api' &&
       result.data.NODE_ENV === 'production' &&
-      result.data.BILLING_ENABLED &&
       result.data.EMAIL_TRANSPORT !== 'smtp'
         ? ['EMAIL_TRANSPORT']
         : []),

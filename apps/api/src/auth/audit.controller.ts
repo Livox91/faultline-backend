@@ -13,8 +13,9 @@ import {
   type AuditFilter,
   type AuditOutcome,
   type AuditLogRepository,
+  type AuthenticatedUser,
 } from '@faultline/auth';
-import { RequirePermission, Roles } from './context';
+import { CurrentUser, RequirePermission, Roles } from './context';
 
 /**
  * Reads the audit trail. Admin only, and read-only.
@@ -31,11 +32,22 @@ export class AdminAuditController {
     private readonly audit: AuditLogRepository,
   ) {}
 
+  @Get('verify')
+  @RequirePermission(PERMISSIONS.AUDIT_VIEW)
+  @Header('Cache-Control', 'no-store')
+  verifyIntegrity() {
+    return this.audit.verifyIntegrity();
+  }
+
   @Get()
   @RequirePermission(PERMISSIONS.AUDIT_VIEW)
   @Header('Cache-Control', 'no-store')
-  async list(@Query() params: Record<string, unknown>) {
+  async list(
+    @Query() params: Record<string, unknown>,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
     const filter: AuditFilter = {
+      organizationId: actor.organizationId,
       ...optional('userId', params.userId),
       ...optional('action', params.action),
       ...optional('resourceType', params.resourceType),
@@ -52,7 +64,8 @@ export class AdminAuditController {
 
 function optional(field: string, value: unknown) {
   if (value === undefined || value === '') return {};
-  if (typeof value !== 'string') throw new BadRequestException(`Invalid ${field}`);
+  if (typeof value !== 'string')
+    throw new BadRequestException(`Invalid ${field}`);
   return { [field]: value.trim() };
 }
 

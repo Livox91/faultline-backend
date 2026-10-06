@@ -11,6 +11,8 @@ import {
   isSelfServePlan,
   planOrThrow,
   type PlanId,
+  type SubscriptionLifecycleUpdate,
+  type SubscriptionStatus,
 } from '@faultline/billing';
 import type { ConfirmedPayment } from './provisioning.service';
 
@@ -29,6 +31,13 @@ export interface CheckoutSession {
   readonly url: string;
 }
 
+export interface VerifiedBillingEvent {
+  readonly id: string;
+  readonly type: string;
+  readonly payment?: ConfirmedPayment;
+  readonly lifecycle?: SubscriptionLifecycleUpdate;
+}
+
 /**
  * What the API needs from a payment provider.
  *
@@ -39,6 +48,11 @@ export interface CheckoutSession {
 export interface PaymentGateway {
   readonly provider: string;
   createCheckoutSession(request: CheckoutRequest): Promise<CheckoutSession>;
+  /** Opens the provider-hosted account-management portal for an existing customer. */
+  createCustomerPortalSession(
+    customerId: string,
+    returnUrl: string,
+  ): Promise<{ url: string }>;
   /**
    * Verifies the provider's signature over the raw body and returns the event.
    *
@@ -50,7 +64,7 @@ export interface PaymentGateway {
   verifyWebhook(
     payload: Buffer,
     signature: string,
-  ): { id: string; type: string; payment?: ConfirmedPayment };
+  ): VerifiedBillingEvent;
   /** Reads a session back, so the return page can report status without guessing. */
   getCheckoutStatus(
     sessionId: string,
@@ -127,10 +141,21 @@ export class StripeGateway implements PaymentGateway {
     return { id: session.id, url: session.url };
   }
 
+  async createCustomerPortalSession(
+    customerId: string,
+    returnUrl: string,
+  ): Promise<{ url: string }> {
+    const session = await this.stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl,
+    });
+    return { url: session.url };
+  }
+
   verifyWebhook(
     payload: Buffer,
     signature: string,
-  ): { id: string; type: string; payment?: ConfirmedPayment } {
+  ): VerifiedBillingEvent {
     if (!this.webhookSecret)
       throw new Error('STRIPE_WEBHOOK_SECRET is not configured');
 
@@ -147,6 +172,12 @@ export class StripeGateway implements PaymentGateway {
       type: event.type,
       ...(event.type === 'checkout.session.completed'
         ? { payment: toConfirmedPayment(event.data.object) }
+        : {}),
+      ...(['invoice.paid', 'invoice.payment_failed',
+        'customer.subscription.updated', 'customer.subscription.deleted'].includes(
+        event.type,
+      )
+        ? { lifecycle: toSubscriptionLifecycle(event, this.config) }
         : {}),
     };
   }
@@ -167,6 +198,122 @@ export class StripeGateway implements PaymentGateway {
     };
   }
 }
+
+function toSubscriptionLifecycle(
+  event: Stripe.Event,
+  config: ApplicationConfig,
+): SubscriptionLifecycleUpdate | undefined {
+  if (event.type === 'invoice.paid' || event.type === 'invoice.payment_failed') {
+    const invoice = event.data.object as Stripe.Invoice;
+    const modern = invoice.parent?.subscription_details?.subscription;
+    const legacy = (
+      invoice as Stripe.Invoice & {
+        subscription?: string | Stripe.Subscription | null;
+      }
+    ).subscription;
+    const providerSubscriptionId = idOf(modern ?? legacy);
+    if (!providerSubscriptionId) return undefined;
+    const plan = planFromInvoice(invoice, config);
+    return {
+      type: event.type,
+      providerSubscriptionId,
+      customerId: idOf(invoice.customer),
+      ...(plan ? { plan } : {}),
+      status: event.type === 'invoice.paid' ? 'active' : 'past_due',
+      startDate: toIso(invoice.period_start),
+      endDate: toIso(invoice.period_end),
+    };
+  }
+
+  if (
+    event.type === 'customer.subscription.updated' ||
+    event.type === 'customer.subscription.deleted'
+  ) {
+    const subscription = event.data.object as Stripe.Subscription;
+    const item = subscription.items.data[0];
+    const plan = planFromSubscription(subscription, config);
+    return {
+      type: event.type,
+      providerSubscriptionId: subscription.id,
+      customerId: idOf(subscription.customer),
+      ...(plan ? { plan } : {}),
+      status:
+        event.type === 'customer.subscription.deleted'
+          ? 'canceled'
+          : subscriptionStatus(subscription.status),
+      startDate: toIso(item?.current_period_start ?? subscription.start_date),
+      endDate: toIso(
+        item?.current_period_end ?? subscription.ended_at ?? subscription.cancel_at,
+      ),
+    };
+  }
+
+  return undefined;
+}
+
+function planFromSubscription(
+  subscription: Stripe.Subscription,
+  config: ApplicationConfig,
+): PlanId | undefined {
+  const priceId = subscription.items.data[0]?.price.id;
+  const configured = planFromPriceId(priceId, config);
+  // The current Price is authoritative for portal upgrades/downgrades. Metadata is a
+  // fallback for subscriptions whose price configuration was rotated after purchase.
+  if (configured) return configured;
+  return isPlanId(subscription.metadata?.plan)
+    ? subscription.metadata.plan
+    : undefined;
+}
+
+function planFromInvoice(
+  invoice: Stripe.Invoice,
+  config: ApplicationConfig,
+): PlanId | undefined {
+  for (const line of invoice.lines.data) {
+    const price = line.pricing?.price_details?.price;
+    const configured = planFromPriceId(idOf(price), config);
+    if (configured) return configured;
+  }
+  // Subscription invoice line metadata reflects subscription metadata in Stripe and
+  // remains a useful fallback if a Price id was rotated after the invoice was issued.
+  return invoice.lines.data
+    .map((line) => line.metadata?.plan)
+    .find((plan): plan is PlanId => isPlanId(plan));
+}
+
+function planFromPriceId(
+  priceId: string | null | undefined,
+  config: ApplicationConfig,
+): PlanId | undefined {
+  return priceId
+    ? (Object.entries(config.billing.priceIds) as [PlanId, string | undefined][])
+        .find(([, candidate]) => candidate === priceId)?.[0]
+    : undefined;
+}
+
+function subscriptionStatus(status: Stripe.Subscription.Status): SubscriptionStatus {
+  switch (status) {
+    case 'active':
+    case 'trialing':
+      return 'active';
+    case 'past_due':
+    case 'unpaid':
+    case 'paused':
+      return 'past_due';
+    case 'incomplete':
+      return 'incomplete';
+    case 'incomplete_expired':
+    case 'canceled':
+      return 'canceled';
+    default:
+      // Stripe may add a status before this SDK is upgraded. Fail closed: an unknown
+      // state must never grant paid entitlements.
+      return 'incomplete';
+  }
+}
+
+const toIso = (seconds: number | null | undefined): string | undefined =>
+  typeof seconds === 'number' ? new Date(seconds * 1000).toISOString() : undefined;
 
 const idOf = (value: string | { id: string } | null | undefined): string | null =>
   typeof value === 'string' ? value : (value?.id ?? null);

@@ -5,8 +5,9 @@ import type {
   NotificationAttemptRepository, NotificationAuditEvent, NotificationAuditRepository, NotificationGroup,
   NotificationGroupRepository, IncidentCommunication, IncidentCommunicationRepository,
   IdempotencyStore, NotificationStatus,
-  AcknowledgementTransaction,
+  AcknowledgementTransaction, NotificationProviderStatus, NotificationProviderStatusRepository,
   ExternalTicket, ExternalTicketRepository,
+  EndUserContact, EndUserContactRepository,
   OnCallSchedule,OnCallScheduleRepository,OnCallShift,OnCallShiftRepository,AvailabilityOverride,AvailabilityOverrideRepository,
 } from '@faultline/notifications';
 import { canTransitionNotificationStatus, sanitizeProviderMetadata } from '@faultline/notifications';
@@ -25,6 +26,26 @@ export class PostgresContactRepository extends AggregateRepository<Contact> impl
   override async create(value:Contact){await this.db.pool.query('INSERT INTO notification_contacts (id,organization_id,user_id,aggregate) VALUES ($1,$2,$3,$4)',[value.id,value.organizationId,value.userId??null,JSON.stringify(value)]);return structuredClone(value);}
   override async update(value:Contact){const result=await this.db.pool.query('UPDATE notification_contacts SET organization_id=$2,user_id=$3,aggregate=$4,updated_at=now() WHERE id=$1',[value.id,value.organizationId,value.userId??null,JSON.stringify(value)]);if(!result.rowCount)throw new Error('Entity not found');return structuredClone(value);}
   async findByUserIds(userIds:readonly string[],organizationId:string){if(!userIds.length)return[];const result=await this.db.pool.query<AggregateRow<Contact>>('SELECT aggregate FROM notification_contacts WHERE organization_id=$1 AND user_id=ANY($2::uuid[]) ORDER BY updated_at DESC',[organizationId,[...userIds]]);return result.rows.map(row=>structuredClone(row.aggregate));}
+}
+interface EndUserContactRow extends QueryResultRow {
+  id:string; organization_id:string; cluster_id:string; name:string; email:string;
+  phone_number:string; service:string; enabled:boolean; created_at:Date; updated_at:Date;
+}
+export class PostgresEndUserContactRepository implements EndUserContactRepository {
+  constructor(private readonly db:PostgresConnection){}
+  async upsert(value:EndUserContact){
+    const result=await this.db.pool.query<EndUserContactRow>(`INSERT INTO cluster_end_user_contacts
+      (id,organization_id,cluster_id,name,email,phone_number,service,enabled,created_at,updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      ON CONFLICT(cluster_id,phone_number,service_key) DO UPDATE SET
+        name=EXCLUDED.name,email=EXCLUDED.email,enabled=EXCLUDED.enabled,updated_at=EXCLUDED.updated_at
+      RETURNING *`,[value.id,value.organizationId,value.clusterId,value.name,value.email,value.phoneNumber,value.service,value.enabled,value.createdAt,value.updatedAt]);
+    return this.map(result.rows[0]!);
+  }
+  async get(id:string){const result=await this.db.pool.query<EndUserContactRow>('SELECT * FROM cluster_end_user_contacts WHERE id=$1',[id]);return result.rows[0]?this.map(result.rows[0]):undefined;}
+  async listForCluster(clusterId:string,organizationId:string){const result=await this.db.pool.query<EndUserContactRow>('SELECT * FROM cluster_end_user_contacts WHERE cluster_id=$1 AND organization_id=$2 ORDER BY name,email',[clusterId,organizationId]);return result.rows.map(row=>this.map(row));}
+  async remove(id:string,clusterId:string,organizationId:string){const result=await this.db.pool.query('DELETE FROM cluster_end_user_contacts WHERE id=$1 AND cluster_id=$2 AND organization_id=$3',[id,clusterId,organizationId]);return!!result.rowCount;}
+  private map(row:EndUserContactRow):EndUserContact{return{id:row.id,organizationId:row.organization_id,clusterId:row.cluster_id,name:row.name,email:row.email,phoneNumber:row.phone_number,service:row.service,enabled:row.enabled,createdAt:new Date(row.created_at).toISOString(),updatedAt:new Date(row.updated_at).toISOString()};}
 }
 export class PostgresNotificationGroupRepository extends AggregateRepository<NotificationGroup> implements NotificationGroupRepository { constructor(db: PostgresConnection) { super(db, 'notification_groups'); } }
 export class PostgresOnCallScheduleRepository extends AggregateRepository<OnCallSchedule> implements OnCallScheduleRepository {constructor(db:PostgresConnection){super(db,'on_call_schedules');}override async create(value:OnCallSchedule){await this.db.pool.query('INSERT INTO on_call_schedules (id,organization_id,team_id,aggregate) VALUES ($1,$2,$3,$4)',[value.id,value.organizationId,value.teamId,JSON.stringify(value)]);return structuredClone(value);}override async update(value:OnCallSchedule){const result=await this.db.pool.query('UPDATE on_call_schedules SET organization_id=$2,team_id=$3,aggregate=$4,updated_at=now() WHERE id=$1',[value.id,value.organizationId,value.teamId,JSON.stringify(value)]);if(!result.rowCount)throw new Error('Entity not found');return structuredClone(value);}}
@@ -46,10 +67,13 @@ export class PostgresNotificationAttemptRepository implements NotificationAttemp
 }
 export class PostgresIncidentCommunicationRepository implements IncidentCommunicationRepository {
   constructor(private readonly db:PostgresConnection){}
-  async save(value:IncidentCommunication){await this.db.pool.query(`INSERT INTO incident_communications (id,incident_id,dedupe_key,aggregate,created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO UPDATE SET aggregate=EXCLUDED.aggregate`,[value.id,value.incidentId,value.dedupeKey,JSON.stringify(value),value.createdAt]);return structuredClone(value);}
+  async save(value:IncidentCommunication){await this.db.pool.query(`INSERT INTO incident_communications (id,incident_id,organization_id,dedupe_key,provider_request_id,status,aggregate,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO UPDATE SET organization_id=EXCLUDED.organization_id,provider_request_id=EXCLUDED.provider_request_id,status=EXCLUDED.status,aggregate=EXCLUDED.aggregate`,[value.id,value.incidentId,value.organizationId,value.dedupeKey,value.providerRequestId??null,value.status,JSON.stringify(value),value.createdAt]);return structuredClone(value);}
   async findByDedupeKey(key:string){const result=await this.db.pool.query<AggregateRow<IncidentCommunication>>('SELECT aggregate FROM incident_communications WHERE dedupe_key=$1',[key]);return result.rows[0]?.aggregate?structuredClone(result.rows[0].aggregate):undefined;}
+  async findByProviderRequestId(id:string){const result=await this.db.pool.query<AggregateRow<IncidentCommunication>>('SELECT aggregate FROM incident_communications WHERE provider_request_id=$1',[id]);return result.rows[0]?.aggregate?structuredClone(result.rows[0].aggregate):undefined;}
   async listForIncident(id:string){const result=await this.db.pool.query<AggregateRow<IncidentCommunication>>('SELECT aggregate FROM incident_communications WHERE incident_id=$1 ORDER BY created_at',[id]);return result.rows.map((row)=>structuredClone(row.aggregate));}
+  async listRecent(organizationId:string,limit:number){const result=await this.db.pool.query<AggregateRow<IncidentCommunication>>('SELECT aggregate FROM incident_communications WHERE organization_id=$1 ORDER BY created_at DESC LIMIT $2',[organizationId,limit]);return result.rows.map((row)=>structuredClone(row.aggregate));}
 }
+export class PostgresNotificationProviderStatusRepository implements NotificationProviderStatusRepository {constructor(private readonly db:PostgresConnection){}async save(value:NotificationProviderStatus){await this.db.pool.query(`INSERT INTO notification_provider_status (organization_id,aggregate,checked_at) VALUES ($1,$2,$3) ON CONFLICT (organization_id) DO UPDATE SET aggregate=EXCLUDED.aggregate,checked_at=EXCLUDED.checked_at`,[value.organizationId,JSON.stringify(value),value.checkedAt]);return structuredClone(value);}async get(id:string){const result=await this.db.pool.query<AggregateRow<NotificationProviderStatus>>('SELECT aggregate FROM notification_provider_status WHERE organization_id=$1',[id]);return result.rows[0]?.aggregate?structuredClone(result.rows[0].aggregate):undefined;}}
 export class PostgresIncidentNotificationStateRepository implements IncidentNotificationStateRepository {
   constructor(private readonly db: PostgresConnection) {}
   async save(value:IncidentNotificationState){await this.db.pool.query(`INSERT INTO incident_notification_states (incident_id,cluster_id,organization_id,status,aggregate) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (incident_id) DO UPDATE SET cluster_id=EXCLUDED.cluster_id,organization_id=EXCLUDED.organization_id,status=EXCLUDED.status,aggregate=EXCLUDED.aggregate,updated_at=now()`,[value.incidentId,value.clusterId,value.organizationId,value.status,JSON.stringify(value)]);return structuredClone(value);}
@@ -100,4 +124,4 @@ export class PostgresExternalTicketRepository implements ExternalTicketRepositor
     return {id:row.id,incidentId:row.incident_id,provider:row.provider,channelId:row.channel_id,externalMessageId:row.external_message_id,createdAt,updatedAt,...(row.url?{url:row.url}:{})};
   }
 }
-export class PostgresAcknowledgementTransaction implements AcknowledgementTransaction {constructor(private readonly db:PostgresConnection){}async acknowledge(input:Parameters<AcknowledgementTransaction['acknowledge']>[0]){const client=await this.db.pool.connect();try{await client.query('BEGIN');await client.query(`INSERT INTO incident_acknowledgements (incident_id,aggregate) VALUES ($1,$2) ON CONFLICT (incident_id) DO NOTHING`,[input.acknowledgement.incidentId,JSON.stringify(input.acknowledgement)]);await client.query(`UPDATE incident_notification_states SET status='ACKNOWLEDGED',aggregate=$2,updated_at=now() WHERE incident_id=$1 AND status='ACTIVE'`,[input.state.incidentId,JSON.stringify(input.state)]);if(input.attempt)await client.query('UPDATE notification_attempts SET aggregate=$2,updated_at=now() WHERE id=$1',[input.attempt.id,JSON.stringify(input.attempt)]);for(const event of input.events)await client.query('INSERT INTO notification_audit_events (id,incident_id,occurred_at,aggregate) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',[event.id,event.incidentId,event.timestamp,JSON.stringify(event)]);await client.query('COMMIT');}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}}}
+export class PostgresAcknowledgementTransaction implements AcknowledgementTransaction {constructor(private readonly db:PostgresConnection){}async acknowledge(input:Parameters<AcknowledgementTransaction['acknowledge']>[0]){const client=await this.db.pool.connect();try{await client.query('BEGIN');await client.query(`INSERT INTO incident_acknowledgements (incident_id,aggregate) VALUES ($1,$2) ON CONFLICT (incident_id) DO NOTHING`,[input.acknowledgement.incidentId,JSON.stringify(input.acknowledgement)]);await client.query(`UPDATE incident_notification_states SET status='ACKNOWLEDGED',aggregate=$2,updated_at=now() WHERE incident_id=$1 AND status='ACTIVE'`,[input.state.incidentId,JSON.stringify(input.state)]);if(input.attempt)await client.query('UPDATE notification_attempts SET aggregate=$2,updated_at=now() WHERE id=$1',[input.attempt.id,JSON.stringify(input.attempt)]);if(input.communication)await client.query('UPDATE incident_communications SET status=$2,aggregate=$3 WHERE id=$1',[input.communication.id,input.communication.status,JSON.stringify(input.communication)]);for(const event of input.events)await client.query('INSERT INTO notification_audit_events (id,incident_id,occurred_at,aggregate) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',[event.id,event.incidentId,event.timestamp,JSON.stringify(event)]);await client.query('COMMIT');}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}}}

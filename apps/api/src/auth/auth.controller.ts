@@ -9,7 +9,7 @@ import {
   Injectable,
   Post,
   Req,
-  ServiceUnavailableException,
+  Res,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
@@ -19,58 +19,58 @@ import {
 import {
   AUDIT_ACTIONS,
   PROJECT_ASSIGNMENT_REPOSITORY,
+  PASSWORD_MINIMUM_LENGTH,
   TEMPORARY_PASSWORD_LENGTH,
   USER_REPOSITORY,
   isRole,
   issueAccessToken,
   presentUser,
+  passwordPolicyError,
   verifyPassword,
   type AuthenticatedUser,
   type ProjectAssignmentRepository,
   type TokenSettings,
   type UserRepository,
+  issueMfaChallengeToken,
+  readCookie,
+  verifyMfaTrustedDeviceToken,
 } from '@faultline/auth';
 import { AuditTrail } from './audit-trail';
 import {
   AllowWhilePasswordChangePending,
+  AllowWhileMfaEnrollmentPending,
   CurrentUser,
   Public,
   type RequestWithUser,
 } from './context';
+import { AuthSecurityStore } from './security-store';
+import {
+  clearSessionCookie,
+  clearMfaTrustedDeviceCookie,
+  MFA_TRUSTED_DEVICE_COOKIE,
+  setSessionCookie,
+  type CookieResponse,
+} from './session-cookie';
 
 /**
  * Throttles credential guessing.
  *
- * In-process and therefore per-instance: it raises the cost of an online guessing
- * attack against a single API pod, and is not a substitute for a shared rate limiter at
- * the edge when the API is scaled out. Recorded here rather than left implicit because
- * the limitation matters to whoever deploys it.
+ * Backed by shared Redis state outside tests, so every API instance enforces one limit.
  */
 @Injectable()
 export class LoginThrottle {
-  private readonly attempts = new Map<string, { count: number; until: number }>();
-  private static readonly MAX_ATTEMPTS = 8;
-  private static readonly WINDOW_MS = 15 * 60 * 1000;
+  constructor(private readonly store: AuthSecurityStore) {}
 
-  check(key: string, now = Date.now()): void {
-    const entry = this.attempts.get(key);
-    if (entry && entry.until > now && entry.count >= LoginThrottle.MAX_ATTEMPTS)
-      throw new UnauthorizedException(
-        'Too many failed attempts; try again later',
-      );
+  check(key: string): Promise<void> {
+    return this.store.checkRateLimit(key);
   }
 
-  fail(key: string, now = Date.now()): void {
-    const entry = this.attempts.get(key);
-    if (!entry || entry.until <= now)
-      this.attempts.set(key, { count: 1, until: now + LoginThrottle.WINDOW_MS });
-    else entry.count += 1;
-    // Bounded so a flood of distinct keys cannot grow this without limit.
-    if (this.attempts.size > 10_000) this.attempts.clear();
+  fail(key: string): Promise<void> {
+    return this.store.recordFailure(key);
   }
 
-  succeed(key: string): void {
-    this.attempts.delete(key);
+  succeed(key: string): Promise<void> {
+    return this.store.clearFailures(key);
   }
 }
 
@@ -93,8 +93,6 @@ interface ChangePasswordBody {
  * far better than `P@ssw0rd!`, and composition rules mostly teach people to put the
  * digit at the end. The generated temporary password satisfies this comfortably.
  */
-const MINIMUM_PASSWORD_LENGTH = 12;
-
 /**
  * Local credential login.
  *
@@ -106,7 +104,10 @@ const MINIMUM_PASSWORD_LENGTH = 12;
 @Controller('auth')
 export class AuthController {
   private readonly tokens: TokenSettings;
+  private readonly mfaSecret: string;
   private readonly mfaRequired: boolean;
+  private readonly secureCookies: boolean;
+  private readonly trustedDeviceTtlDays: number;
 
   constructor(
     @Inject(USER_REPOSITORY) private readonly users: UserRepository,
@@ -115,20 +116,28 @@ export class AuthController {
     @Inject(APPLICATION_CONFIG) config: ApplicationConfig,
     private readonly audit: AuditTrail,
     private readonly throttle: LoginThrottle,
+    private readonly security: AuthSecurityStore,
   ) {
     this.tokens = {
       secret: config.auth.jwtSecret ?? '',
       issuer: config.auth.issuer,
       ttlSeconds: config.auth.accessTokenTtlSeconds,
     };
+    this.mfaSecret = config.auth.mfaEncryptionKey ?? config.auth.jwtSecret ?? '';
     this.mfaRequired = config.auth.mfaRequired;
+    this.secureCookies = config.environment === 'production';
+    this.trustedDeviceTtlDays = config.auth.mfaTrustedDeviceTtlDays ?? 30;
   }
 
   @Public()
   @Post('login')
   @HttpCode(200)
   @Header('Cache-Control', 'no-store')
-  async login(@Body() body: LoginBody, @Req() request: RequestWithUser) {
+  async login(
+    @Body() body: LoginBody,
+    @Req() request: RequestWithUser,
+    @Res({ passthrough: true }) response: CookieResponse,
+  ) {
     const identifier =
       typeof body?.email === 'string' && body.email.trim()
         ? body.email.trim()
@@ -140,7 +149,7 @@ export class AuthController {
       throw new BadRequestException('Email or username, and password, are required');
 
     const throttleKey = identifier.toLowerCase();
-    this.throttle.check(throttleKey);
+    await this.throttle.check(throttleKey);
 
     // A provisioned admin is emailed a username, while everyone else knows their email,
     // so one field accepts either. The lookup order does not leak anything: both
@@ -154,9 +163,10 @@ export class AuthController {
     const correct = await verifyPassword(password, user?.passwordHash ?? null);
 
     if (!user || !correct || user.status !== 'active' || !isRole(user.role)) {
-      this.throttle.fail(throttleKey);
+      await this.throttle.fail(throttleKey);
       await this.audit.record({
         userId: user?.id ?? null,
+        organizationId: user?.organizationId ?? null,
         actor: identifier,
         action: AUDIT_ACTIONS.LOGIN_FAILED,
         resourceType: 'session',
@@ -175,11 +185,38 @@ export class AuthController {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    this.throttle.succeed(throttleKey);
+    await this.throttle.succeed(throttleKey);
 
-    if (this.mfaRequired && user.mfaEnabled) {
+    let trustedDevice = false;
+    if (user.mfaEnabled && user.mfaSecretCiphertext) {
+      const trustedDeviceToken = readCookie(
+        request.headers.cookie,
+        MFA_TRUSTED_DEVICE_COOKIE,
+      );
+      trustedDevice = !!trustedDeviceToken && verifyMfaTrustedDeviceToken(
+        trustedDeviceToken,
+        user.id,
+        user.mfaSecretCiphertext,
+        user.sessionVersion,
+        this.mfaSecret,
+      );
+      if (trustedDeviceToken && !trustedDevice)
+        clearMfaTrustedDeviceCookie(response, this.secureCookies);
+    }
+
+    if (user.mfaEnabled && !trustedDevice) {
+      if (!user.mfaSecretCiphertext)
+        throw new UnauthorizedException('MFA configuration is incomplete; contact an administrator');
+      const challengeExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      const challengeId = await this.users.createMfaChallenge(user.id, challengeExpiresAt);
+      const challenge = issueMfaChallengeToken(
+        user.id,
+        challengeId,
+        this.mfaSecret,
+      );
       await this.audit.record({
         userId: user.id,
+        organizationId: user.organizationId,
         actor: user.email,
         action: AUDIT_ACTIONS.LOGIN_SUCCEEDED,
         resourceType: 'session',
@@ -187,12 +224,13 @@ export class AuthController {
         request,
         metadata: { stage: 'password', mfaPending: true },
       });
-      // No token is issued here. The second factor is not implemented in this
-      // deployment; the flag tells the client to collect one and tells an operator
-      // that an MFA provider must be wired before turning AUTH_MFA_REQUIRED on.
-      throw new ServiceUnavailableException(
-        'A second factor is required but no MFA provider is configured',
-      );
+      return {
+        mfaRequired: true,
+        challengeToken: challenge.token,
+        expiresAt: challenge.expiresAt,
+        trustedDeviceTtlDays: this.trustedDeviceTtlDays,
+        user: { email: user.email },
+      };
     }
 
     const assignments = await this.assignments.listForUser(user.id);
@@ -205,12 +243,30 @@ export class AuthController {
       role: user.role,
       status: user.status,
       mfaEnabled: user.mfaEnabled,
+      mfaEnrollmentRequired: this.mfaRequired && !user.mfaEnabled,
       mustChangePassword: user.mustChangePassword,
       assignments,
     };
-    const { token, expiresAt } = issueAccessToken(
-      { sub: user.id, email: user.email, role: user.role },
+    const { token, expiresAt, sessionId } = issueAccessToken(
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        amr: trustedDevice ? ['pwd', 'trusted-device'] : ['pwd'],
+        sv: user.sessionVersion,
+      },
       this.tokens,
+    );
+    await this.security.createSession(
+      sessionId,
+      user.id,
+      this.tokens.ttlSeconds,
+    );
+    setSessionCookie(
+      response,
+      token,
+      this.tokens.ttlSeconds,
+      this.secureCookies,
     );
 
     await this.audit.record({
@@ -223,6 +279,7 @@ export class AuthController {
         role: user.role,
         projects: assignments.length,
         mustChangePassword: user.mustChangePassword,
+        ...(trustedDevice ? { mfa: 'trusted-device' } : {}),
       },
     });
 
@@ -235,19 +292,22 @@ export class AuthController {
   /**
    * Ends a session.
    *
-   * Tokens are self-contained and are not tracked server side, so this records the
-   * event and the client discards the token. A deployment that needs immediate
-   * server-side revocation adds a token denylist behind this route; disabling the user
-   * already takes effect on the next request, because the guard re-reads them.
+   * The Redis session record is removed before the audit event is written, so the same
+   * token is refused on its next request from any API instance.
    */
   @AllowWhilePasswordChangePending()
+  @AllowWhileMfaEnrollmentPending()
   @Post('logout')
   @HttpCode(204)
   @Header('Cache-Control', 'no-store')
   async logout(
     @CurrentUser() user: AuthenticatedUser,
     @Req() request: RequestWithUser,
+    @Res({ passthrough: true }) response: CookieResponse,
   ): Promise<void> {
+    if (request.sessionId)
+      await this.security.revokeSession(request.sessionId, user.id);
+    clearSessionCookie(response, this.secureCookies);
     await this.audit.record({
       user,
       action: AUDIT_ACTIONS.LOGOUT,
@@ -259,6 +319,7 @@ export class AuthController {
 
   /** The identity behind the current token, re-read from storage by the guard. */
   @AllowWhilePasswordChangePending()
+  @AllowWhileMfaEnrollmentPending()
   @Get('me')
   @Header('Cache-Control', 'no-store')
   me(@CurrentUser() user: AuthenticatedUser) {
@@ -276,6 +337,7 @@ export class AuthController {
    * browser, and without this check the theft would become permanent ownership.
    */
   @AllowWhilePasswordChangePending()
+  @AllowWhileMfaEnrollmentPending()
   @Post('change-password')
   @HttpCode(200)
   @Header('Cache-Control', 'no-store')
@@ -283,6 +345,7 @@ export class AuthController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() body: ChangePasswordBody,
     @Req() request: RequestWithUser,
+    @Res({ passthrough: true }) response: CookieResponse,
   ) {
     const currentPassword =
       typeof body?.currentPassword === 'string' ? body.currentPassword : '';
@@ -292,22 +355,17 @@ export class AuthController {
       throw new BadRequestException(
         'Current and new passwords are both required',
       );
-    if (newPassword.length < MINIMUM_PASSWORD_LENGTH)
-      throw new BadRequestException(
-        `New password must be at least ${MINIMUM_PASSWORD_LENGTH} characters`,
-      );
-    if (newPassword === currentPassword)
-      throw new BadRequestException(
-        'New password must be different from the current one',
-      );
+    const policyError = passwordPolicyError(newPassword);
+    if (policyError) throw new BadRequestException(policyError);
 
     const stored = await this.users.findById(user.id);
     if (!stored) throw new UnauthorizedException('Invalid or expired credentials');
 
+    await this.throttle.check(`change:${user.id}`);
     if (!(await verifyPassword(currentPassword, stored.passwordHash ?? null))) {
       // Throttled on the user id: this is a second place a password can be guessed,
       // and leaving it unmetered would make the confinement screen the soft target.
-      this.throttle.fail(`change:${user.id}`);
+      await this.throttle.fail(`change:${user.id}`);
       await this.audit.record({
         user,
         action: AUDIT_ACTIONS.USER_MODIFIED,
@@ -319,7 +377,14 @@ export class AuthController {
       });
       throw new UnauthorizedException('Current password is incorrect');
     }
-    this.throttle.check(`change:${user.id}`);
+    await this.throttle.succeed(`change:${user.id}`);
+    if (await verifyPassword(newPassword, stored.passwordHash ?? null))
+      throw new BadRequestException(
+        'New password must be different from the current password',
+      );
+    // Revoke first: if either dependency fails, no pre-change credential can become
+    // valid again after Redis recovers.
+    await this.security.revokeAllSessions(user.id);
 
     // One write: the hash replaces the temporary one and the confinement lifts
     // together, so there is no moment where the old password still opens the account
@@ -347,20 +412,35 @@ export class AuthController {
     const refreshed: AuthenticatedUser = {
       ...user,
       mustChangePassword: false,
+      mfaEnrollmentRequired: this.mfaRequired && !user.mfaEnabled,
     };
-    // A fresh token, so the client is not left holding one minted before the change.
-    // The previous token is not invalidated - it belongs to the same user, and the
-    // guard reads `mustChangePassword` from storage, so it is no longer confined
-    // either. Bounded by the token TTL; see docs/SUBSCRIPTIONS.md.
-    const { token, expiresAt } = issueAccessToken(
-      { sub: user.id, email: user.email, role: user.role },
+    // Establish a replacement only after the password write has committed.
+    const { token, expiresAt, sessionId } = issueAccessToken(
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        amr: user.mfaEnabled ? ['pwd', 'otp'] : ['pwd'],
+        sv: updated.sessionVersion,
+      },
       this.tokens,
+    );
+    await this.security.createSession(
+      sessionId,
+      user.id,
+      this.tokens.ttlSeconds,
+    );
+    setSessionCookie(
+      response,
+      token,
+      this.tokens.ttlSeconds,
+      this.secureCookies,
     );
     return {
       accessToken: token,
       expiresAt,
       user: presentUser(refreshed),
-      minimumPasswordLength: MINIMUM_PASSWORD_LENGTH,
+      minimumPasswordLength: PASSWORD_MINIMUM_LENGTH,
       temporaryPasswordLength: TEMPORARY_PASSWORD_LENGTH,
     };
   }

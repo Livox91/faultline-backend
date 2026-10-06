@@ -11,7 +11,7 @@
  *     exactly as a deployed API would. Use it for anything about access itself.
  */
 const { Module, SetMetadata } = require('@nestjs/common');
-const { APP_GUARD, Reflector } = require('@nestjs/core');
+const { APP_GUARD, APP_INTERCEPTOR, Reflector } = require('@nestjs/core');
 const { NestFactory } = require('@nestjs/core');
 const {
   AUDIT_LOG_REPOSITORY,
@@ -23,6 +23,7 @@ const {
   issueAccessToken,
 } = require('@faultline/auth');
 const { APPLICATION_CONFIG } = require('@faultline/platform');
+const { EMAIL_SENDER, RecordingEmailSender } = require('@faultline/email');
 const {
   SUBSCRIPTION_REPOSITORY,
   InMemorySubscriptionRepository,
@@ -38,6 +39,10 @@ const {
   AuthorizationGuard,
 } = require('../apps/api/dist/auth/authorization.guard');
 const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
+const {
+  UserActivityAuditInterceptor,
+} = require('../apps/api/dist/auth/user-activity-audit.interceptor');
+const { AuthSecurityStore } = require('../apps/api/dist/auth/security-store');
 const {
   EntitlementsGuard,
   PlanEntitlements,
@@ -76,12 +81,15 @@ function apiConfig(overrides = {}) {
     // Off unless a test says otherwise: a deployment that sells nothing enforces no
     // tiers, which is also what every pre-existing authorization test assumes.
     billing: { enabled: false, provider: 'stripe', priceIds: {}, ...(overrides.billing ?? {}) },
+    publicUrl: 'https://faultline.test',
+    applicationName: 'Faultline',
     ...overrides.extra,
   };
 }
 
 const admin = (overrides = {}) => ({
   id: '00000000-0000-4000-8000-0000000000a1',
+  organizationId: 'default',
   email: 'admin@faultline.test',
   name: 'Administrator',
   role: 'admin',
@@ -93,6 +101,7 @@ const admin = (overrides = {}) => ({
 
 const engineer = (projectIds = [], overrides = {}) => ({
   id: '00000000-0000-4000-8000-0000000000e1',
+  organizationId: 'default',
   email: 'engineer@faultline.test',
   name: 'Onsite Engineer',
   role: 'onsiteengineer',
@@ -136,7 +145,9 @@ async function bootWithRealGuards({
   audit = new InMemoryAuditLogRepository(),
   subscriptions = new InMemorySubscriptionRepository(),
   contacts = new InMemoryContactRepository(),
+  email = new RecordingEmailSender(),
   config = apiConfig(),
+  auditEveryRequest = false,
 } = {}) {
   class TestModule {}
   Module({
@@ -149,14 +160,24 @@ async function bootWithRealGuards({
       { provide: SUBSCRIPTION_REPOSITORY, useValue: subscriptions },
       { provide: CONTACT_REPOSITORY, useValue: contacts },
       { provide: APPLICATION_CONFIG, useValue: config },
+      { provide: EMAIL_SENDER, useValue: email },
       { provide: Reflector, useValue: new Reflector() },
       { provide: require('@faultline/platform').ApplicationLogger, useValue: silentLogger },
       AuditTrail,
+      AuthSecurityStore,
       PlanEntitlements,
       { provide: APP_GUARD, useClass: AuthenticationGuard },
       { provide: APP_GUARD, useClass: AuthorizationGuard },
       // Same order as the application: identity is settled before the plan is asked.
       { provide: APP_GUARD, useClass: EntitlementsGuard },
+      ...(auditEveryRequest
+        ? [
+            {
+              provide: APP_INTERCEPTOR,
+              useClass: UserActivityAuditInterceptor,
+            },
+          ]
+        : []),
     ],
   })(TestModule);
   const app = await NestFactory.create(TestModule, { logger: false });
@@ -168,6 +189,7 @@ async function bootWithRealGuards({
     audit,
     subscriptions,
     contacts,
+    email,
     base: await app.getUrl(),
   };
 }

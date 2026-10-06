@@ -6,9 +6,12 @@ import {
   PostgresConnection,
   PostgresClusterDirectory,
   PostgresContactRepository,
+  PostgresEndUserContactRepository,
   PostgresExternalTicketRepository,
   PostgresIdempotencyStore,
   PostgresIncidentAcknowledgementRepository,
+  PostgresIncidentCommunicationRepository,
+  PostgresNotificationProviderStatusRepository,
   PostgresIncidentNotificationStateRepository,
   PostgresIncidentRepository,
   PostgresNotificationAttemptRepository,
@@ -22,9 +25,12 @@ import {
   ACKNOWLEDGEMENT_TRANSACTION,
   COMMUNICATION_PROVIDER,
   CONTACT_REPOSITORY,
+  END_USER_CONTACT_REPOSITORY,
   EXTERNAL_TICKET_REPOSITORY,
   IDEMPOTENCY_STORE,
   INCIDENT_ACKNOWLEDGEMENTS,
+  INCIDENT_COMMUNICATION_REPOSITORY,
+  NOTIFICATION_PROVIDER_STATUS_REPOSITORY,
   INCIDENT_NOTIFICATION_STATE_REPOSITORY,
   INCIDENT_TICKET_PUBLISHER,
   NOTIFICATION_ATTEMPTS,
@@ -54,6 +60,7 @@ import { SlackMessageBuilder } from './slack-message-builder';
 import { VoiceActionController } from './voice-action.controller';
 import { VoiceActionService } from './voice-action.service';
 import { RetellWebhookController } from './webhook.controller';
+import { ProviderHealthService } from './provider-health.service';
 
 @Module({
   imports: [PlatformModule.forRoot('notification', resolve(__dirname, '../.env'))],
@@ -71,6 +78,7 @@ import { RetellWebhookController } from './webhook.controller';
       },
     },
     { provide: CONTACT_REPOSITORY, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresContactRepository(db) },
+    { provide: END_USER_CONTACT_REPOSITORY, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresEndUserContactRepository(db) },
     { provide: USER_REPOSITORY, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresUserRepository(db) },
     { provide: CLUSTER_SRE_ASSIGNMENT_REPOSITORY, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresClusterSreAssignmentRepository(db) },
     { provide: NOTIFICATION_ATTEMPTS, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresNotificationAttemptRepository(db) },
@@ -78,6 +86,8 @@ import { RetellWebhookController } from './webhook.controller';
     { provide: NOTIFICATION_AUDIT_REPOSITORY, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresNotificationAuditRepository(db) },
     { provide: INCIDENT_REPOSITORY, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresIncidentRepository(db) },
     { provide: INCIDENT_ACKNOWLEDGEMENTS, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresIncidentAcknowledgementRepository(db) },
+    { provide: INCIDENT_COMMUNICATION_REPOSITORY, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresIncidentCommunicationRepository(db) },
+    { provide: NOTIFICATION_PROVIDER_STATUS_REPOSITORY, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresNotificationProviderStatusRepository(db) },
     { provide: IDEMPOTENCY_STORE, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresIdempotencyStore(db) },
     { provide: EXTERNAL_TICKET_REPOSITORY, inject: [PostgresConnection], useFactory: (db: PostgresConnection) => new PostgresExternalTicketRepository(db) },
     { provide: SLACK_INTEGRATION_REPOSITORY, inject: [PostgresConnection, NOTIFICATION_CONFIG], useFactory: (db: PostgresConnection, config: NotificationWorkerConfig) => new PostgresSlackIntegrationRepository(db, config.slackTokenEncryptionKey) },
@@ -115,6 +125,7 @@ import { RetellWebhookController } from './webhook.controller';
     NotificationConsumer,
     VoiceActionService,
     RecoverySchedulerService,
+    ProviderHealthService,
   ],
 })
 export class AppModule {}

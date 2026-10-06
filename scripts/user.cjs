@@ -19,7 +19,14 @@ const { resolve } = require('node:path');
 const { readFileSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { Client } = require('pg');
-const { hashPassword, parseRole, ROLES } = require('@faultline/auth');
+const {
+  hashPassword,
+  passwordPolicyError,
+  verifyPassword,
+  parseRole,
+  ROLES,
+} = require('@faultline/auth');
+const { revokeAllSessions } = require('./auth-sessions.cjs');
 const { normalizePhoneNumber } = require('@faultline/notifications');
 
 const root = resolve(__dirname, '..');
@@ -76,7 +83,7 @@ async function connect() {
 
 async function findUser(client, email) {
   const result = await client.query(
-    'SELECT id, email, name, role, status FROM users WHERE lower(email) = lower($1)',
+    'SELECT id, email, name, role, status, password_hash FROM users WHERE lower(email) = lower($1)',
     [email],
   );
   return result.rows[0];
@@ -86,6 +93,12 @@ function requireEmail(args) {
   if (typeof args.email !== 'string' || !args.email.includes('@'))
     throw new Error('Pass --email <address>');
   return args.email.trim();
+}
+
+function requireStrongPassword(value) {
+  const error = passwordPolicyError(value);
+  if (error) throw new Error(error);
+  return value;
 }
 
 /** Recorded from the CLI too: an out-of-band change is still a change worth seeing. */
@@ -113,8 +126,7 @@ const commands = {
       throw new Error(
         `Unknown role. Use one of: ${Object.values(ROLES).join(', ')}`,
       );
-    if (typeof args.password !== 'string' || args.password.length < 12)
-      throw new Error('Pass --password with at least 12 characters');
+    const password = requireStrongPassword(args.password);
     // Same rule as the API: Retell calls an onsite engineer on this number, so the
     // account is not created without one, and voice is always on.
     let phoneNumber;
@@ -132,7 +144,7 @@ const commands = {
       const inserted = await client.query(
         `INSERT INTO users (id, email, name, role, password_hash) VALUES ($1, $2, $3, $4, $5)
          RETURNING organization_id`,
-        [id, email.toLowerCase(), name, role, await hashPassword(args.password)],
+        [id, email.toLowerCase(), name, role, await hashPassword(password)],
       );
       if (phoneNumber) {
         const organizationId = inserted.rows[0].organization_id;
@@ -287,14 +299,33 @@ const commands = {
 
   async password(client, args) {
     const email = requireEmail(args);
-    if (typeof args.password !== 'string' || args.password.length < 12)
-      throw new Error('Pass --password with at least 12 characters');
+    const password = requireStrongPassword(args.password);
     const user = await findUser(client, email);
     if (!user) throw new Error(`No such user: ${email}`);
-    await client.query(
-      'UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1',
-      [user.id, await hashPassword(args.password)],
-    );
+    if (await verifyPassword(password, user.password_hash))
+      throw new Error('New password must be different from the current password');
+    await client.query('BEGIN');
+    try {
+      await client.query(
+        `UPDATE users SET password_hash = $2, session_version = session_version + 1,
+          must_change_password = false, updated_at = now() WHERE id = $1`,
+        [user.id, await hashPassword(password)],
+      );
+      await client.query(
+        'UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL',
+        [user.id],
+      );
+      await client.query(
+        'UPDATE mfa_challenges SET used_at = now() WHERE user_id = $1 AND used_at IS NULL',
+        [user.id],
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+    const env = parseEnv(resolve(root, 'apps/api/.env'));
+    await revokeAllSessions(process.env.REDIS_URL || env.REDIS_URL, user.id);
     await audit(client, 'user.modified', 'user', user.id, { field: 'password' });
     console.log(`Password updated for ${email}`);
   },
@@ -313,6 +344,10 @@ async function setStatus(client, args, status) {
     );
     if (admins.rows[0].count <= 1)
       throw new Error('This is the last active Admin and cannot be disabled.');
+  }
+  if (status === 'disabled') {
+    const env = parseEnv(resolve(root, 'apps/api/.env'));
+    await revokeAllSessions(process.env.REDIS_URL || env.REDIS_URL, user.id);
   }
   await client.query('UPDATE users SET status = $2, updated_at = now() WHERE id = $1', [
     user.id,

@@ -8,6 +8,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Req,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
@@ -16,11 +17,18 @@ import {
   type IncidentRepository,
 } from '@faultline/incidents';
 import {
+  AUDIT_ACTIONS,
+  hasProjectAccess,
+  type AuthenticatedUser,
+} from '@faultline/auth';
+import {
   EXTERNAL_TICKET_REPOSITORY,
   type ExternalTicket,
   type ExternalTicketRepository,
 } from '@faultline/notifications';
 import { EVENT_TOPICS, QUEUE, type Queue } from '@faultline/queue';
+import { AuditTrail } from './auth/audit-trail';
+import { CurrentUser, type RequestWithUser } from './auth/context';
 
 export interface SlackTicketView {
   provider: 'slack';
@@ -40,14 +48,17 @@ export class IncidentExternalTicketController {
     @Inject(EXTERNAL_TICKET_REPOSITORY)
     private readonly tickets: ExternalTicketRepository,
     @Inject(QUEUE) private readonly queue: Queue,
+    private readonly audit: AuditTrail,
   ) {}
 
   @Get(':incidentId/external-tickets/slack')
   @Header('Cache-Control', 'no-store')
   async getSlackTicket(
     @Param('incidentId', new ParseUUIDPipe()) incidentId: string,
+    @CurrentUser() actor: AuthenticatedUser,
   ): Promise<{ ticket: SlackTicketView | null }> {
-    if (!(await this.incidents.getIncident(incidentId)))
+    const incident = await this.incidents.getIncident(incidentId);
+    if (!incident || !hasProjectAccess(actor, incident.clusterId))
       throw new NotFoundException('Incident not found');
     const ticket = await this.tickets.findByIncidentAndProvider(
       incidentId,
@@ -61,11 +72,14 @@ export class IncidentExternalTicketController {
   @Header('Cache-Control', 'no-store')
   async createSlackTicket(
     @Param('incidentId', new ParseUUIDPipe()) incidentId: string,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() request: RequestWithUser,
   ): Promise<
     | { status: 'LINKED'; ticket: SlackTicketView }
     | { status: 'REQUESTED'; ticket: null }
   > {
-    if (!(await this.incidents.getIncident(incidentId)))
+    const incident = await this.incidents.getIncident(incidentId);
+    if (!incident || !hasProjectAccess(actor, incident.clusterId))
       throw new NotFoundException('Incident not found');
     const existing = await this.tickets.findByIncidentAndProvider(
       incidentId,
@@ -84,10 +98,30 @@ export class IncidentExternalTicketController {
         },
       });
     } catch {
+      await this.audit.record({
+        user: actor,
+        action: AUDIT_ACTIONS.SLACK_TICKET_REQUESTED,
+        resourceType: 'incident',
+        resourceId: incidentId,
+        outcome: 'denied',
+        request,
+        metadata: {
+          clusterId: incident.clusterId,
+          reason: 'queue_publish_failed',
+        },
+      });
       throw new ServiceUnavailableException(
         'Slack ticket creation could not be queued',
       );
     }
+    await this.audit.record({
+      user: actor,
+      action: AUDIT_ACTIONS.SLACK_TICKET_REQUESTED,
+      resourceType: 'incident',
+      resourceId: incidentId,
+      request,
+      metadata: { clusterId: incident.clusterId, provider: 'slack' },
+    });
     return { status: 'REQUESTED', ticket: null };
   }
 }

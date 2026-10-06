@@ -74,7 +74,7 @@ test('setup generates database credentials instead of hardcoding them', () => {
     setup,
     /AUTH_BOOTSTRAP_ADMIN_PASSWORD=\$\{bootstrapAdminPassword\}/,
   );
-  assert.match(setup, /value\.length >= 12/);
+  assert.match(setup, /isStrongPassword/);
   assert.match(
     setup,
     /'apps\/storage\/\.env':[^\n]*DATABASE_URL=\$\{databaseUrl\}/,
@@ -119,6 +119,22 @@ test('direct notification migration compares retained text incident ids safely',
   assert.doesNotMatch(migration, /JOIN incidents i ON i\.id = e\.incident_id/);
 });
 
+test('project assignments enforce tenant ownership in PostgreSQL', () => {
+  const migration = read(
+    'packages/database/migrations/0025_project_assignment_organization_guard.sql',
+  );
+  assert.match(migration, /BEFORE INSERT OR UPDATE[\s\S]*ON project_users/);
+  assert.match(
+    migration,
+    /user_organization IS DISTINCT FROM project_organization/,
+  );
+  assert.match(
+    migration,
+    /actor_organization IS DISTINCT FROM project_organization/,
+  );
+  assert.match(migration, /project_users_same_organization/);
+});
+
 test('combined development pipeline loads every application environment', () => {
   const pipeline = read('scripts/dev-pipeline.cjs');
   assert.match(
@@ -161,6 +177,14 @@ test('setup provides a project-local Stripe CLI and clear next commands', () => 
   const webhooks = read('scripts/stripe-webhooks.cjs');
   assert.match(webhooks, /LOCAL_STRIPE_BIN/);
   assert.match(webhooks, /cli-\$\{process\.platform\}-\$\{process\.arch\}/);
+  for (const event of [
+    'checkout.session.completed',
+    'invoice.paid',
+    'invoice.payment_failed',
+    'customer.subscription.updated',
+    'customer.subscription.deleted',
+  ])
+    assert.match(webhooks, new RegExp(event.replaceAll('.', '\\.')));
 
   const preflight = read('scripts/preflight.cjs');
   assert.match(preflight, /Stripe CLI/);

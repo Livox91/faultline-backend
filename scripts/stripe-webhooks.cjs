@@ -1,11 +1,11 @@
 /**
  * Local webhook delivery, started with the backend.
  *
- * A payment is not what creates an account - the signed `checkout.session.completed`
- * webhook is. On a laptop Stripe cannot reach `localhost`, so without a forwarder a
- * test purchase succeeds, money moves, and nothing at all happens on this side. That
- * failure is silent and looks exactly like a bug in provisioning, which is why this
- * runs automatically rather than living in a README step someone forgets.
+ * Signed Stripe webhooks create accounts and keep subscription state current. On a
+ * laptop Stripe cannot reach `localhost`, so without a forwarder purchases, renewals,
+ * failed payments and cancellations never reach Faultline. That failure is silent and
+ * looks exactly like a billing bug, which is why this runs automatically rather than
+ * living in a README step someone forgets.
  *
  * Two things have to happen, in this order:
  *
@@ -27,7 +27,13 @@ const { EOL } = require('node:os');
 const API_ENV = resolve(__dirname, '../apps/api/.env');
 
 /** Only what the API acts on. Anything else would be noise it already ignores. */
-const FORWARDED_EVENTS = ['checkout.session.completed'];
+const FORWARDED_EVENTS = [
+  'checkout.session.completed',
+  'invoice.paid',
+  'invoice.payment_failed',
+  'customer.subscription.updated',
+  'customer.subscription.deleted',
+];
 
 const log = (event, fields = {}) =>
   console.log(JSON.stringify({ event, ...fields }));

@@ -44,8 +44,7 @@ const optionalPhone = z.preprocess(
     .optional(),
 );
 
-const notificationEnvironment = z
-  .object({
+const notificationEnvironment = z.object({
     RETELL_API_KEY: optionalText,
     RETELL_FROM_NUMBER: optionalPhone,
     RETELL_VOICE_AGENT_ID: optionalText,
@@ -91,28 +90,6 @@ const notificationEnvironment = z
     SLACK_SERVICE_CHANNELS: optionalText,
     SLACK_SERVICE_OWNERS: optionalText,
     SLACK_TEAM_CHANNELS: optionalText,
-  })
-  .superRefine((value, context) => {
-    const retellValues = [
-      value.RETELL_API_KEY,
-      value.RETELL_FROM_NUMBER,
-      value.RETELL_VOICE_AGENT_ID,
-    ];
-    const retellRequested =
-      retellValues.some(Boolean) || Boolean(value.RETELL_SMS_AGENT_ID);
-    if (!retellRequested) return;
-    const names = [
-      'RETELL_API_KEY',
-      'RETELL_FROM_NUMBER',
-      'RETELL_VOICE_AGENT_ID',
-    ] as const;
-    for (let index = 0; index < retellValues.length; index++)
-      if (!retellValues[index])
-        context.addIssue({
-          code: 'custom',
-          path: [names[index]!],
-          message: 'is required when Retell is configured',
-        });
   });
 
 /**

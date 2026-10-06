@@ -20,6 +20,8 @@ const {
   INCIDENT_REPORT_BUILDER,
   IncidentReportController,
 } = require('../apps/api/dist/incident-report.controller');
+const { AuditTrail } = require('../apps/api/dist/auth/audit-trail');
+const auditTrail = { record: async () => {} };
 
 const detectedAt = '2026-09-21T10:00:00.000Z';
 const acknowledgedAt = '2026-09-21T10:00:30.000Z';
@@ -147,7 +149,11 @@ test('complete incident generates a normalized technical report', async () => {
       async listForIncident() {
         return [
           { id: 'finding-1', severity: 'CRITICAL', title: 'Unbounded cache' },
-          { id: 'finding-2', severity: 'WARNING', title: 'Missing eviction metric' },
+          {
+            id: 'finding-2',
+            severity: 'WARNING',
+            title: 'Missing eviction metric',
+          },
         ];
       },
     },
@@ -155,13 +161,21 @@ test('complete incident generates a normalized technical report', async () => {
       async getForIncident() {
         return {
           suggested: [{ id: 'suggestion-1', title: 'Bound the session cache' }],
-          executed: [{ id: 'action-1', title: 'Restarted affected deployment', occurredAt: resolvedAt }],
+          executed: [
+            {
+              id: 'action-1',
+              title: 'Restarted affected deployment',
+              occurredAt: resolvedAt,
+            },
+          ],
         };
       },
     },
     health: {
       async listForIncident() {
-        return [{ service: 'payments', status: 'HEALTHY', observedAt: resolvedAt }];
+        return [
+          { service: 'payments', status: 'HEALTHY', observedAt: resolvedAt },
+        ];
       },
     },
   });
@@ -201,12 +215,19 @@ test('complete incident generates a normalized technical report', async () => {
   assert.equal(report.remediation.suggested.length, 1);
   assert.equal(report.remediation.executed.length, 1);
   assert.equal(report.health.services.length, 1);
-  assert.deepEqual(report.timeline.map((entry) => entry.id), ['timeline-1', 'timeline-2']);
+  assert.deepEqual(
+    report.timeline.map((entry) => entry.id),
+    ['timeline-1', 'timeline-2'],
+  );
 });
 
 test('missing code analysis does not break report generation', async () => {
   const { builder, incident: value } = await setup({
-    codeAnalysis: { async listForIncident() { throw new Error('unavailable'); } },
+    codeAnalysis: {
+      async listForIncident() {
+        throw new Error('unavailable');
+      },
+    },
   });
   const report = await builder.generateIncidentReport(value.id);
   assert.deepEqual(report.codeAnalysis, {
@@ -218,7 +239,11 @@ test('missing code analysis does not break report generation', async () => {
 
 test('missing remediation does not break report generation', async () => {
   const { builder, incident: value } = await setup({
-    remediation: { async getForIncident() { return undefined; } },
+    remediation: {
+      async getForIncident() {
+        return undefined;
+      },
+    },
   });
   const report = await builder.generateIncidentReport(value.id);
   assert.deepEqual(report.remediation, { suggested: [], executed: [] });
@@ -226,30 +251,77 @@ test('missing remediation does not break report generation', async () => {
 
 test('missing health data does not break report generation', async () => {
   const { builder, incident: value } = await setup({
-    health: { async listForIncident() { throw new Error('unavailable'); } },
+    health: {
+      async listForIncident() {
+        throw new Error('unavailable');
+      },
+    },
   });
   const report = await builder.generateIncidentReport(value.id);
   assert.deepEqual(report.health, { services: [] });
 });
 
 test('technical report builder redacts incident, analysis, remediation, health, and timeline text', async () => {
-  const { builder, incidents, incident: value } = await setup({
-    codeAnalysis: { async listForIncident() { return [{ id: 'finding', severity: 'CRITICAL', title: 'API_KEY=analysis-secret' }]; } },
-    remediation: { async getForIncident() { return { suggested: [{ id: 'suggestion', title: 'access_token=remediation-secret' }], executed: [] }; } },
-    health: { async listForIncident() { return [{ service: 'payments', status: 'DEGRADED', summary: 'Cookie: health-cookie-secret' }]; } },
+  const {
+    builder,
+    incidents,
+    incident: value,
+  } = await setup({
+    codeAnalysis: {
+      async listForIncident() {
+        return [
+          {
+            id: 'finding',
+            severity: 'CRITICAL',
+            title: 'API_KEY=analysis-secret',
+          },
+        ];
+      },
+    },
+    remediation: {
+      async getForIncident() {
+        return {
+          suggested: [
+            { id: 'suggestion', title: 'access_token=remediation-secret' },
+          ],
+          executed: [],
+        };
+      },
+    },
+    health: {
+      async listForIncident() {
+        return [
+          {
+            service: 'payments',
+            status: 'DEGRADED',
+            summary: 'Cookie: health-cookie-secret',
+          },
+        ];
+      },
+    },
   });
   await incidents.updateIncident({
     ...value,
-    summary: 'Authorization: Bearer incident-bearer-secret for customer@example.com',
-    confirmedRootCause: 'postgresql://admin:incident-db-secret@db.example/faultline',
-    timeline: [{ ...value.timeline[0], summary: 'refresh_token=timeline-secret' }],
+    summary:
+      'Authorization: Bearer incident-bearer-secret for customer@example.com',
+    confirmedRootCause:
+      'postgresql://admin:incident-db-secret@db.example/faultline',
+    timeline: [
+      { ...value.timeline[0], summary: 'refresh_token=timeline-secret' },
+    ],
   });
   const report = await builder.generateIncidentReport(value.id);
   const serialized = JSON.stringify(report);
   for (const secret of [
-    'incident-bearer-secret', 'customer@example.com', 'incident-db-secret',
-    'analysis-secret', 'remediation-secret', 'health-cookie-secret', 'timeline-secret',
-  ]) assert.doesNotMatch(serialized, new RegExp(secret.replaceAll('.', '\\.')));
+    'incident-bearer-secret',
+    'customer@example.com',
+    'incident-db-secret',
+    'analysis-secret',
+    'remediation-secret',
+    'health-cookie-secret',
+    'timeline-secret',
+  ])
+    assert.doesNotMatch(serialized, new RegExp(secret.replaceAll('.', '\\.')));
   assert.match(serialized, /REDACTED/);
 });
 
@@ -263,6 +335,7 @@ test('report endpoint returns a report and validates incident IDs', async () => 
       { provide: JSON_REPORT_EXPORTER, useClass: JsonReportExporter },
       { provide: CSV_REPORT_EXPORTER, useClass: CsvReportExporter },
       { provide: PDF_REPORT_EXPORTER, useClass: PdfReportExporter },
+      { provide: AuditTrail, useValue: auditTrail },
     ],
   })(ReportApiModule);
   const app = await NestFactory.create(ReportApiModule, { logger: false });
@@ -288,7 +361,10 @@ test('report endpoint returns a report and validates incident IDs', async () => 
     );
     const exportedReport = await exported.json();
     assert.equal(exportedReport.incident.id, value.id);
-    assert.deepEqual(exportedReport.remediation, { suggested: [], executed: [] });
+    assert.deepEqual(exportedReport.remediation, {
+      suggested: [],
+      executed: [],
+    });
 
     const invalidExportId = await fetch(
       `${base}/reports/incidents/not-a-uuid/export?format=json`,
@@ -299,7 +375,10 @@ test('report endpoint returns a report and validates incident IDs', async () => 
       `${base}/reports/incidents/${value.id}/export?format=csv`,
     );
     assert.equal(csv.status, 200);
-    assert.match(csv.headers.get('content-type'), /^text\/csv;\s*charset=utf-8/i);
+    assert.match(
+      csv.headers.get('content-type'),
+      /^text\/csv;\s*charset=utf-8/i,
+    );
     assert.match(
       csv.headers.get('content-disposition'),
       /attachment; filename="faultline-incident-11111111-1111-4111-8111-111111111111\.csv"/,
@@ -316,7 +395,9 @@ test('report endpoint returns a report and validates incident IDs', async () => 
       /attachment; filename="faultline-incident-11111111-1111-4111-8111-111111111111\.pdf"/,
     );
     assert.equal(
-      Buffer.from(await pdf.arrayBuffer()).subarray(0, 5).toString('ascii'),
+      Buffer.from(await pdf.arrayBuffer())
+        .subarray(0, 5)
+        .toString('ascii'),
       '%PDF-',
     );
   } finally {
@@ -335,9 +416,12 @@ test('nonexistent incident uses the API standard not-found response', async () =
       { provide: JSON_REPORT_EXPORTER, useClass: JsonReportExporter },
       { provide: CSV_REPORT_EXPORTER, useClass: CsvReportExporter },
       { provide: PDF_REPORT_EXPORTER, useClass: PdfReportExporter },
+      { provide: AuditTrail, useValue: auditTrail },
     ],
   })(MissingReportApiModule);
-  const app = await NestFactory.create(MissingReportApiModule, { logger: false });
+  const app = await NestFactory.create(MissingReportApiModule, {
+    logger: false,
+  });
   try {
     await app.listen(0, '127.0.0.1');
     const response = await fetch(

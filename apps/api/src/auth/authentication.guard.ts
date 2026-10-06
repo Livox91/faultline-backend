@@ -14,6 +14,7 @@ import {
   PROJECT_ASSIGNMENT_REPOSITORY,
   USER_REPOSITORY,
   isRole,
+  readCookie,
   readBearerToken,
   verifyAccessToken,
   type AuthenticatedUser,
@@ -22,6 +23,8 @@ import {
   type UserRepository,
 } from '@faultline/auth';
 import { IS_PUBLIC, type RequestWithUser } from './context';
+import { AuthSecurityStore } from './security-store';
+import { SESSION_COOKIE } from './session-cookie';
 
 /**
  * Establishes who is calling, for every request.
@@ -31,13 +34,13 @@ import { IS_PUBLIC, type RequestWithUser } from './context';
  * default, and forgetting a decorator locks a route down rather than opening it.
  *
  * The identity is rebuilt from storage on every request rather than trusted from the
- * token. A token is valid for its whole lifetime, but an assignment can be revoked or a
- * user disabled a second after it was issued, and authorization must follow the current
- * state, not the state at login.
+ * token. The Redis session is checked for revocation, then the current user and project
+ * assignments are reloaded so authorization follows current state, not login-time state.
  */
 @Injectable()
 export class AuthenticationGuard implements CanActivate {
   private readonly tokens: TokenSettings;
+  private readonly mfaRequired: boolean;
 
   constructor(
     private readonly reflector: Reflector,
@@ -45,12 +48,14 @@ export class AuthenticationGuard implements CanActivate {
     @Inject(PROJECT_ASSIGNMENT_REPOSITORY)
     private readonly assignments: ProjectAssignmentRepository,
     @Inject(APPLICATION_CONFIG) config: ApplicationConfig,
+    private readonly security: AuthSecurityStore,
   ) {
     this.tokens = {
       secret: config.auth.jwtSecret ?? '',
       issuer: config.auth.issuer,
       ttlSeconds: config.auth.accessTokenTtlSeconds,
     };
+    this.mfaRequired = config.auth.mfaRequired;
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -61,20 +66,36 @@ export class AuthenticationGuard implements CanActivate {
     if (isPublic) return true;
 
     const request = context.switchToHttp().getRequest<RequestWithUser>();
-    const token = readBearerToken(request.headers.authorization);
+    const cookieHeader = Array.isArray(request.headers.cookie)
+      ? request.headers.cookie[0]
+      : request.headers.cookie;
+    const token =
+      readBearerToken(request.headers.authorization) ??
+      readCookie(cookieHeader, SESSION_COOKIE);
     if (!token) throw new UnauthorizedException('Authentication required');
 
+    let claims: ReturnType<typeof verifyAccessToken>;
     let subject: string;
+    let sessionId: string;
     try {
-      subject = verifyAccessToken(token, this.tokens).sub;
+      claims = verifyAccessToken(token, this.tokens);
+      subject = claims.sub;
+      sessionId = claims.jti;
     } catch {
       // The reason is deliberately not echoed: distinguishing "expired" from "bad
       // signature" to an unauthenticated caller is free information.
       throw new UnauthorizedException('Invalid or expired credentials');
     }
 
+    if (!(await this.security.isSessionActive(sessionId, subject)))
+      throw new UnauthorizedException('Invalid or expired credentials');
+
     const user = await this.users.findById(subject);
     if (!user || user.status !== 'active' || !isRole(user.role))
+      throw new UnauthorizedException('Invalid or expired credentials');
+    // Tokens issued before session versioning are version 1. A successful password
+    // reset increments the stored value and immediately invalidates every older JWT.
+    if ((claims.sv ?? 1) !== user.sessionVersion)
       throw new UnauthorizedException('Invalid or expired credentials');
 
     const authenticated: AuthenticatedUser = {
@@ -86,12 +107,14 @@ export class AuthenticationGuard implements CanActivate {
       role: user.role,
       status: user.status,
       mfaEnabled: user.mfaEnabled,
+      mfaEnrollmentRequired: this.mfaRequired && !user.mfaEnabled,
       // Read from storage, never from the token: the whole point is that it flips to
       // false the moment the password is changed, without re-issuing anything.
       mustChangePassword: user.mustChangePassword,
       assignments: await this.assignments.listForUser(user.id),
     };
     request.user = authenticated;
+    request.sessionId = sessionId;
     return true;
   }
 }

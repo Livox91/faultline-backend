@@ -1,13 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import type { ProjectAssignment, UserStatus } from './identity';
 import { ROLES, type Role } from './roles';
-import { hashPassword } from './passwords';
+import { hashPassword, verifyPassword } from './passwords';
 import type {
   AuditEntry,
   AuditFilter,
   AuditLogRepository,
   AuditRecord,
+  AuditIntegrityReport,
 } from './audit';
+import {
+  AUDIT_INTEGRITY_ALGORITHM,
+  auditHashesEqual,
+  computeAuditHash,
+} from './audit-integrity';
 
 /** A stored user. `passwordHash` never leaves the repository layer. */
 export interface UserRecord {
@@ -19,6 +25,13 @@ export interface UserRecord {
   readonly role: Role;
   readonly status: UserStatus;
   readonly mfaEnabled: boolean;
+  /** AES-GCM ciphertext; exposed only to authentication services, never presenters. */
+  readonly mfaSecretCiphertext: string | null;
+  /** HMAC digests. The plaintext recovery codes are returned once during enrollment. */
+  readonly mfaRecoveryCodeHashes: readonly string[];
+  readonly mfaLastUsedCounter: number | null;
+  /** Incremented by security-sensitive credential recovery to revoke older JWTs. */
+  readonly sessionVersion: number;
   /** True while the account still holds a temporary password it must replace. */
   readonly mustChangePassword: boolean;
   /** Absent for users whose credentials live in an external identity provider. */
@@ -54,14 +67,46 @@ export interface UserChanges {
 
 export interface UserRepository {
   findById(id: string): Promise<UserRecord | undefined>;
+  findByIdInOrganization(
+    id: string,
+    organizationId: string,
+  ): Promise<UserRecord | undefined>;
   /** Case-insensitive: an email is one identity however it was typed. */
   findByEmail(email: string): Promise<UserRecord | undefined>;
   /** Case-insensitive, like email: one handle however it was typed. */
   findByUsername(username: string): Promise<UserRecord | undefined>;
   findByExternalSubject(subject: string): Promise<UserRecord | undefined>;
   list(): Promise<readonly UserRecord[]>;
+  listByOrganization(organizationId: string): Promise<readonly UserRecord[]>;
   create(user: NewUser): Promise<UserRecord>;
   update(id: string, changes: UserChanges): Promise<UserRecord | undefined>;
+  updateInOrganization(
+    id: string,
+    organizationId: string,
+    changes: UserChanges,
+  ): Promise<UserRecord | undefined>;
+  configureMfa(
+    id: string,
+    secretCiphertext: string,
+    recoveryCodeHashes: readonly string[],
+    lastUsedCounter: number,
+  ): Promise<UserRecord | undefined>;
+  disableMfa(id: string): Promise<UserRecord | undefined>;
+  consumeMfaTotpCounter(id: string, counter: number): Promise<boolean>;
+  consumeMfaRecoveryCode(id: string, codeHash: string): Promise<boolean>;
+  createMfaChallenge(userId: string, expiresAt: string): Promise<string>;
+  consumeMfaChallenge(id: string, userId: string, now?: string): Promise<boolean>;
+  createPasswordResetToken(
+    userId: string,
+    tokenHash: string,
+    expiresAt: string,
+  ): Promise<void>;
+  /** Atomically consumes the token, replaces the password, and revokes old sessions. */
+  resetPasswordWithToken(
+    tokenHash: string,
+    newPassword: string,
+    now?: string,
+  ): Promise<UserRecord | undefined>;
 }
 
 export interface ProjectAssignmentRepository {
@@ -103,6 +148,13 @@ export class DuplicateUsernameError extends Error {
   }
 }
 
+export class PasswordReuseError extends Error {
+  constructor() {
+    super('New password must be different from the current password');
+    this.name = 'PasswordReuseError';
+  }
+}
+
 const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
 /**
@@ -114,9 +166,24 @@ const normalizeEmail = (email: string): string => email.trim().toLowerCase();
  */
 export class InMemoryUserRepository implements UserRepository {
   private readonly users = new Map<string, UserRecord>();
+  private readonly mfaChallenges = new Map<
+    string,
+    { userId: string; expiresAt: string; used: boolean }
+  >();
+  private readonly passwordResetTokens = new Map<
+    string,
+    { userId: string; expiresAt: string; used: boolean }
+  >();
 
   async findById(id: string): Promise<UserRecord | undefined> {
     return this.users.get(id);
+  }
+  async findByIdInOrganization(
+    id: string,
+    organizationId: string,
+  ): Promise<UserRecord | undefined> {
+    const user = this.users.get(id);
+    return user?.organizationId === organizationId ? user : undefined;
   }
   async findByEmail(email: string): Promise<UserRecord | undefined> {
     const wanted = normalizeEmail(email);
@@ -140,6 +207,13 @@ export class InMemoryUserRepository implements UserRepository {
       a.email.localeCompare(b.email),
     );
   }
+  async listByOrganization(
+    organizationId: string,
+  ): Promise<readonly UserRecord[]> {
+    return (await this.list()).filter(
+      (user) => user.organizationId === organizationId,
+    );
+  }
   async create(user: NewUser): Promise<UserRecord> {
     const email = normalizeEmail(user.email);
     if (await this.findByEmail(email)) throw new DuplicateEmailError();
@@ -154,7 +228,13 @@ export class InMemoryUserRepository implements UserRepository {
       name: user.name,
       role: user.role,
       status: user.status ?? 'active',
-      mfaEnabled: user.mfaEnabled ?? false,
+      // Enrollment is the only way to enable MFA: a boolean without a secret would
+      // create an account that can neither verify nor recover.
+      mfaEnabled: false,
+      mfaSecretCiphertext: null,
+      mfaRecoveryCodeHashes: [],
+      mfaLastUsedCounter: null,
+      sessionVersion: 1,
       mustChangePassword: user.mustChangePassword ?? false,
       passwordHash: user.password ? await hashPassword(user.password) : null,
       externalSubject: user.externalSubject ?? null,
@@ -176,7 +256,14 @@ export class InMemoryUserRepository implements UserRepository {
       ...(changes.role !== undefined ? { role: changes.role } : {}),
       ...(changes.status !== undefined ? { status: changes.status } : {}),
       ...(changes.mfaEnabled !== undefined
-        ? { mfaEnabled: changes.mfaEnabled }
+        ? changes.mfaEnabled
+          ? { mfaEnabled: existing.mfaSecretCiphertext !== null }
+          : {
+              mfaEnabled: false,
+              mfaSecretCiphertext: null,
+              mfaRecoveryCodeHashes: [],
+              mfaLastUsedCounter: null,
+            }
         : {}),
       ...(changes.username !== undefined
         ? { username: changes.username }
@@ -190,6 +277,115 @@ export class InMemoryUserRepository implements UserRepository {
       updatedAt: new Date().toISOString(),
     };
     this.users.set(id, updated);
+    return updated;
+  }
+
+  async updateInOrganization(
+    id: string,
+    organizationId: string,
+    changes: UserChanges,
+  ): Promise<UserRecord | undefined> {
+    const existing = await this.findByIdInOrganization(id, organizationId);
+    return existing ? this.update(id, changes) : undefined;
+  }
+
+  async configureMfa(
+    id: string,
+    secretCiphertext: string,
+    recoveryCodeHashes: readonly string[],
+    lastUsedCounter: number,
+  ): Promise<UserRecord | undefined> {
+    const existing = this.users.get(id);
+    if (!existing) return undefined;
+    const updated: UserRecord = {
+      ...existing,
+      mfaEnabled: true,
+      mfaSecretCiphertext: secretCiphertext,
+      mfaRecoveryCodeHashes: [...recoveryCodeHashes],
+      mfaLastUsedCounter: lastUsedCounter,
+      updatedAt: new Date().toISOString(),
+    };
+    this.users.set(id, updated);
+    return updated;
+  }
+
+  async disableMfa(id: string): Promise<UserRecord | undefined> {
+    return this.update(id, { mfaEnabled: false });
+  }
+
+  async consumeMfaTotpCounter(id: string, counter: number): Promise<boolean> {
+    const existing = this.users.get(id);
+    if (!existing || (existing.mfaLastUsedCounter !== null && existing.mfaLastUsedCounter >= counter))
+      return false;
+    this.users.set(id, { ...existing, mfaLastUsedCounter: counter });
+    return true;
+  }
+
+  async consumeMfaRecoveryCode(id: string, codeHash: string): Promise<boolean> {
+    const existing = this.users.get(id);
+    if (!existing || !existing.mfaRecoveryCodeHashes.includes(codeHash)) return false;
+    this.users.set(id, {
+      ...existing,
+      mfaRecoveryCodeHashes: existing.mfaRecoveryCodeHashes.filter((hash) => hash !== codeHash),
+    });
+    return true;
+  }
+
+  async createMfaChallenge(userId: string, expiresAt: string): Promise<string> {
+    const id = randomUUID();
+    this.mfaChallenges.set(id, { userId, expiresAt, used: false });
+    return id;
+  }
+
+  async consumeMfaChallenge(id: string, userId: string, now = new Date().toISOString()): Promise<boolean> {
+    const challenge = this.mfaChallenges.get(id);
+    if (!challenge || challenge.userId !== userId || challenge.used || challenge.expiresAt <= now)
+      return false;
+    challenge.used = true;
+    return true;
+  }
+
+  async createPasswordResetToken(
+    userId: string,
+    tokenHash: string,
+    expiresAt: string,
+  ): Promise<void> {
+    for (const token of this.passwordResetTokens.values()) {
+      if (token.userId === userId && !token.used) token.used = true;
+    }
+    this.passwordResetTokens.set(tokenHash, {
+      userId,
+      expiresAt,
+      used: false,
+    });
+  }
+
+  async resetPasswordWithToken(
+    tokenHash: string,
+    newPassword: string,
+    now = new Date().toISOString(),
+  ): Promise<UserRecord | undefined> {
+    const token = this.passwordResetTokens.get(tokenHash);
+    if (!token || token.used || token.expiresAt <= now) return undefined;
+    const existing = this.users.get(token.userId);
+    if (!existing || existing.status !== 'active') return undefined;
+    if (await verifyPassword(newPassword, existing.passwordHash))
+      throw new PasswordReuseError();
+    const updated: UserRecord = {
+      ...existing,
+      passwordHash: await hashPassword(newPassword),
+      mustChangePassword: false,
+      sessionVersion: existing.sessionVersion + 1,
+      updatedAt: now,
+    };
+    token.used = true;
+    for (const candidate of this.passwordResetTokens.values()) {
+      if (candidate.userId === existing.id) candidate.used = true;
+    }
+    for (const challenge of this.mfaChallenges.values()) {
+      if (challenge.userId === existing.id) challenge.used = true;
+    }
+    this.users.set(existing.id, updated);
     return updated;
   }
 }
@@ -240,10 +436,18 @@ export class InMemoryProjectAssignmentRepository
 export class InMemoryAuditLogRepository implements AuditLogRepository {
   private readonly records: AuditRecord[] = [];
 
+  constructor(
+    private readonly integrityKey = 'faultline-test-audit-integrity-key',
+    private readonly keyId = 'test',
+  ) {}
+
   async record(entry: AuditEntry): Promise<AuditRecord> {
-    const record: AuditRecord = {
+    const base = {
       id: entry.id ?? randomUUID(),
-      occurredAt: entry.occurredAt ?? new Date().toISOString(),
+      occurredAt: entry.occurredAt
+        ? new Date(entry.occurredAt).toISOString()
+        : new Date().toISOString(),
+      organizationId: entry.organizationId,
       userId: entry.userId,
       actor: entry.actor,
       action: entry.action,
@@ -254,6 +458,25 @@ export class InMemoryAuditLogRepository implements AuditLogRepository {
       userAgent: entry.userAgent,
       metadata: entry.metadata,
     };
+    const previousHash = this.records.at(-1)?.integrity?.hash ?? null;
+    const sequence = this.records.length + 1;
+    const hash = computeAuditHash(
+      base,
+      sequence,
+      previousHash,
+      this.keyId,
+      this.integrityKey,
+    );
+    const record: AuditRecord = {
+      ...base,
+      integrity: {
+        algorithm: AUDIT_INTEGRITY_ALGORITHM,
+        keyId: this.keyId,
+        sequence,
+        previousHash,
+        hash,
+      },
+    };
     this.records.push(record);
     return record;
   }
@@ -261,6 +484,8 @@ export class InMemoryAuditLogRepository implements AuditLogRepository {
     return this.records
       .filter(
         (record) =>
+          (!filter.organizationId ||
+            record.organizationId === filter.organizationId) &&
           (!filter.userId || record.userId === filter.userId) &&
           (!filter.action || record.action === filter.action) &&
           (!filter.resourceType ||
@@ -272,6 +497,42 @@ export class InMemoryAuditLogRepository implements AuditLogRepository {
       )
       .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
       .slice(0, filter.limit ?? 200);
+  }
+
+  async verifyIntegrity(): Promise<AuditIntegrityReport> {
+    let previousHash: string | null = null;
+    let checkedRecords = 0;
+    for (const record of this.records) {
+      const integrity = record.integrity;
+      if (!integrity) continue;
+      const { integrity: _integrity, ...base } = record;
+      const expected = computeAuditHash(
+        base,
+        integrity.sequence,
+        previousHash,
+        integrity.keyId,
+        this.integrityKey,
+      );
+      if (
+        integrity.previousHash !== previousHash ||
+        !auditHashesEqual(integrity.hash, expected)
+      )
+        return {
+          valid: false,
+          checkedRecords,
+          unsignedRecords: this.records.length - checkedRecords,
+          headHash: previousHash,
+          firstInvalidRecordId: record.id,
+        };
+      previousHash = integrity.hash;
+      checkedRecords += 1;
+    }
+    return {
+      valid: true,
+      checkedRecords,
+      unsignedRecords: this.records.length - checkedRecords,
+      headHash: previousHash,
+    };
   }
 }
 

@@ -2,6 +2,8 @@
 
 Faultline directly notifies the active onsite engineers assigned to the cluster that produced an incident. There are no escalation policies, ordered steps, or delayed recipients.
 
+Outbound voice delivery uses the official Retell SDK's `client.call.createPhoneCall` operation. Faultline persists a `PENDING` incident communication with the returned Retell `call_id` before webhook or polling updates mark the communication sent or failed.
+
 ## Recipient selection
 
 For a notifiable incident, Faultline:
@@ -56,13 +58,13 @@ The JSON body is:
 
 `action` is `ACKNOWLEDGE_INCIDENT`, `DECLINE_INCIDENT`, or `UNKNOWN`.
 
-Configure the Retell status webhook:
+Configure the Retell event webhook:
 
 ```text
 POST https://<public-notification-host>/webhooks/retell
 ```
 
-Both endpoints require a valid `x-retell-signature`. For local development, expose notification port `3004` through an HTTPS tunnel.
+Both endpoints require a valid `x-retell-signature`. The event webhook accepts status events, explicit `ACKNOWLEDGE_INCIDENT` / `DECLINE_INCIDENT` tool results, and conservative end-of-call transcript decisions. For local development, expose notification port `3004` through an HTTPS tunnel.
 
 ## Voice-agent prompt
 
@@ -81,11 +83,11 @@ If the answer is unclear, submit UNKNOWN and ask for clarification.
 Never modify incident state yourself; Faultline is the source of truth.
 ```
 
-Acknowledging one call records incident ownership and changes the durable notification state to `ACKNOWLEDGED`. A decline is recorded but starts no additional calls because every assigned engineer was already contacted in the initial dispatch.
+Acknowledging one call records incident ownership and changes the durable notification state to `ACKNOWLEDGED`. This is intentionally separate from the operational incident status (`OPEN`, `ACTIVE`, or `RESOLVED`). A decline is recorded and immediately starts the one-time primary Admin fallback.
 
 ## Configure a recipient
 
-An onsite engineer cannot exist without a phone number Retell can call. Creating one through **Team & Roles**, `POST /admin/users` or `npm run user:create` requires an E.164 `phoneNumber`, and creates the linked notification contact in the same step with voice on (SMS is optional and defaults to on):
+An onsite engineer cannot exist without a phone number Retell can call. Creating one through **Team & Roles** or `POST /admin/users` requires an E.164 `phoneNumber`, creates the linked notification contact in the same step with voice on (SMS is optional and defaults to on), and emails an automatically generated temporary password. The engineer must replace it on first sign-in:
 
 ```powershell
 $headers = @{ Authorization = 'Bearer <admin-access-token>' }
@@ -98,12 +100,13 @@ $engineer = Invoke-RestMethod http://localhost:3000/admin/users `
     email = 'payments-sre@example.com'
     name = 'Payments SRE'
     role = 'onsiteengineer'
-    password = '<at least 12 characters>'
     phoneNumber = '+15551234567'
     smsEnabled = $true
     projectIds = @('<cluster-id>')
   } | ConvertTo-Json)
 ```
+
+The local `npm run user:create` administration command remains a manual credential path and accepts `--password`.
 
 The API keeps that contact callable. It refuses:
 
@@ -122,14 +125,15 @@ If an organization has no assigned, contactable onsite engineer, link a notifica
 - Every resolved engineer is contacted in the same dispatch pass.
 - Voice and SMS are both used when both contact flags are enabled.
 - Duplicate incident lifecycle events do not create duplicate attempts.
-- Provider failures are stored on the notification attempt but do not trigger delayed steps or retries.
-- Provider callbacks remain idempotent and update the original attempt.
+- A failed, timed-out, unanswered, cancelled, or declined SRE voice call immediately triggers the primary Admin fallback once; there are no delayed escalation steps.
+- Provider callbacks remain idempotent and update both the original attempt and its `incident_communications` record.
+- Acknowledgement stops new alerting and atomically persists the acknowledgement, notification state, attempt, communication outcome, and audit entries.
 - Incident resolution closes the durable notification state.
 - Notification attempts, acknowledgements, and audit events are retained independently from the removed policy tables.
 
 ## Database migration
 
-Apply migrations `0014_direct_cluster_notifications` and `0016_cluster_sre_assignments` before deploying the new worker:
+Apply migrations through `0018_incident_communication_outcomes` before deploying the new worker:
 
 ```powershell
 npm run db:migrate
@@ -141,6 +145,7 @@ It:
 - Adds `incident_notification_states`.
 - Converts existing execution state where the incident and cluster still exist.
 - Removes `escalation_executions` and `escalation_policies`.
+- Adds provider request IDs and detailed Retell outcomes to `incident_communications`.
 - Leaves notification attempts, acknowledgements, communications, idempotency records, and notification audit events intact.
 
 The migration removes the deprecated policy definitions. Back up a production database before applying it if those definitions must be retained for external archival purposes.

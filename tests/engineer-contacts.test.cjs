@@ -1,7 +1,7 @@
 require('reflect-metadata');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { ROLES } = require('@faultline/auth');
+const { ROLES, verifyPassword } = require('@faultline/auth');
 const { CLUSTER_DIRECTORY } = require('../apps/api/dist/clusters.controller');
 const {
   AdminUsersController,
@@ -32,7 +32,7 @@ async function boot() {
     email: 'admin@faultline.test',
     name: 'Administrator',
     role: ROLES.ADMIN,
-    password: 'correct-horse-battery',
+    password: 'Correct-horse-battery1!',
   });
   await context.assignments.assign(admin.id, PROJECT, admin.id, []);
   return { ...context, token: tokenFor(admin) };
@@ -52,7 +52,7 @@ const engineer = (overrides = {}) => ({
   email: 'ahmed@faultline.test',
   name: 'Ahmed',
   role: ROLES.ONSITE_ENGINEER,
-  password: 'correct-horse-battery',
+  password: 'Correct-horse-battery1!',
   ...overrides,
 });
 
@@ -85,8 +85,8 @@ test('an onsite engineer is not created without a valid E.164 phone number', asy
   }
 });
 
-test('creating an onsite engineer links a callable contact in the same request', async () => {
-  const { app, base, token, contacts } = await boot();
+test('creating an onsite engineer generates and emails first-time credentials', async () => {
+  const { app, base, token, contacts, users, email } = await boot();
   try {
     const response = await call(
       base,
@@ -105,6 +105,20 @@ test('creating an onsite engineer links a callable contact in the same request',
     assert.equal(created.contact.smsEnabled, false);
     assert.equal(created.contact.enabled, true);
 
+    const stored = await users.findById(created.id);
+    assert.ok(stored.username);
+    assert.equal(stored.mustChangePassword, true);
+    assert.equal(created.password, undefined, 'temporary password is never returned');
+    const message = email.lastTo('ahmed@faultline.test');
+    assert.ok(message, 'credentials email was sent');
+    assert.match(message.subject, /onsite engineer account/i);
+    assert.match(message.text, new RegExp(`Username: ${stored.username}`));
+    assert.match(message.text, /Temporary Password: \S+/);
+    assert.match(message.text, /change your temporary password/i);
+    const temporaryPassword = message.text.match(/Temporary Password: (\S+)/)[1];
+    assert.notEqual(temporaryPassword, 'Correct-horse-battery1!');
+    assert.equal(await verifyPassword(temporaryPassword, stored.passwordHash), true);
+
     const linked = await contacts.findByUserIds([created.id], 'default');
     assert.deepEqual(linked.map((contact) => contact.id), [created.contact.id]);
   } finally {
@@ -119,7 +133,7 @@ test('an admin account needs no phone number', async () => {
       email: 'second-admin@faultline.test',
       name: 'Second Admin',
       role: ROLES.ADMIN,
-      password: 'correct-horse-battery',
+      password: 'Correct-horse-battery1!',
     });
     assert.equal(response.status, 201);
     assert.equal((await response.json()).contact, undefined);
@@ -168,7 +182,7 @@ test('an account becomes an onsite engineer only once it can be called', async (
       email: 'lead@faultline.test',
       name: 'Lead',
       role: ROLES.ADMIN,
-      password: 'correct-horse-battery',
+      password: 'Correct-horse-battery1!',
     });
     const demote = () =>
       call(base, token, 'PATCH', `/admin/users/${lead.id}`, { role: ROLES.ONSITE_ENGINEER });

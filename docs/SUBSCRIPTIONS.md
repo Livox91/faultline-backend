@@ -233,6 +233,7 @@ it is written to the audit trail like any other denial (`resourceType: 'feature'
 | `POST` | `/billing/webhook` | **signature only** — the one route that creates an Admin |
 | `GET` | `/billing/checkout/status?sessionId=` | public — `{paid, email}`, never credentials |
 | `GET` | `/billing/entitlements` | authenticated — the caller's tier, its modules, and what is locked |
+| `POST` | `/billing/portal` | Admin — opens Stripe-hosted billing management |
 | `POST` | `/auth/change-password` | authenticated, allowed while confined |
 | `POST` | `/auth/login` | public — accepts `email` **or** `username` |
 
@@ -274,7 +275,12 @@ has bought nothing they can use.
 1. Create a recurring **Price** for each self-serve tier: Basic at amount `0` →
    `STRIPE_PRICE_ID_BASIC`, and Pro → `STRIPE_PRICE_ID_PRO`. Enterprise has none.
 2. Add a webhook endpoint at `https://<api-host>/billing/webhook` subscribed to
-   **`checkout.session.completed`**. Its signing secret is `STRIPE_WEBHOOK_SECRET`.
+   **`checkout.session.completed`**, **`invoice.paid`**, **`invoice.payment_failed`**,
+   **`customer.subscription.updated`**, and **`customer.subscription.deleted`**. Its
+   signing secret is `STRIPE_WEBHOOK_SECRET`.
+   Enable subscription updates in the Stripe Customer Portal and make both configured
+   Basic and Pro prices available. Active price changes update Faultline immediately;
+   canceled or unpaid subscriptions fall back to Basic automatically.
 3. Locally: `stripe listen --forward-to localhost:3000/billing/webhook` and use the
    `whsec_…` it prints.
 
@@ -283,8 +289,8 @@ The webhook must reach the **API** (port 3000), not the Vite dev server.
 ## Testing
 
 ```bash
-npm run test:subscriptions   # 19 tests
-npm run test:entitlements    # 15 tests - tier gating, over real HTTP
+npm run test:subscriptions   # provisioning, portal and lifecycle tests
+npm run test:entitlements    # tier gating, over real HTTP
 npm test                     # full suite
 ```
 
@@ -308,19 +314,8 @@ The real `StripeGateway` is exercised against signatures produced by Stripe's ow
 
 ## Limitations
 
-1. **Renewals and cancellations are not handled.** Only `checkout.session.completed` is
-   acted on. `invoice.paid`, `invoice.payment_failed` and
-   `customer.subscription.deleted` are acknowledged and ignored, so a lapsed subscription
-   does not yet disable its admin. The row and status fields are in place for it.
-2. **No self-service billing portal.** Changing a card or cancelling means Stripe's
-   dashboard today.
-3. **The webhook is the only provisioning path.** If webhooks are misconfigured, nobody
+1. **The webhook is the only provisioning path.** If webhooks are misconfigured, nobody
    is provisioned — `npm run subscriptions:pending` will show nothing, because without
    the webhook there is no subscription row either. Verify the endpoint after deploying.
-4. **Tokens are not revocable before expiry** (unchanged from the RBAC work). Changing a
-   password does not invalidate tokens already issued to that user; the confinement lifts
-   for them too, which is correct, but a stolen token remains valid for its TTL.
-5. **Login throttling is per-process**, and the password-change endpoint is throttled per
-   user id. A scaled-out deployment wants a shared limiter at the edge.
-6. **`RecordingEmailSender` keeps messages in memory** for the life of the process when
+2. **`RecordingEmailSender` keeps messages in memory** for the life of the process when
    `EMAIL_TRANSPORT=log`. Development only, and production configuration forbids it.

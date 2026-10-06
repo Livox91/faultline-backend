@@ -1,5 +1,6 @@
 import { Global, Module, type DynamicModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { createHmac } from 'node:crypto';
 import {
   APPLICATION_CONFIG,
   applicationDefinitions,
@@ -10,6 +11,17 @@ import {
 } from './config';
 import { ApplicationLogger } from './logger';
 import { HealthController, HealthService } from './health';
+
+function auditIntegrityKey(config: ConfigService<Environment, true>) {
+  const explicit = config.get('AUDIT_INTEGRITY_KEY', { infer: true });
+  if (explicit) return explicit;
+  const jwt = config.get('AUTH_JWT_SECRET', { infer: true });
+  return jwt
+    ? createHmac('sha256', jwt)
+        .update('faultline:development-audit-integrity:v1')
+        .digest('hex')
+    : undefined;
+}
 
 /** Undefined stays undefined: the API treats that as the development-only wide scope. */
 function parseClusterScope(
@@ -128,11 +140,29 @@ export class PlatformModule {
                   'AUTH_ACCESS_TOKEN_TTL_SECONDS',
                   { infer: true },
                 ),
+                passwordResetTtlSeconds: config.get(
+                  'AUTH_PASSWORD_RESET_TTL_SECONDS',
+                  { infer: true },
+                ),
                 mfaRequired: config.get('AUTH_MFA_REQUIRED', { infer: true }),
+                mfaTrustedDeviceTtlDays: config.get(
+                  'AUTH_MFA_TRUSTED_DEVICE_TTL_DAYS',
+                  { infer: true },
+                ),
+                mfaEncryptionKey: config.get('AUTH_MFA_ENCRYPTION_KEY', {
+                  infer: true,
+                }),
                 bootstrapAdmin: bootstrapAdmin(
                   config.get('AUTH_BOOTSTRAP_ADMIN_EMAIL', { infer: true }),
                   config.get('AUTH_BOOTSTRAP_ADMIN_PASSWORD', { infer: true }),
                 ),
+              }),
+              audit: Object.freeze({
+                integrityKey: auditIntegrityKey(config),
+                integrityKeyId: config.get('AUDIT_INTEGRITY_KEY_ID', {
+                  infer: true,
+                }),
+                strict: config.get('AUDIT_STRICT', { infer: true }),
               }),
               publicUrl: config
                 .get('APP_PUBLIC_URL', { infer: true })

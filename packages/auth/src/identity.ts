@@ -39,6 +39,8 @@ export interface AuthenticatedUser {
   readonly role: Role;
   readonly status: UserStatus;
   readonly mfaEnabled: boolean;
+  /** True only when deployment policy requires enrollment and this user has not enrolled. */
+  readonly mfaEnrollmentRequired?: boolean;
   /**
    * The account is holding a credential it did not choose.
    *
@@ -160,6 +162,7 @@ export function presentUser(user: AuthenticatedUser) {
     role: user.role,
     status: user.status,
     mfaEnabled: user.mfaEnabled,
+    mfaEnrollmentRequired: user.mfaEnrollmentRequired === true,
     // The client needs this to send the user to the password-change screen, but it is
     // a hint for routing only - the API enforces the same confinement itself.
     mustChangePassword: user.mustChangePassword,
